@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ThesisRewrite Lab Mockup</title>
+  <link rel="stylesheet" href="thesis_rewriting_training_mockup.css">
+</head>
+<body>
+  <main class="app-shell" aria-label="Thesis rewriting training workspace">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">TR</div>
+        <div>
+          <h1>ThesisRewrite Lab</h1>
+          <p>Sentence-level rewriting training</p>
+        </div>
+      </div>
+
+      <div class="project-strip">
+        <div class="project-name">Workspace: Urban Resilience Thesis Draft</div>
+        <div class="status-pill"><span class="status-dot"></span> Window 3 of 18 analyzed</div>
+      </div>
+
+      <div class="actions">
+        <button class="icon-button" aria-label="Undo">
+          <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-2"/></svg>
+        </button>
+        <button class="icon-button" aria-label="Redo">
+          <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h2"/></svg>
+        </button>
+        <button class="text-button">
+          <svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
+          Save
+        </button>
+        <button class="text-button primary">
+          <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          Export
+        </button>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <aside class="sidebar" aria-label="Workspace controls">
+        <section class="section">
+          <div class="section-header">
+            <h2>Input</h2>
+            <button class="small-link">Replace</button>
+          </div>
+          <div class="drop-zone">
+            <strong>Thesis_chapter_02.docx</strong>
+            <span>34 pages imported. Paragraphs, citations, headings, and tables are preserved for export.</span>
+            <button class="text-button">
+              <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></svg>
+              Upload Text
+            </button>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-header">
+            <h2>Template</h2>
+            <button class="small-link">Edit</button>
+          </div>
+          <div class="template-list">
+            <label class="template-option">
+              <input type="radio" name="template" checked>
+              <span class="template-copy">
+                <strong>APA 7 Thesis</strong>
+                <span>Heading, citation, and tone profile</span>
+              </span>
+            </label>
+            <label class="template-option">
+              <input type="radio" name="template">
+              <span class="template-copy">
+                <strong>Oxford Notes</strong>
+                <span>Footnote-focused humanities draft</span>
+              </span>
+            </label>
+            <label class="template-option">
+              <input type="radio" name="template">
+              <span class="template-copy">
+                <strong>Custom Style</strong>
+                <span>Department rubric and supervisor notes</span>
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-header">
+            <h2>History</h2>
+            <button class="small-link">View All</button>
+          </div>
+          <div class="history-list">
+            <div class="history-row active">
+              <strong>Chapter 02 revision</strong>
+              <span>Saved 12 minutes ago</span>
+            </div>
+            <div class="history-row">
+              <strong>Methods paragraph pass</strong>
+              <span>8 rewrite decisions</span>
+            </div>
+            <div class="history-row">
+              <strong>Literature review cleanup</strong>
+              <span>APA export ready</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <section class="document-zone" aria-label="Article rewriting window">
+        <div class="document-toolbar">
+          <div class="tabs" role="tablist" aria-label="Document views">
+            <button class="tab active">Sentence Window</button>
+            <button class="tab">Cluster Map</button>
+            <button class="tab">Export Preview</button>
+          </div>
+          <label class="context-control">
+            Context Window
+            <input type="range" min="1" max="7" value="4">
+            4 paragraphs
+          </label>
+        </div>
+
+        <div class="paper-stage">
+          <article class="paper">
+            <div class="paper-meta">
+              <span class="meta-chip">APA 7</span>
+              <span class="meta-chip">Paragraph 14-17</span>
+              <span class="meta-chip">Cluster: Dense Causality</span>
+            </div>
+            <h3>Urban Resilience and Distributed Infrastructure Planning</h3>
+            <p class="byline">Working draft, Chapter 2: Literature Review</p>
+
+            <aside class="margin-note">Selected sentence: high nominalization, passive construction, and weak transition signal.</aside>
+
+            <p>
+              <span class="sentence passive">Recent scholarship has increasingly positioned urban resilience as a multidimensional planning concern rather than a narrow recovery metric.</span>
+              <span class="sentence dense">This shift reflects the integration of ecological stability, infrastructure redundancy, and social adaptation within municipal decision-making.</span>
+              <span class="sentence focus">The implementation of resilience-oriented policies is often complicated by the fragmentation of governance responsibilities across public agencies and private infrastructure operators.</span>
+            </p>
+
+            <p>
+              <span class="sentence hedge">Although several authors suggest that distributed systems may improve service continuity after climate shocks, the evidence remains uneven across regional contexts.</span>
+              <span class="sentence">In coastal cities, redundancy in transit, energy, and communication systems can protect vulnerable populations when primary networks fail.</span>
+              <span class="sentence passive">However, these benefits are frequently evaluated through technical performance indicators while social accessibility is treated as a secondary concern.</span>
+            </p>
+
+            <p>
+              <span class="sentence dense">A more useful planning model therefore requires the coordination of linguistic, institutional, and technical assumptions in policy documents.</span>
+              <span class="sentence">For this reason, this review compares resilience definitions, implementation barriers, and evaluation standards across twenty-four peer-reviewed studies.</span>
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <aside class="inspector" aria-label="Linguistic analysis and rewrite training">
+        <section class="panel">
+          <h3>Linguistic Style Statistics</h3>
+          <div class="stat-grid">
+            <div class="stat">
+              <strong>18.7</strong>
+              <span>Avg. sentence length</span>
+            </div>
+            <div class="stat">
+              <strong>31%</strong>
+              <span>Passive voice</span>
+            </div>
+            <div class="stat">
+              <strong>42%</strong>
+              <span>Nominal density</span>
+            </div>
+            <div class="stat">
+              <strong>0.64</strong>
+              <span>Cohesion score</span>
+            </div>
+          </div>
+
+          <div class="filter-list">
+            <label class="filter-row">
+              <input type="checkbox" checked>
+              <span>Passive constructions</span>
+              <span class="count">7</span>
+            </label>
+            <label class="filter-row">
+              <input type="checkbox" checked>
+              <span>Nominalization clusters</span>
+              <span class="count">11</span>
+            </label>
+            <label class="filter-row">
+              <input type="checkbox">
+              <span>Hedging and certainty</span>
+              <span class="count">5</span>
+            </label>
+            <label class="filter-row">
+              <input type="checkbox">
+              <span>Transition gaps</span>
+              <span class="count">4</span>
+            </label>
+          </div>
+
+          <div class="bar-list">
+            <div class="bar-row">
+              <div class="bar-label"><span>Academic tone fit</span><span>82%</span></div>
+              <div class="bar-track"><div class="bar-fill green" style="width: 82%;"></div></div>
+            </div>
+            <div class="bar-row">
+              <div class="bar-label"><span>Context compression</span><span>58%</span></div>
+              <div class="bar-track"><div class="bar-fill" style="width: 58%;"></div></div>
+            </div>
+            <div class="bar-row">
+              <div class="bar-label"><span>Rewrite priority</span><span>76%</span></div>
+              <div class="bar-track"><div class="bar-fill amber" style="width: 76%;"></div></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>Selected Sentence</h3>
+          <p class="selected-sentence">The implementation of resilience-oriented policies is often complicated by the fragmentation of governance responsibilities across public agencies and private infrastructure operators.</p>
+
+          <div class="rewrite-list">
+            <div class="rewrite-option">
+              <div class="rewrite-top">
+                <strong>Option A: Clearer actor</strong>
+                <span class="score">Best fit</span>
+              </div>
+              <p>Fragmented responsibilities across public agencies and private infrastructure operators often complicate the implementation of resilience-oriented policies.</p>
+              <div class="explanation">Moves the cause to the front, removes one passive phrase, and keeps the formal thesis tone.</div>
+            </div>
+
+            <div class="rewrite-option">
+              <div class="rewrite-top">
+                <strong>Option B: Stronger causal link</strong>
+                <span class="score">APA fit</span>
+              </div>
+              <p>Because governance responsibilities are divided across public agencies and private operators, cities often struggle to implement resilience-oriented policies.</p>
+              <div class="explanation">Adds an explicit causal connector and changes the sentence from abstract process to institutional action.</div>
+            </div>
+          </div>
+
+          <div class="switch-row">
+            <span class="switch-label">
+              <strong>Apply with explanation</strong>
+              <span>Store decision in training notes</span>
+            </span>
+            <label class="switch" aria-label="Apply with explanation">
+              <input type="checkbox" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>Training Focus</h3>
+          <div class="training-grid">
+            <div class="training-item">
+              <strong>Pattern</strong>
+              <span>Turn noun-heavy policy claims into actor-action clauses.</span>
+            </div>
+            <div class="training-item">
+              <strong>Practice</strong>
+              <span>Rewrite two similar sentences before expanding the context window.</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h3>Workspace Output</h3>
+          <div class="export-row">
+            <button class="text-button">
+              <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+              Apply
+            </button>
+            <button class="text-button">
+              <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+              APA DOCX
+            </button>
+          </div>
+        </section>
+      </aside>
+    </section>
+  </main>
+</body>
+</html>
