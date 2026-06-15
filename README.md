@@ -3,6 +3,17 @@
 
 # Project Handout: Academic Writing Platform
 
+## Team
+| Team Member | UTORid |
+| :--- | :--- |
+| Erfang Yuan | `[redacted]` |
+| Biming Liu | `[redacted]` |
+
+
+**AI Usage Pledge:**
+All members acknowledge the course AI usage policy and pledge to adhere to it strictly throughout the development of this project.
+
+
 ## Summary
 This project is a sentence-level academic writing platform that utilizes deterministic algorithms, NLP, and AI workflows to guide users in actively improving their thesis writing. Unlike existing applications that focus on rapid, full-text repetition reduction, our platform pre-processes inputs based on linguistic features (via clustering and dimensionality reduction) to feed highly specific, precise context windows to the AI. This targeted approach prevents context-overflow hallucinations and allows the system to provide detailed rewriting options, structural explanations, and interactive style training. Users can apply standard formatting templates (e.g., APA, Oxford), filter text by linguistic style, and iteratively rewrite, save, and export their documents within an interactive workspace. 
 
