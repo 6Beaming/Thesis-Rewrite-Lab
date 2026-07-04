@@ -1,0 +1,36 @@
+{
+  "name": "project-thesis-rewriter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sentence-level academic writing platform for thesis rewriting",
+  "main": "app.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "nodemon app.js",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "node app.js",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UTSC-CSCC09-Programming-on-the-Web/project-thesis-rewriter.git"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.2",
+    "@vitejs/plugin-react": "^6.0.3",
+    "concurrently": "^10.0.3",
+    "nodemon": "^3.1.14",
+    "tailwindcss": "^4.3.2",
+    "vite": "^8.1.3"
+  }
+}
