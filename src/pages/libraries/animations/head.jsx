@@ -57,10 +57,29 @@ export function createHeadController(ctx) {
     }
   }
 
+  function headThinkRotation(direction) {
+    if (state.headLocked) {
+      return;
+    }
+    const angle = direction === 'left' ? -10 : 10;
+    els.headGroup.style.transition = 'transform 600ms cubic-bezier(0.4, 0, 0.2, 1)';
+    els.headGroup.style.transform = `rotate(${angle}deg)`;
+  }
+
+  function resetHeadThinkRotation() {
+    if (state.headLocked) {
+      return;
+    }
+    els.headGroup.style.transition = 'transform 600ms cubic-bezier(0.4, 0, 0.2, 1)';
+    els.headGroup.style.transform = 'rotate(0deg)';
+  }
+
   return {
     startHeadRotatingLoop,
     startMarkingTime,
     enableHeadShake,
     enableHeadStabilized,
+    headThinkRotation,
+    resetHeadThinkRotation,
   };
 }

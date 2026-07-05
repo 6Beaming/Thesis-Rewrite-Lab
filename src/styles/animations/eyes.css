@@ -5,6 +5,39 @@
   transform-origin: center;
 }
 
+.eye-chase-active #right_eye_black,
+.eye-chase-active #right_eye_white,
+.eye-chase-active #left_eye_black,
+.eye-chase-active #left_eye_white {
+  transition: transform 80ms ease-out;
+}
+
+.eye-surprise-active #right_eye_black {
+  transform: translate(4px, 5px) scale(0.85, 1.35) !important;
+  transition: transform 300ms ease-out;
+}
+
+.eye-surprise-active #right_eye_white {
+  transform: translate(4px, 7px) scale(0.85, 1.4) !important;
+  transition: transform 300ms ease-out;
+}
+
+.eye-surprise-active #left_eye_black {
+  transform: translate(-4px, 5px) scale(0.85, 1.35) !important;
+  transition: transform 300ms ease-out;
+}
+
+.eye-surprise-active #left_eye_white {
+  transform: translate(-4px, 7px) scale(0.85, 1.4) !important;
+  transition: transform 300ms ease-out;
+}
+
+.eye-surprise-active #right_eye_orbit,
+.eye-surprise-active #left_eye_orbit {
+  transform: scale(0.9, 1.1) !important;
+  transition: transform 300ms ease-out;
+}
+
 .eye-closed #right_eye_black,
 .eye-closed #right_eye_white,
 .eye-closed #left_eye_black,

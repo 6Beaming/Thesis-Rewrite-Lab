@@ -10,6 +10,14 @@ export function createAnimationState() {
     error: false,
     blinkEnabled: true,
     headLocked: false,
+    rightWingTremorActive: false,
+    rightWingTremorTimer: null,
+    wand: 'hidden',
+    wandTremorActive: false,
+    wandTremorTimer: null,
+    wandSuppressUntil: 0,
+    retractionTimer: null,
+    chaseVector: { x: 0, y: 0 },
     projectileNodes: new Set(),
     eye: {
       controller: 'neutral',
@@ -49,6 +57,21 @@ export function createTimerRegistry() {
       const id = setInterval(fn, ms);
       intervals.add(id);
       return id;
+    },
+    clearTimer(id) {
+      if (id) {
+        clearTimeout(id);
+        timers.delete(id);
+      }
+    },
+    wait(ms) {
+      return new Promise((resolve) => {
+        const id = setTimeout(() => {
+          timers.delete(id);
+          resolve();
+        }, ms);
+        timers.add(id);
+      });
     },
     requestFrame(fn) {
       const id = requestAnimationFrame((time) => {
@@ -108,23 +131,57 @@ export function pick(items) {
 }
 
 export function cacheStageElements(stage) {
+  const queryStage = (selector) => stage.querySelector(selector);
+  const queryContainer = (selector) => stage.closest('.owl-container')?.querySelector(selector);
+
   return {
     stage,
-    headGroup: stage.querySelector('#head_group'),
-    particleLayer: stage.querySelector('#particle-layer'),
-    thinkingIndicator: stage.closest('.owl-container')?.querySelector('#thinking-indicator'),
-    answerIndicator: stage.closest('.owl-container')?.querySelector('#answer-indicator'),
-    errorIndicator: stage.closest('.owl-container')?.querySelector('#error-indicator'),
+    get headGroup() {
+      return queryStage('#head_group');
+    },
+    get rightWingGroup() {
+      return queryStage('#right_wing_group');
+    },
+    get leftWingGroup() {
+      return queryStage('#left_wing_group');
+    },
+    get magicWand() {
+      return queryStage('#magic_wand');
+    },
+    get particleLayer() {
+      return queryStage('#particle-layer');
+    },
+    get thinkingIndicator() {
+      return queryContainer('#thinking-indicator');
+    },
+    get answerIndicator() {
+      return queryContainer('#answer-indicator');
+    },
+    get errorIndicator() {
+      return queryContainer('#error-indicator');
+    },
     eyes: {
       right: {
-        orbit: stage.querySelector('#right_eye_orbit'),
-        black: stage.querySelector('#right_eye_black'),
-        white: stage.querySelector('#right_eye_white'),
+        get orbit() {
+          return queryStage('#right_eye_orbit');
+        },
+        get black() {
+          return queryStage('#right_eye_black');
+        },
+        get white() {
+          return queryStage('#right_eye_white');
+        },
       },
       left: {
-        orbit: stage.querySelector('#left_eye_orbit'),
-        black: stage.querySelector('#left_eye_black'),
-        white: stage.querySelector('#left_eye_white'),
+        get orbit() {
+          return queryStage('#left_eye_orbit');
+        },
+        get black() {
+          return queryStage('#left_eye_black');
+        },
+        get white() {
+          return queryStage('#left_eye_white');
+        },
       },
     },
   };
@@ -137,8 +194,15 @@ export function clearStageModes(stage, headGroup) {
   stage.classList.remove(
     'mode-head-shake-left',
     'mode-head-shake-right',
+    'mode-error-shake',
     'mode-stabilized',
     'marking-time',
+    'right-wing-lifting',
+    'right-wing-lifted',
+    'right-wing-tremor',
+    'left-wing-clench',
+    'left-wing-wand-ready',
+    'wand-tremor-active',
     'eye-closed',
     'eye-surprise-active',
   );

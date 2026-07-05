@@ -5,6 +5,7 @@ import twigUrl from '../assets/twig.svg';
 import thinkingUrl from '../assets/thinking.svg';
 import answerUrl from '../assets/answer.svg';
 import errorUrl from '../assets/error.svg';
+import owlPathCatalog from '../../scripts/generated/owl-path-catalog.json';
 import { getContainerCssVars } from '../pages/libraries/animations/containerLayout.js';
 import { useOwlAnimator } from '../pages/libraries/animations/useOwlAnimator.jsx';
 
@@ -13,9 +14,39 @@ const bottomAssets = {
   mobile: twigUrl,
 };
 
-export default function OwlContainer({ variant = 'desktop', className = '', style = {} }) {
+const wandPathFills = {
+  wand_frame: 'black',
+  right_filler: '#7FDBFE',
+  left_filler: '#FE7FA7',
+  middle_filler: '#FEC901',
+  wand_filler: '#FE8E00',
+};
+
+function createMagicWandMarkup() {
+  const paths = owlPathCatalog.wand?.intermediate ?? {};
+  const pathMarkup = (owlPathCatalog.wand?.ids ?? [])
+    .filter((id) => paths[id])
+    .map((id) => `<path id="${id}" d="${paths[id]}" fill="${wandPathFills[id] ?? 'black'}"/>`)
+    .join('');
+
+  return `<g id="magic_wand" class="wand-hidden">${pathMarkup}</g>`;
+}
+
+function createOwlMarkup() {
+  const svgWithId = owlMarkup.replace('<svg ', '<svg id="owl-svg" ');
+  return svgWithId.replace('<g id="left_wing_group">', `<g id="left_wing_group">${createMagicWandMarkup()}`);
+}
+
+export default function OwlContainer({
+  variant = 'desktop',
+  className = '',
+  style = {},
+  standby = 'random',
+  animation = {},
+  onAnimatorReady,
+}) {
   const stageRef = useRef(null);
-  useOwlAnimator(stageRef, 'random');
+  useOwlAnimator(stageRef, { standby, ...animation, onReady: onAnimatorReady });
 
   const cssVars = getContainerCssVars(variant);
   const bottomSrc = bottomAssets[variant] ?? booksUrl;
@@ -36,7 +67,7 @@ export default function OwlContainer({ variant = 'desktop', className = '', styl
           <div
             className="owl-wrap"
             id="owl-wrap"
-            dangerouslySetInnerHTML={{ __html: owlMarkup.replace('<svg ', '<svg id="owl-svg" ') }}
+            dangerouslySetInnerHTML={{ __html: createOwlMarkup() }}
           />
           <div id="particle-layer" className="particle-layer" aria-hidden="true" />
         </section>

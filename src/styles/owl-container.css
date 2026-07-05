@@ -2,7 +2,7 @@
   position: relative;
   width: 100%;
   aspect-ratio: var(--owl-aspect-ratio);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .owl-container__indicators {
@@ -12,24 +12,24 @@
   transform: translateX(-50%);
   width: var(--owl-indicator-width);
   height: var(--owl-layer-indicator-height);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0;
+  display: block;
   z-index: 3;
   pointer-events: none;
 }
 
 .owl-container__indicators .indicator {
-  position: relative;
-  left: auto;
-  top: auto;
+  position: absolute;
+  left: 50%;
+  bottom: 0;
   width: 100%;
+  height: 100%;
   max-width: none;
   min-width: 0;
+  object-fit: contain;
+  object-position: center bottom;
   opacity: 0;
-  transform: scale(0.96);
+  transform: translateX(-50%) scale(0.96);
+  transform-origin: center bottom;
   transition: opacity 180ms ease, transform 180ms ease;
   filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.22));
   pointer-events: none;
@@ -37,7 +37,7 @@
 
 .owl-container__indicators .indicator.is-visible {
   opacity: 1;
-  transform: scale(1);
+  transform: translateX(-50%) scale(1);
   animation: indicator-bob 1s ease-in-out infinite;
 }
 

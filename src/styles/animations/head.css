@@ -10,6 +10,10 @@
   animation: tilt-anim-right 3s ease-in-out infinite;
 }
 
+.mode-error-shake #head_group {
+  animation: error-head-shake 480ms ease-in-out 0s 2;
+}
+
 @keyframes tilt-anim-left {
   0%,
   100% {
@@ -35,6 +39,28 @@
   }
   90% {
     transform: rotate(0deg);
+  }
+}
+
+@keyframes error-head-shake {
+  0%,
+  100% {
+    transform: rotate(0deg) translate(0, 0);
+  }
+  16% {
+    transform: rotate(-8deg) translate(-5px, 1px);
+  }
+  32% {
+    transform: rotate(7deg) translate(5px, -1px);
+  }
+  48% {
+    transform: rotate(-6deg) translate(-4px, 1px);
+  }
+  64% {
+    transform: rotate(4deg) translate(3px, 0);
+  }
+  80% {
+    transform: rotate(-2deg) translate(-2px, 0);
   }
 }
 
