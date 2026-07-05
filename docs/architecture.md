@@ -21,6 +21,7 @@ project-thesis-rewriter/
 ├── package.json            # Dependencies and npm scripts
 ├── README.md               # Project proposal and course handout summary
 ├── AGENTS.md               # Local agent rules (gitignored; not committed)
+├── auth.sqlite             # Generated local auth database (gitignored)
 ├── .gitignore
 │
 ├── docs/                   # All documentation (human-readable)
@@ -107,7 +108,8 @@ Runs two processes in parallel:
 1. **Express** (`app.js`) on port **3001** — API at `/api/*`
 2. **Vite** dev server on port **5173** — React UI with hot reload
 
-Vite proxies `/api` and `/socket.io` to the Express server.
+Vite proxies `/api`, `/auth`, and `/socket.io` to the Express server. Auth.js is
+mounted at `/auth/*`, and Google returns to `/auth/callback/google`.
 
 ### Production
 
@@ -120,6 +122,11 @@ npm start       # NODE_ENV=production — Express serves dist/ + API
 
 - REST routes are mounted under `/api` (see `server/routers/`).
 - Health check: `GET /api/health` → `{ "status": "ok" }`.
+- Auth.js routes are mounted under `/auth`; `GET /auth/session` returns the
+  current browser session.
+- Protected API routes use `loadAuthSession` followed by `requireAuth`.
+- The React dashboard at `/` is public. The `/profile` route and future
+  authenticated features use the reusable `RequireAuth` component.
 
 ## Adding New Files
 

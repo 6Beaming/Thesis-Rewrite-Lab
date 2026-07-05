@@ -3,5 +3,11 @@ AGENTS.md
 
 node_modules/
 dist/
-.env
+
+# Local authentication databases
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+!.env.example
 .DS_Store
