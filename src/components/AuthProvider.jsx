@@ -1,3 +1,4 @@
+// AuthProvider is imported once by main.jsx to create the shared authentication context.
 // When the app starts, it:
 // 1. Calls getSession() to check whether the browser has a valid login cookie.
 // 2. Stores the returned session in React state.
