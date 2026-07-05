@@ -2,8 +2,8 @@ const fs = require('fs');
 
 const svg = fs.readFileSync('src/assets/test_left_wing_anim.svg', 'utf8');
 
-const dx = 364.529;
-const dy = 188.000;
+const dx = 276.438;
+const dy = 163.478;
 
 function shiftPath(d) {
   return d.replace(/([MCLZz])([^MCLZz]*)/g, (match, cmd, args) => {
@@ -67,7 +67,9 @@ const interWand = {};
 const afterWand = {};
 
 wandKeys.forEach(k => {
-  interWand[k] = interPathsRaw[k + '_2'];
+  // If the wand doesn't exist in a state, we use the intermediate one for the before state.
+  // Wait, in the SVG, `before` doesn't have the wand, so it uses `interWand`.
+  interWand[k] = interPathsRaw[k + '_2'] || interPathsRaw[k];
   afterWand[k] = afterPathsRaw[k];
 });
 
