@@ -1,0 +1,41 @@
+/* Desktop-first responsive rules — mobile breakpoint: max-width 576px */
+
+@media (max-width: 576px) {
+  html,
+  body {
+    overflow-x: visible;
+    overflow-y: hidden;
+  }
+
+  .workspace-desktop {
+    display: none !important;
+  }
+
+  .workspace-mobile {
+    display: block !important;
+    overflow: visible;
+  }
+
+  .blackboard {
+    display: none !important;
+  }
+}
+
+@media (min-width: 577px) {
+  html,
+  body {
+    overflow: hidden;
+  }
+
+  .workspace-desktop {
+    display: block !important;
+  }
+
+  .workspace-mobile {
+    display: none !important;
+  }
+
+  .blackboard {
+    display: block;
+  }
+}

@@ -1,0 +1,181 @@
+.owl-container {
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--owl-aspect-ratio);
+  overflow: hidden;
+}
+
+.owl-container__indicators {
+  position: absolute;
+  top: var(--owl-layer-indicator-top);
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--owl-indicator-width);
+  height: var(--owl-layer-indicator-height);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.owl-container__indicators .indicator {
+  position: relative;
+  left: auto;
+  top: auto;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  opacity: 0;
+  transform: scale(0.96);
+  transition: opacity 180ms ease, transform 180ms ease;
+  filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.22));
+  pointer-events: none;
+}
+
+.owl-container__indicators .indicator.is-visible {
+  opacity: 1;
+  transform: scale(1);
+  animation: indicator-bob 1s ease-in-out infinite;
+}
+
+.owl-container__indicators .indicator.answer.is-visible {
+  animation: indicator-bob 0.9s ease-in-out infinite;
+}
+
+.owl-container__indicators .indicator.error.is-visible {
+  animation: indicator-bob 0.54s ease-in-out infinite;
+}
+
+.owl-container__owl {
+  position: absolute;
+  top: var(--owl-layer-owl-top);
+  left: 0;
+  width: 100%;
+  height: var(--owl-layer-owl-height);
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.owl-container__bottom {
+  position: absolute;
+  top: var(--owl-layer-bottom-top);
+  left: 0;
+  width: 100%;
+  height: var(--owl-layer-bottom-height);
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.owl-container__bottom img,
+.owl-container__bottom svg {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: bottom center;
+}
+
+.owl-container .stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: unset;
+}
+
+.owl-container .owl-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.owl-container .owl-wrap > svg,
+.owl-container #owl-svg {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.22));
+}
+
+.owl-container .particle-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 10;
+}
+
+@keyframes indicator-bob {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 -7px;
+  }
+}
+
+#head_group,
+#left_wing_group,
+#right_wing_group,
+#left_foot,
+#right_foot,
+#right_eye_black,
+#right_eye_white,
+#left_eye_black,
+#left_eye_white,
+#beak,
+#nose,
+#eyeglass_frame,
+#right_eyeglass,
+#left_eyeglass,
+#middle_temple,
+#left_temple,
+#right_temple,
+#right_eyebrow,
+#left_eyebrow,
+#right_eye_orbit,
+#left_eye_orbit,
+#face,
+#head {
+  transform-box: fill-box;
+}
+
+#head_group {
+  transform-origin: 50% 68%;
+}
+
+#right_wing_group {
+  transform-origin: 62% 20%;
+}
+
+#left_wing_group {
+  transform-origin: 38% 22%;
+}
+
+#left_foot,
+#right_foot {
+  transform-origin: center;
+}
+
+#body_group {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+}
+
+/* Desktop: pull owl down onto books (reference uses overlapped stack, owl SVG has bottom padding) */
+.owl-container--desktop .owl-container__owl {
+  transform: translateY(3%);
+}
+
+.owl-container--desktop .owl-container__bottom {
+  top: calc(var(--owl-layer-bottom-top) - 5%);
+  height: calc(var(--owl-layer-bottom-height) + 5%);
+}

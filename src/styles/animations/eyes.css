@@ -1,0 +1,13 @@
+#right_eye_black,
+#right_eye_white,
+#left_eye_black,
+#left_eye_white {
+  transform-origin: center;
+}
+
+.eye-closed #right_eye_black,
+.eye-closed #right_eye_white,
+.eye-closed #left_eye_black,
+.eye-closed #left_eye_white {
+  transform: scaleY(0.05);
+}

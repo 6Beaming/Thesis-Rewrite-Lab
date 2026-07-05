@@ -1,0 +1,214 @@
+.mode-head-shake-left #head_group,
+.mode-head-shake-left:not(.left-wing-wand-ready) #left_wing_group,
+.mode-head-shake-left #right_wing_group {
+  animation: tilt-anim-left 3s ease-in-out infinite;
+}
+
+.mode-head-shake-right #head_group,
+.mode-head-shake-right:not(.left-wing-wand-ready) #left_wing_group,
+.mode-head-shake-right #right_wing_group {
+  animation: tilt-anim-right 3s ease-in-out infinite;
+}
+
+@keyframes tilt-anim-left {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  10%,
+  80% {
+    transform: rotate(-10deg);
+  }
+  90% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes tilt-anim-right {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  10%,
+  80% {
+    transform: rotate(10deg);
+  }
+  90% {
+    transform: rotate(0deg);
+  }
+}
+
+#beak,
+#nose {
+  --shake-px: 15px;
+}
+
+#eyeglass_frame,
+#right_eyeglass,
+#left_eyeglass,
+#middle_temple,
+#left_temple,
+#right_temple,
+#right_eyebrow,
+#left_eyebrow,
+#head,
+#face {
+  --shake-px: 10px;
+}
+
+#right_eye_orbit,
+#left_eye_orbit {
+  --shake-px: 6px;
+}
+
+.mode-head-shake-left #beak,
+.mode-head-shake-left #nose,
+.mode-head-shake-left #eyeglass_frame,
+.mode-head-shake-left #right_eyeglass,
+.mode-head-shake-left #left_eyeglass,
+.mode-head-shake-left #middle_temple,
+.mode-head-shake-left #left_temple,
+.mode-head-shake-left #right_temple,
+.mode-head-shake-left #right_eyebrow,
+.mode-head-shake-left #left_eyebrow,
+.mode-head-shake-left #right_eye_orbit,
+.mode-head-shake-left #left_eye_orbit,
+.mode-head-shake-left #face,
+.mode-head-shake-left #head {
+  animation: shake-anim-left 3s ease-in-out infinite;
+}
+
+.mode-head-shake-right #beak,
+.mode-head-shake-right #nose,
+.mode-head-shake-right #eyeglass_frame,
+.mode-head-shake-right #right_eyeglass,
+.mode-head-shake-right #left_eyeglass,
+.mode-head-shake-right #middle_temple,
+.mode-head-shake-right #left_temple,
+.mode-head-shake-right #right_temple,
+.mode-head-shake-right #right_eyebrow,
+.mode-head-shake-right #left_eyebrow,
+.mode-head-shake-right #right_eye_orbit,
+.mode-head-shake-right #left_eye_orbit,
+.mode-head-shake-right #face,
+.mode-head-shake-right #head {
+  animation: shake-anim-right 3s ease-in-out infinite;
+}
+
+@keyframes shake-anim-left {
+  0%,
+  10%,
+  83%,
+  100% {
+    transform: translateX(0);
+  }
+  13.5%,
+  20.5%,
+  27.5%,
+  34.5%,
+  41.5%,
+  48.5%,
+  55.5%,
+  62.5%,
+  69.5%,
+  76.5% {
+    transform: translateX(calc(var(--shake-px) * -1));
+  }
+  17%,
+  24%,
+  31%,
+  38%,
+  45%,
+  52%,
+  59%,
+  66%,
+  73%,
+  80% {
+    transform: translateX(var(--shake-px));
+  }
+}
+
+@keyframes shake-anim-right {
+  0%,
+  10%,
+  83%,
+  100% {
+    transform: translateX(0);
+  }
+  13.5%,
+  20.5%,
+  27.5%,
+  34.5%,
+  41.5%,
+  48.5%,
+  55.5%,
+  62.5%,
+  69.5%,
+  76.5% {
+    transform: translateX(var(--shake-px));
+  }
+  17%,
+  24%,
+  31%,
+  38%,
+  45%,
+  52%,
+  59%,
+  66%,
+  73%,
+  80% {
+    transform: translateX(calc(var(--shake-px) * -1));
+  }
+}
+
+.mode-stabilized #beak,
+.mode-stabilized #nose,
+.mode-stabilized #head,
+.mode-stabilized #face,
+.mode-stabilized #eyeglass_frame,
+.mode-stabilized #right_eyeglass,
+.mode-stabilized #left_eyeglass,
+.mode-stabilized #middle_temple,
+.mode-stabilized #left_temple,
+.mode-stabilized #right_temple,
+.mode-stabilized #right_eyebrow,
+.mode-stabilized #left_eyebrow,
+.mode-stabilized #right_eye_orbit,
+.mode-stabilized #left_eye_orbit {
+  animation: stabilized-bg 3.8s ease-in-out infinite;
+}
+
+@keyframes stabilized-bg {
+  0%,
+  100% {
+    transform: translateX(-8px);
+  }
+  50% {
+    transform: translateX(8px);
+  }
+}
+
+.note {
+  position: absolute;
+  left: 50%;
+  top: 24%;
+  color: #f5e7a1;
+  font-size: clamp(18px, 4vw, 34px);
+  font-weight: 700;
+  opacity: 0;
+  animation: note-rise 2.4s ease-out forwards;
+}
+
+@keyframes note-rise {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 0) scale(0.75) rotate(-4deg);
+  }
+  20% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--note-drift, 0px)), -96px) scale(1.18) rotate(8deg);
+  }
+}

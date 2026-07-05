@@ -1,0 +1,76 @@
+.workspace {
+  position: relative;
+  min-height: 100dvh;
+  width: 100%;
+  background: var(--workspace-bg);
+}
+
+.workspace-desktop {
+  display: block;
+  min-height: 100dvh;
+  overflow: hidden;
+}
+
+.workspace-mobile {
+  display: none;
+  min-height: 100dvh;
+  overflow: visible;
+}
+
+.blackboard {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100dvh;
+  width: min(var(--blackboard-max-width, 33dvw), calc(100dvh * var(--blackboard-natural-width, 768) / var(--blackboard-natural-height, 1376)));
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.blackboard__image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  object-position: right center;
+}
+
+.blackboard__stage {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.blackboard__owl-slot {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 50%;
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.owl-floating-window {
+  position: fixed;
+  z-index: 50;
+  touch-action: none;
+  user-select: none;
+  width: var(--owl-container-width);
+  height: var(--owl-container-height);
+  transition: left 180ms ease-out, top 180ms ease-out;
+  will-change: left, top;
+  overflow: visible;
+}
+
+.owl-floating-window.is-dragging {
+  transition: none;
+}
+
+.owl-floating-window .owl-container {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: unset;
+}
