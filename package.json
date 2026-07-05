@@ -16,7 +16,7 @@
     "dev:server": "nodemon app.js",
     "dev:client": "vite",
     "build": "vite build",
-    "check:server": "node --check app.js && node --check scripts/migrate-auth.js && node --check server/auth.js && node --check server/models/auth-adapter.js && node --check server/middlewares/auth.js && node --check server/routers/index.js",
+    "check:server": "node --check app.js && node --check scripts/migrate-auth.js && node --check server/auth.js && node --check server/models/auth-adapter.js && node --check server/middlewares/requireAuth.js && node --check server/routers/index.js",
     "test": "node --test",
     "start": "node app.js",
     "preview": "vite preview"

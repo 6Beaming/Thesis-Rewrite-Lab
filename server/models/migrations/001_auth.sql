@@ -5,7 +5,7 @@ auth_sessions
 Foreign keys and 
 indexes:
 auth_accounts.user_id index: quickly finds accounts belonging to a user.
-auth_sessions.user_id index: quickly finds a user’s sessions.
+auth_sessions.user_id index: quickly finds sessions belonging to a user.
 auth_sessions.expires index: quickly finds expired sessions.
 */
 
