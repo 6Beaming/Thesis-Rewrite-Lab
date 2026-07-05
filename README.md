@@ -30,29 +30,6 @@ Google access, refresh, or ID tokens.
 * **Assignee:** Eric
 * **OAuth Provider:** Google OAuth 2.0 (implemented via Auth.js for Express).
 
-#### Local authentication setup
-
-1. In Google Cloud, create an OAuth client of type **Web application**.
-2. Add `http://localhost:5173` as an authorized JavaScript origin.
-3. Add `http://localhost:5173/auth/callback/google` as an authorized redirect URI.
-4. The team shares local-development settings through the private repository's
-   `.env` file. It contains `GOOGLE_OAUTH_CLIENT_ID` and
-   `GOOGLE_OAUTH_CLIENT_SECRET`, so repository access must remain restricted and
-   the Google secret must be rotated if access or visibility changes.
-5. Run `npm run dev` and open `http://localhost:5173`.
-
-Auth state uses Auth.js PKCE, state, nonce, and CSRF checks. Application sessions
-are HTTP-only cookies backed by SQLite; session tokens are SHA-256 hashed before
-storage and expire after seven days.
-
-For local development, the server automatically creates the gitignored
-`auth.sqlite` database in the project root. The shared `.env` contains the
-team's fixed `AUTH_SECRET`, `GOOGLE_OAUTH_CLIENT_ID`, and
-`GOOGLE_OAUTH_CLIENT_SECRET`, keeping authentication configuration consistent
-across team checkouts. The DigitalOcean deployment must provide these variables,
-an HTTPS `APP_ORIGIN`, and persistent storage for `AUTH_DATABASE_PATH`. Keep the
-same `AUTH_SECRET` across deployments so existing sessions remain valid.
-
 ### Look and Feel
 Refine the UI/UX for a professional and intuitive user experience. Serves as the mockup step.
 * **Assignee:** Erfang

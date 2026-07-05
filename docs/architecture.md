@@ -8,6 +8,7 @@ This document describes the directory layout, technology stack, and conventions 
 | :--- | :--- |
 | Frontend | React (Vite), Tailwind CSS |
 | Backend | Node.js, Express.js |
+| Database | PostgreSQL 17 locally; managed PostgreSQL in production |
 | Real-time | Socket.io (planned; wiring lives under `server/realtime/`) |
 | Entry point | `app.js` at the repository root |
 
@@ -19,9 +20,9 @@ project-thesis-rewriter/
 ├── index.html              # Vite HTML shell for the React frontend
 ├── vite.config.js          # Vite + React + Tailwind build/dev configuration
 ├── package.json            # Dependencies and npm scripts
+├── compose.yaml            # Local PostgreSQL service
 ├── README.md               # Project proposal and course handout summary
 ├── AGENTS.md               # Local agent rules (gitignored; not committed)
-├── auth.sqlite             # Generated local auth database (gitignored)
 ├── .gitignore
 │
 ├── docs/                   # All documentation (human-readable)
@@ -36,10 +37,10 @@ project-thesis-rewriter/
 │   └── …
 │
 ├── scripts/                # Data-processing and utility scripts
-│   └── …                   # (none yet)
+│   └── migrate-auth.js     # Applies the PostgreSQL auth schema
 │
 ├── server/                 # Backend
-│   ├── models/             # Database models and data access
+│   ├── models/             # PostgreSQL adapters and migrations
 │   ├── routers/            # HTTP route handlers
 │   ├── middlewares/        # Express middleware (auth, parsing, validation, …)
 │   └── realtime/           # WebSocket / Socket.io handlers
@@ -78,7 +79,7 @@ Express backend code only.
 
 | Sub-directory | Purpose |
 | :--- | :--- |
-| `models/` | Database schemas, ORM models, query helpers |
+| `models/` | PostgreSQL schemas, migrations, and data-access adapters |
 | `routers/` | REST (or similar) route definitions and controllers |
 | `middlewares/` | Cross-cutting server concerns (CORS extensions, auth, error handling, …) |
 | `realtime/` | Socket.io namespaces, event handlers, pub/sub integration |
@@ -100,10 +101,13 @@ React frontend application.
 ### Development
 
 ```bash
+npm run db:up
+npm run db:migrate
 npm run dev
 ```
 
-Runs two processes in parallel:
+The first two commands start local PostgreSQL and create the authentication
+schema. `npm run dev` then runs two processes in parallel:
 
 1. **Express** (`app.js`) on port **3001** — API at `/api/*`
 2. **Vite** dev server on port **5173** — React UI with hot reload
@@ -126,7 +130,7 @@ npm start       # NODE_ENV=production — Express serves dist/ + API
   current browser session.
 - Protected API routes use `loadAuthSession` followed by `requireAuth`.
 - The React dashboard at `/` is public. The `/profile` route and future
-  authenticated features use the reusable `RequireAuth` component.
+  authenticated features use the reusable `RequireSignIn` component.
 
 ## Adding New Files
 
