@@ -1,7 +1,17 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
+import { ExpressAuth } from '@auth/express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  appOrigin,
+  authConfig,
+  closeAuthDatabase,
+} from './server/auth.js';
+import { requireTrustedAuthHost } from './server/middlewares/requireAuth.js';
 import apiRouter from './server/routers/index.js';
 import { errorHandler, notFound } from './server/middlewares/errors.js';
 
@@ -11,12 +21,64 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// Hide the Express name and support the proxy server used after deployment.
+app.disable('x-powered-by');
+app.set(
+  'trust proxy',
+  Number.isNaN(Number(process.env.TRUST_PROXY_HOPS))
+    ? 1
+    : Number(process.env.TRUST_PROXY_HOPS || 1),
+);
+
+// Add browser security settings, allow requests only from this frontend, and
+// reject JSON request bodies that are too large.
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        'img-src': [
+          "'self'",
+          'data:',
+          'https://lh3.googleusercontent.com',
+        ],
+      },
+    },
+    referrerPolicy: { policy: 'no-referrer' },
+  }),
+);
+app.use(
+  cors({
+    origin: appOrigin,
+    credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type'],
+  }),
+);
 app.use(express.json({ limit: '15mb' }));
+
+// Prevent one client from sending too many sign-in requests.
+const authRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+});
+
+// Send every /auth/... request to Auth.js.
+app.use(
+  /^\/auth\/(.*)$/,
+  requireTrustedAuthHost,
+  authRateLimiter,
+  ExpressAuth(authConfig),
+);
+
+// The application's own API endpoints start with /api.
 app.use('/api', apiRouter);
 app.use('/api', notFound);
 app.use(errorHandler);
 
+// In production, serve the built React app. Returning index.html for browser
+// routes lets React Router open pages such as /profile.
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, 'dist')));
   app.get(/^(?!\/api).*/, (_req, res) => {
@@ -24,6 +86,27 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-app.listen(PORT, () => {
+// Log server errors without sending private error details to the browser.
+app.use((error, _req, res, next) => {
+  if (res.headersSent) return next(error);
+
+  console.error(
+    'Request failed:',
+    error instanceof Error ? error.name : 'UnknownError',
+  );
+  return res.status(500).json({ error: 'Internal server error' });
+});
+
+const server = app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
+
+// Close the server and database connection before the program stops.
+async function shutDown() {
+  server.close(async () => {
+    await closeAuthDatabase();
+  });
+}
+
+process.once('SIGINT', shutDown);
+process.once('SIGTERM', shutDown);

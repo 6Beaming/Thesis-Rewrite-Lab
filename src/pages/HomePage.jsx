@@ -3,6 +3,7 @@ import DocumentsSection from '../components/DocumentsSection.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import HomeShell from '../components/HomeShell.jsx';
 import ProgressBanner from '../components/ProgressBanner.jsx';
+import { useAuth } from '../components/AuthProvider.jsx';
 import { createDocument, listDocuments, moveToTrash, uploadDocument } from '../services/documentsApi.js';
 import { getMe, uploadProfilePicture } from '../services/usersApi.js';
 import HomepageAccount from './homepageAccount.jsx';
@@ -57,6 +58,18 @@ const DEMO_DOCUMENTS = [
   },
 ];
 const DEMO_STORE_KEY = 'project-thesis-rewriter:demo-store:v1';
+
+function homeUserFromAuth(authUser, fallback = DEMO_USER) {
+  if (!authUser) return fallback;
+  const email = authUser.email || fallback.email;
+  return {
+    ...fallback,
+    display_name: authUser.name || email?.split('@')[0] || fallback.display_name,
+    email,
+    image: authUser.image || fallback.image,
+    authUserId: authUser.id,
+  };
+}
 
 function readDemoStore() {
   if (typeof window === 'undefined') return null;
@@ -207,8 +220,9 @@ function createLocalDemoDocument({ title = 'Untitled document', text = 'Start wr
 }
 
 export default function HomePage({ onOpenWorkspace }) {
+  const { user: authUser, signOut } = useAuth();
   const storedDemo = useMemo(() => readDemoStore(), []);
-  const [user, setUser] = useState(DEMO_USER);
+  const [user, setUser] = useState(() => homeUserFromAuth(authUser));
   const [demoDocuments, setDemoDocuments] = useState(storedDemo?.documents ?? DEMO_DOCUMENTS);
   const [documents, setDocuments] = useState(storedDemo?.documents ?? DEMO_DOCUMENTS);
   const [query, setQuery] = useState('');
@@ -231,10 +245,23 @@ export default function HomePage({ onOpenWorkspace }) {
   }, [demoDocuments, demoTrashDocuments, hiddenDemoDocumentIds]);
 
   useEffect(() => {
+    if (!authUser) return;
+    setUser((current) => homeUserFromAuth(authUser, current));
+  }, [authUser]);
+
+  useEffect(() => {
     let alive = true;
     getMe()
       .then((profile) => {
-        if (alive) setUser(profile);
+        if (alive) {
+          setUser((current) => ({
+            ...current,
+            ...profile,
+            email: authUser?.email || profile.email || current.email,
+            display_name: authUser?.name || profile.display_name || current.display_name,
+            image: authUser?.image || profile.image || current.image,
+          }));
+        }
       })
       .catch(() => {
         if (alive) setNotice('Local database is not connected yet; showing demo homepage data.');
@@ -243,7 +270,7 @@ export default function HomePage({ onOpenWorkspace }) {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [authUser]);
 
   useEffect(() => {
     let alive = true;
@@ -492,7 +519,7 @@ export default function HomePage({ onOpenWorkspace }) {
         <HomepageAccount
           user={user}
           onClose={() => setAccountOpen(false)}
-          onLogout={() => window.location.reload()}
+          onLogout={signOut}
           onUploadProfile={handleProfileUpload}
         />
       ) : null}

@@ -23,8 +23,9 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
       >
         <div className="account-profile">
           <img
-            src={localPreview || (user?.hasProfilePicture ? '/api/users/me/profile-picture' : owlUrl)}
+            src={localPreview || user?.image || (user?.hasProfilePicture ? '/api/users/me/profile-picture' : owlUrl)}
             alt=""
+            referrerPolicy="no-referrer"
           />
           <button type="button" onClick={() => inputRef.current?.click()}>Upload Avatar</button>
           <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleFileChange} />

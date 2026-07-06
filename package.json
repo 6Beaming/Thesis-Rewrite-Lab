@@ -5,11 +5,19 @@
   "type": "module",
   "description": "Sentence-level academic writing platform for thesis rewriting",
   "main": "app.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
+    "db:up": "docker compose up -d postgres",
+    "db:migrate": "node scripts/migrate-auth.js",
+    "db:down": "docker compose down",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "nodemon app.js",
     "dev:client": "vite",
     "build": "vite build",
+    "check:server": "node --check app.js && node --check scripts/migrate-auth.js && node --check server/auth.js && node --check server/models/auth-adapter.js && node --check server/middlewares/requireAuth.js && node --check server/routers/index.js",
+    "test": "node --test server/models/auth-adapter.test.js",
     "start": "node app.js",
     "preview": "vite preview",
     "db:seed": "node scripts/db/seed.cjs",
@@ -23,6 +31,7 @@
   },
   "license": "ISC",
   "dependencies": {
+    "@auth/express": "^0.12.2",
     "@tiptap/extension-color": "^3.27.1",
     "@tiptap/extension-font-family": "^3.27.1",
     "@tiptap/extension-highlight": "^3.27.1",
@@ -32,13 +41,17 @@
     "@tiptap/react": "^3.27.1",
     "@tiptap/starter-kit": "^3.27.1",
     "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
     "docx": "^9.7.1",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
     "mammoth": "^1.12.0",
     "multer": "^2.2.0",
     "pg": "^8.22.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "react-router": "^8.1.0",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
@@ -46,6 +59,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "concurrently": "^10.0.3",
     "nodemon": "^3.1.14",
+    "pg-mem": "^3.0.14",
     "tailwindcss": "^4.3.2",
     "vite": "^8.1.3"
   }

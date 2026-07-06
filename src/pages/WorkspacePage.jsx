@@ -305,7 +305,7 @@ function hydrateWorkspaceDocument(document) {
 }
 
 export default function WorkspacePage() {
-  const [view, setView] = useState('auth');
+  const [view, setView] = useState('home');
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [workspaceNotice, setWorkspaceNotice] = useState('');
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
