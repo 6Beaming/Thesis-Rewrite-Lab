@@ -1,6 +1,6 @@
 import owlUrl from '../assets/owl.svg';
 
-export default function OwlLogoBadge({ email = 'test@example', avatarSrc = '', onClick }) {
+export default function OwlLogoBadge({ email = 'Your account', avatarSrc = '', onClick }) {
   const hasAvatar = Boolean(avatarSrc);
 
   return (

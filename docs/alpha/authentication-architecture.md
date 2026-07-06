@@ -25,6 +25,7 @@ Current runtime behavior:
 6. Google returns to `/auth/callback/google`.
 7. Auth.js validates the callback, persists/loads the user through PostgreSQL, and creates a database-backed session.
 8. The browser returns to the requested application URL with an HTTP-only session cookie.
+9. On the first authenticated product API request, the server creates or updates the corresponding row in the app's `users` table using the Google session email and name.
 
 ## Frontend Files
 
@@ -45,6 +46,7 @@ Current runtime behavior:
 | `server/middlewares/requireAuth.js` | Protects authenticated API endpoints |
 | `server/models/auth-adapter.js` | PostgreSQL adapter for Auth.js |
 | `server/models/migrations/001_auth.sql` | Auth schema |
+| `scripts/db/schema.sql` | Product schema used by session-protected documents/users/trash routes |
 
 ## Requirements To Work End-To-End
 
@@ -63,4 +65,4 @@ Current runtime behavior:
 - Auth is Google-only; there is no password login or signup flow.
 - The frontend auth page styling is custom, but the identity/session source of truth is Auth.js plus PostgreSQL.
 - If PostgreSQL or OAuth config is missing, the auth page can render but sign-in cannot complete.
-
+- Product APIs are now session-aware. Anonymous requests to `/api/users/*`, `/api/documents/*`, `/api/trash/*`, and `/api/me` return `401 Authentication required`.

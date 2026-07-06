@@ -116,6 +116,149 @@ function isEditableDemoBlock(node) {
   return node?.type === 'paragraph' || node?.type === 'heading';
 }
 
+function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
+  const text = block.text ?? block.text_content ?? '';
+  const status = DEMO_BLOCK_STATUSES.has(block.status ?? block.attrs?.status)
+    ? (block.status ?? block.attrs?.status)
+    : 'unprocessed';
+  const id = block.id ?? block.blockId ?? block.attrs?.blockId ?? `${documentId}-block-${index + 1}`;
+  const attrs = demoAttrs(
+    id,
+    status,
+    text.length,
+    block.attrs ?? block.tiptap_node?.attrs ?? {},
+    styleSettings
+  );
+
+  return {
+    id,
+    blockId: id,
+    document_id: block.document_id ?? documentId,
+    block_index: index,
+    order: typeof block.order === 'number' ? block.order : index,
+    node_type: block.type ?? block.node_type ?? block.tiptap_node?.type ?? 'paragraph',
+    text,
+    text_content: text,
+    status,
+    isEmpty: typeof block.isEmpty === 'boolean' ? block.isEmpty : !text.trim(),
+    length: text.length,
+    char_length: text.length,
+    attrs,
+    tiptap_node: block.tiptap_node ? {
+      ...block.tiptap_node,
+      attrs,
+    } : null,
+    contentIndex: block.contentIndex ?? null,
+  };
+}
+
+function extractRuntimeBlocksFromContent(document, contentJson, styleSettings = {}) {
+  const entries = [];
+  let contentIndex = 0;
+
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (isEditableDemoBlock(node)) {
+      const text = textFromDemoNode(node);
+      const id = node.attrs?.blockId ?? `${document.id}-block-${entries.length + 1}`;
+      const status = DEMO_BLOCK_STATUSES.has(node.attrs?.status) ? node.attrs.status : 'unprocessed';
+      const attrs = demoAttrs(id, status, text.length, node.attrs ?? {}, styleSettings);
+      entries.push({
+        id,
+        blockId: id,
+        document_id: document.id,
+        block_index: entries.length,
+        order: entries.length,
+        node_type: node.type,
+        text,
+        text_content: text,
+        status,
+        isEmpty: !text.trim(),
+        length: text.length,
+        char_length: text.length,
+        attrs,
+        tiptap_node: {
+          ...node,
+          attrs,
+        },
+        contentIndex,
+      });
+    }
+
+    if (Array.isArray(node.content)) {
+      node.content.forEach((child) => {
+        contentIndex += 1;
+        walk(child);
+      });
+    }
+  }
+
+  walk(contentJson);
+  return entries;
+}
+
+function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = {}, preferredProcessingBlockId = null) {
+  const documentId = document?.id || 'workspace-document';
+  const normalizedBlocks = (blocks ?? []).map((block, index) => normalizeRuntimeBlock(documentId, block, index, styleSettings));
+  const eligibleBlocks = normalizedBlocks.filter((block) => !block.isEmpty);
+  let processingBlockId = preferredProcessingBlockId && eligibleBlocks.some((block) => block.id === preferredProcessingBlockId)
+    ? preferredProcessingBlockId
+    : eligibleBlocks.find((block) => block.status === 'processing')?.id ?? null;
+
+  if (!processingBlockId) {
+    processingBlockId = eligibleBlocks.find((block) => block.status === 'unprocessed')?.id ?? null;
+  }
+
+  const nextBlocks = normalizedBlocks.map((block, index) => {
+    let status = block.status;
+    if (block.isEmpty && status === 'processing') {
+      status = 'unprocessed';
+    }
+    if (!block.isEmpty) {
+      if (processingBlockId && block.id === processingBlockId) {
+        status = 'processing';
+      } else if (status === 'processing') {
+        status = 'unprocessed';
+      }
+    }
+
+    const attrs = demoAttrs(block.id, status, block.text.length, block.attrs, styleSettings);
+    return {
+      ...block,
+      block_index: index,
+      order: typeof block.order === 'number' ? block.order : index,
+      status,
+      attrs,
+      tiptap_node: block.tiptap_node ? {
+        ...block.tiptap_node,
+        attrs,
+      } : block.tiptap_node,
+    };
+  });
+
+  return {
+    contentJson,
+    blocks: nextBlocks,
+    currentProcessingBlockId: processingBlockId ?? null,
+    revision: Date.now(),
+  };
+}
+
+function draftFromDocument(document, styleSettings = {}) {
+  const contentJson = document?.content_json ?? fallbackWorkspaceContent(document, styleSettings);
+  const sourceBlocks = Array.isArray(document?.blocks) && document.blocks.length
+    ? document.blocks
+    : extractRuntimeBlocksFromContent(document ?? { id: 'workspace-document' }, contentJson, styleSettings);
+
+  return normalizeWorkspaceDraft(
+    document,
+    contentJson,
+    sourceBlocks,
+    styleSettings,
+    document?.current_processing_block_id ?? sourceBlocks.find((block) => block.status === 'processing')?.id ?? null
+  );
+}
+
 function demoAttrs(blockId, status, length, existingAttrs = {}, styleSettings = {}) {
   return {
     lineHeight: styleSettings.spacing || styleSettings.lineHeight || existingAttrs.lineHeight || '2.0',
@@ -130,77 +273,25 @@ function demoAttrs(blockId, status, length, existingAttrs = {}, styleSettings = 
   };
 }
 
-function demoDocumentFromContent(document, contentJson, styleName, styleSettings) {
-  const sourceContent = Array.isArray(contentJson?.content) ? contentJson.content : [];
-  const entries = [];
-  const entryByContentIndex = new Map();
-
-  sourceContent.forEach((node, contentIndex) => {
-    if (!isEditableDemoBlock(node)) return;
-    const text = textFromDemoNode(node).trim();
-    if (!text) return;
-
-    const existingAttrs = node.attrs ?? {};
-    const blockId = existingAttrs.blockId || `${document.id}-block-${entries.length + 1}`;
-    const status = DEMO_BLOCK_STATUSES.has(existingAttrs.status) ? existingAttrs.status : 'unprocessed';
-    const attrs = demoAttrs(blockId, status, text.length, existingAttrs, styleSettings);
-    const entry = {
-      id: blockId,
-      document_id: document.id,
-      block_index: entries.length,
-      text_content: text,
-      status,
-      char_length: text.length,
-      attrs,
-      tiptap_node: {
-        ...node,
-        attrs,
-      },
-      contentIndex,
-    };
-    entries.push(entry);
-    entryByContentIndex.set(contentIndex, entry);
-  });
-
-  let hasProcessing = false;
-  entries.forEach((entry) => {
-    if (entry.status !== 'processing') return;
-    if (!hasProcessing) {
-      hasProcessing = true;
-      return;
-    }
-    entry.status = 'unprocessed';
-    entry.attrs.status = 'unprocessed';
-    entry.tiptap_node.attrs.status = 'unprocessed';
-  });
-
-  if (!hasProcessing) {
-    const firstUnprocessed = entries.find((entry) => entry.status === 'unprocessed');
-    if (firstUnprocessed) {
-      firstUnprocessed.status = 'processing';
-      firstUnprocessed.attrs.status = 'processing';
-      firstUnprocessed.tiptap_node.attrs.status = 'processing';
-    }
-  }
-
-  const normalizedContent = {
-    type: contentJson?.type ?? 'doc',
-    content: sourceContent.map((node, index) => entryByContentIndex.get(index)?.tiptap_node ?? node),
-  };
-  const totalChars = entries.reduce((sum, entry) => sum + entry.char_length, 0);
-  const completedChars = entries
-    .filter((entry) => entry.status === 'processed' || entry.status === 'skipped')
-    .reduce((sum, entry) => sum + entry.char_length, 0);
+function documentFromWorkspaceDraft(document, draft, styleName, styleSettings) {
+  const visibleBlocks = (draft?.blocks ?? []).filter((block) => !block.isEmpty);
+  const totalChars = visibleBlocks.reduce((sum, block) => sum + block.char_length, 0);
+  const completedChars = visibleBlocks
+    .filter((block) => block.status === 'processed' || block.status === 'skipped')
+    .reduce((sum, block) => sum + block.char_length, 0);
 
   return {
     ...document,
     academic_style: styleName,
     style_settings: styleSettings,
-    snippet: entries[0]?.text_content ?? document.snippet,
-    secondarySnippet: entries[1]?.text_content ?? document.secondarySnippet,
-    content_json: normalizedContent,
-    blocks: entries,
-    current_processing_block_id: entries.find((entry) => entry.status === 'processing')?.id ?? null,
+    snippet: visibleBlocks[0]?.text_content ?? document.snippet,
+    secondarySnippet: visibleBlocks[1]?.text_content ?? document.secondarySnippet,
+    content_json: draft?.contentJson ?? document.content_json,
+    blocks: visibleBlocks.map((block, index) => ({
+      ...block,
+      block_index: index,
+    })),
+    current_processing_block_id: draft?.currentProcessingBlockId ?? null,
     completed_chars: completedChars,
     total_chars: totalChars,
     completed_rate: totalChars > 0 ? completedChars / totalChars : 0,
@@ -208,12 +299,31 @@ function demoDocumentFromContent(document, contentJson, styleName, styleSettings
   };
 }
 
-function normalizeWorkspaceContent(document, contentJson, styleName, styleSettings) {
-  if (!document || !contentJson) return { document, contentJson };
-  const normalizedDocument = demoDocumentFromContent(document, contentJson, styleName, styleSettings);
+function demoDocumentFromContent(document, contentJson, styleName, styleSettings, blockSnapshots = null, preferredProcessingBlockId = null) {
+  const draft = normalizeWorkspaceDraft(
+    document,
+    contentJson,
+    blockSnapshots ?? extractRuntimeBlocksFromContent(document, contentJson, styleSettings),
+    styleSettings,
+    preferredProcessingBlockId
+  );
+  return documentFromWorkspaceDraft(document, draft, styleName, styleSettings);
+}
+
+function normalizeWorkspaceContent(document, contentJson, styleName, styleSettings, blockSnapshots = null, preferredProcessingBlockId = null) {
+  if (!document || !contentJson) return { document, contentJson, draft: null };
+  const draft = normalizeWorkspaceDraft(
+    document,
+    contentJson,
+    blockSnapshots ?? extractRuntimeBlocksFromContent(document, contentJson, styleSettings),
+    styleSettings,
+    preferredProcessingBlockId
+  );
+  const normalizedDocument = documentFromWorkspaceDraft(document, draft, styleName, styleSettings);
   return {
     document: normalizedDocument,
     contentJson: normalizedDocument.content_json,
+    draft,
   };
 }
 
@@ -336,6 +446,7 @@ export default function WorkspacePage() {
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [showUnsavedBackPrompt, setShowUnsavedBackPrompt] = useState(false);
   const [editorReloadKey, setEditorReloadKey] = useState(0);
+  const [workspaceDraft, setWorkspaceDraft] = useState(null);
   const [workspaceSidebarOpen, setWorkspaceSidebarOpen] = useState(true);
   const [workspaceMode, setWorkspaceMode] = useState('analyzing');
   const [workspaceOwlLoading, setWorkspaceOwlLoading] = useState(false);
@@ -432,13 +543,18 @@ export default function WorkspacePage() {
     getDocument(selectedDocument.id)
       .then(({ document }) => {
         if (!alive) return;
-        setSelectedDocument(document);
         const nextStyleName = document.academic_style || 'APA';
-        setStyleName(nextStyleName);
-        setStyleSettings({
+        const nextStyleSettings = {
           ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
           ...(document.style_settings ?? {}),
-        });
+        };
+        const nextDraft = draftFromDocument(document, nextStyleSettings);
+        setWorkspaceDraft(nextDraft);
+        setSelectedDocument(documentFromWorkspaceDraft(document, nextDraft, nextStyleName, nextStyleSettings));
+        setStyleName(nextStyleName);
+        setStyleSettings(nextStyleSettings);
+        setEditorContent(nextDraft.contentJson);
+        setEditorReloadKey((value) => value + 1);
       })
       .catch((error) => {
         if (alive) setWorkspaceNotice(error.message || 'Could not load document details.');
@@ -474,19 +590,23 @@ export default function WorkspacePage() {
 
   function openWorkspace(document) {
     const hydratedDocument = hydrateWorkspaceDocument(document);
-    setSelectedDocument(hydratedDocument);
-    setEditorContent(hydratedDocument?.content_json ?? null);
-    setActiveEditorBlock({
-      blockId: hydratedDocument?.current_processing_block_id ?? null,
-      status: hydratedDocument?.current_processing_block_id ? 'processing' : 'unprocessed',
-    });
-    setEditorReloadKey((value) => value + 1);
     const nextStyleName = hydratedDocument?.academic_style || 'APA';
-    setStyleName(nextStyleName);
-    setStyleSettings({
+    const nextStyleSettings = {
       ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
       ...(hydratedDocument?.style_settings ?? {}),
+    };
+    const nextDraft = draftFromDocument(hydratedDocument, nextStyleSettings);
+
+    setWorkspaceDraft(nextDraft);
+    setSelectedDocument(documentFromWorkspaceDraft(hydratedDocument, nextDraft, nextStyleName, nextStyleSettings));
+    setEditorContent(nextDraft.contentJson ?? null);
+    setActiveEditorBlock({
+      blockId: nextDraft.currentProcessingBlockId ?? null,
+      status: nextDraft.currentProcessingBlockId ? 'processing' : 'unprocessed',
     });
+    setEditorReloadKey((value) => value + 1);
+    setStyleName(nextStyleName);
+    setStyleSettings(nextStyleSettings);
     setWorkspaceDirty(false);
     setWorkspaceNotice('');
     setRewriteCardsLocked(false);
@@ -519,9 +639,20 @@ export default function WorkspacePage() {
     setWorkspaceDirty(true);
   }
 
-  function handleEditorChange(contentJson) {
-    const normalized = normalizeWorkspaceContent(selectedDocument, contentJson, styleName, styleSettings);
-    setEditorContent(normalized.contentJson ?? contentJson);
+  function handleEditorChange(change) {
+    const payload = change && typeof change === 'object' && 'contentJson' in change
+      ? change
+      : { contentJson: change };
+    const normalized = normalizeWorkspaceContent(
+      selectedDocument,
+      payload.contentJson,
+      styleName,
+      styleSettings,
+      payload.blocks ?? workspaceDraft?.blocks ?? null,
+      payload.currentProcessingBlockId ?? workspaceDraft?.currentProcessingBlockId ?? null
+    );
+    setWorkspaceDraft(normalized.draft);
+    setEditorContent(normalized.contentJson ?? payload.contentJson);
     if (normalized.document) {
       setSelectedDocument(normalized.document);
       if (rewriteAllCompleted) {
@@ -542,11 +673,11 @@ export default function WorkspacePage() {
 
   function normalizedWorkspaceDocument() {
     if (!selectedDocument) return null;
-    const contentJson = editorContent
-      ?? selectedDocument.content_json
-      ?? fallbackWorkspaceContent(selectedDocument, styleSettings);
-
-    return demoDocumentFromContent(selectedDocument, contentJson, styleName, styleSettings);
+    if (workspaceDraft?.contentJson) {
+      return documentFromWorkspaceDraft(selectedDocument, workspaceDraft, styleName, styleSettings);
+    }
+    const fallbackDraft = draftFromDocument(selectedDocument, styleSettings);
+    return documentFromWorkspaceDraft(selectedDocument, fallbackDraft, styleName, styleSettings);
   }
 
   async function saveWorkspaceDocument({ leaveAfterSave = false } = {}) {
@@ -559,6 +690,7 @@ export default function WorkspacePage() {
         upsertDemoDocumentInStore(document);
         setSelectedDocument(document);
         setEditorContent(document.content_json);
+        setWorkspaceDraft(draftFromDocument(document, styleSettings));
         setWorkspaceNotice('Saved locally');
       } else {
         const result = await saveDocument(document.id, {
@@ -568,8 +700,11 @@ export default function WorkspacePage() {
           createVersion: true,
           versionLabel: 'Manual save',
         });
-        setSelectedDocument(result.document ?? document);
-        setEditorContent((result.document ?? document).content_json ?? document.content_json);
+        const persistedDocument = result.document ?? document;
+        const persistedDraft = draftFromDocument(persistedDocument, styleSettings);
+        setWorkspaceDraft(persistedDraft);
+        setSelectedDocument(documentFromWorkspaceDraft(persistedDocument, persistedDraft, styleName, styleSettings));
+        setEditorContent(persistedDraft.contentJson ?? document.content_json);
         setWorkspaceNotice('Saved');
       }
 
@@ -662,12 +797,29 @@ export default function WorkspacePage() {
   }
 
   async function handleEditorBlockStatusChange({ blockId, status }) {
-    const contentJson = arguments[0]?.contentJson;
-    const nextDocument = contentJson && selectedDocument
-      ? demoDocumentFromContent(selectedDocument, contentJson, styleName, styleSettings)
+    const payload = arguments[0] ?? {};
+    const nextDocument = payload.contentJson && selectedDocument
+      ? demoDocumentFromContent(
+        selectedDocument,
+        payload.contentJson,
+        styleName,
+        styleSettings,
+        payload.blocks ?? workspaceDraft?.blocks ?? null,
+        payload.currentProcessingBlockId ?? workspaceDraft?.currentProcessingBlockId ?? null
+      )
+      : null;
+    const nextDraft = payload.contentJson && selectedDocument
+      ? normalizeWorkspaceDraft(
+        selectedDocument,
+        payload.contentJson,
+        payload.blocks ?? workspaceDraft?.blocks ?? [],
+        styleSettings,
+        payload.currentProcessingBlockId ?? workspaceDraft?.currentProcessingBlockId ?? null
+      )
       : null;
 
-    if (nextDocument) {
+    if (nextDocument && nextDraft) {
+      setWorkspaceDraft(nextDraft);
       setSelectedDocument(nextDocument);
       setEditorContent(nextDocument.content_json);
       refreshRewriteCardsFromDocument(nextDocument);
@@ -685,9 +837,9 @@ export default function WorkspacePage() {
 
     try {
       await updateDocumentBlockStatus(selectedDocument.id, blockId, status);
-      const { document } = await getDocument(selectedDocument.id);
-      setSelectedDocument(document);
-      refreshRewriteCardsFromDocument(document, status === 'processing' ? '' : `Block marked as ${status}.`);
+      if (status !== 'processing') {
+        setWorkspaceNotice(`Marked block as ${status}.`);
+      }
     } catch (error) {
       setWorkspaceNotice(error.message || 'Block status is waiting for the local API.');
     }
@@ -865,12 +1017,22 @@ export default function WorkspacePage() {
   function applyStatusToCurrentProcessingBlock(nextStatus, replacementText = null) {
     if (!selectedDocument) return null;
 
-    const editorContentJson = documentEditorRef.current?.applyCurrentBlockStatus({
+    const nextSnapshot = documentEditorRef.current?.applyCurrentBlockStatus({
       status: nextStatus,
       replacementText,
+      targetBlockId: workspaceDraft?.currentProcessingBlockId ?? activeEditorBlock?.blockId ?? null,
     });
-    if (editorContentJson) {
-      const document = demoDocumentFromContent(selectedDocument, editorContentJson, styleName, styleSettings);
+    if (nextSnapshot?.contentJson) {
+      const normalized = normalizeWorkspaceContent(
+        selectedDocument,
+        nextSnapshot.contentJson,
+        styleName,
+        styleSettings,
+        nextSnapshot.blocks,
+        nextSnapshot.currentProcessingBlockId
+      );
+      const document = normalized.document;
+      setWorkspaceDraft(normalized.draft);
       setSelectedDocument(document);
       setEditorContent(document.content_json);
       setActiveEditorBlock({
@@ -884,7 +1046,14 @@ export default function WorkspacePage() {
     const rawSourceContent = editorContent
       ?? selectedDocument.content_json
       ?? fallbackWorkspaceContent(selectedDocument, styleSettings);
-    const normalized = normalizeWorkspaceContent(selectedDocument, rawSourceContent, styleName, styleSettings);
+    const normalized = normalizeWorkspaceContent(
+      selectedDocument,
+      rawSourceContent,
+      styleName,
+      styleSettings,
+      workspaceDraft?.blocks ?? null,
+      workspaceDraft?.currentProcessingBlockId ?? null
+    );
     const sourceDocument = normalized.document ?? selectedDocument;
     const sourceContent = normalized.contentJson ?? rawSourceContent;
     const nodes = Array.isArray(sourceContent.content) ? sourceContent.content : [];
@@ -942,7 +1111,15 @@ export default function WorkspacePage() {
       }),
     };
 
-    const document = demoDocumentFromContent(sourceDocument, nextContent, styleName, styleSettings);
+    const nextDraft = normalizeWorkspaceDraft(
+      sourceDocument,
+      nextContent,
+      workspaceDraft?.blocks ?? normalized.draft?.blocks ?? [],
+      styleSettings,
+      activeEditorBlock?.blockId ?? normalized.draft?.currentProcessingBlockId ?? null
+    );
+    const document = documentFromWorkspaceDraft(sourceDocument, nextDraft, styleName, styleSettings);
+    setWorkspaceDraft(nextDraft);
     setSelectedDocument(document);
     setEditorContent(document.content_json);
     setActiveEditorBlock({

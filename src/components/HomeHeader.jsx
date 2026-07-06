@@ -37,7 +37,7 @@ export default function HomeHeader({
     <header className={`home-header${compact ? ' home-header--compact' : ''}`}>
       <div className="home-header-left">
         <OwlLogoBadge
-          email={user?.display_name || 'test@example'}
+          email={user?.display_name || user?.email || 'Your account'}
           avatarSrc={user?.profilePictureUrl || ''}
           onClick={onAccount}
         />

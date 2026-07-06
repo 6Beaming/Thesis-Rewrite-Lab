@@ -23,7 +23,7 @@ Inside `WorkspacePage`, the signed-in experience switches between the homepage s
 | Owl animation | Inline SVG + CSS + JS animation controller | Active and reusable |
 | Auth | Auth.js for Express + Google OAuth 2.0 | Scaffolded; requires PostgreSQL and valid OAuth config |
 | Backend API | Express.js | Partially connected |
-| Database | PostgreSQL | Auth schema ready; product persistence incomplete |
+| Database | PostgreSQL | Auth schema and product schema migrate together; product persistence is session-aware but still partially feature-incomplete |
 | Upload parsing | Multer + Mammoth + `initialClustering` | Partially scaffolded |
 | Realtime | Socket.io placeholder location | Not started |
 
@@ -76,8 +76,99 @@ These are the main client-side issues still implied by the current implementatio
 | Save document | Toolbar/workspace save flow works | Real persistence depends on `/api/documents/:id`; otherwise the UI reports local/API fallback states. |
 | Trash | Trash page UI works | Real restore/delete-forever requires `/api/trash` data; otherwise the page shows local demo trash items. |
 | Version history | Diff/revert UI works | Real versions depend on DB-backed snapshots; demo documents use generated local snapshots only. |
-| Account avatar | Upload and preview UI work | Persistent avatar storage is not yet fully synchronized with the Auth.js identity model and backend availability. |
+| Account avatar | Upload and preview UI work | Persistent avatar storage is now session-aware, but the UI still keeps a local preview fallback. |
 | Progress banner | Presentationally complete | Uses current frontend user stats, not a completed backend progress aggregation pipeline. |
+
+## Observed Backend Runtime Audit
+
+The following behaviors were verified against the local server on 2026-07-06.
+
+### What works before schema setup
+
+| Check | Result | Meaning |
+| --- | --- | --- |
+| Express boot (`app.js`) | Works | The server can start if `.env` contains valid auth config values. |
+| `GET /api/health` | `200 {"status":"ok"}` | Router mounting and Express middleware are live. |
+| PostgreSQL TCP reachability | Port `5432` reachable | Docker/PostgreSQL can be up even when the product schema is still missing. |
+| `GET /api/users/me` before schema | Fails with `relation "users" does not exist` | Product tables do not exist until `npm run db:migrate` has been run. |
+| `GET /api/documents` before schema | Fails with `relation "users" does not exist` | Document CRUD is unavailable until the product schema exists. |
+| `GET /api/trash` before schema | Fails with `relation "users" does not exist` | Trash CRUD is unavailable until the product schema exists. |
+
+### Current setup status
+
+The earlier split between auth-table migration and product-schema migration has been removed:
+
+1. `npm run db:migrate` now loads both `server/models/migrations/001_auth.sql` and `scripts/db/schema.sql`
+2. `npm run db:seed` no longer creates a fake product user
+
+The database default connection strings have also been aligned with `compose.yaml` and `.env.example`:
+
+- `postgresql://thesis_rewriter:thesis_rewriter_dev@localhost:5432/thesis_rewriter`
+
+### What works after product schema setup
+
+After running `npm run db:migrate`, the backend product CRUD path is available. The remaining auth-dependent requirement is a real Google session cookie.
+
+| Route / behavior | Verified result | Frontend implication |
+| --- | --- | --- |
+| `GET /api/users/me` without session | Returns `401 Authentication required` | Product profile routes are no longer public and no longer materialize a fake user. |
+| `GET /api/documents` without session | Returns `401 Authentication required` | Document CRUD is session-protected. |
+| `GET /api/me` without session | Returns `401 Authentication required` | Session-aware auth identity route is protected. |
+| `POST /api/users/me/profile-picture` + `GET /api/users/me/profile-picture` | Upload and fetch both work | Avatar persistence can work through the backend, though the UI also keeps a local preview fallback. |
+| `POST /api/documents/upload` with `.md` | Creates a persisted document and blocks | The frontend can immediately open the returned document. |
+| `POST /api/documents/upload` with `.docx` | Creates a persisted document and blocks | The frontend can immediately open the returned document. |
+| `POST /api/documents/upload` with unsupported asset | Returns `400` | Frontend receives a meaningful backend validation error. |
+
+## Supplementary Data Flows
+
+### Real backend-to-frontend flows already working
+
+These flows have an implemented frontend caller, a real Express route, and a verified backend result after product schema setup.
+
+| Feature | Frontend call path | Backend path | Current status |
+| --- | --- | --- | --- |
+| Load homepage profile data | `HomePage -> getMe() -> usersApi.js` | `GET /api/users/me -> server/routers/users.js -> server/models/users.js` | Works after product schema setup |
+| Upload avatar | `HomepageAccount -> onUploadProfile -> uploadProfilePicture()` | `POST /api/users/me/profile-picture` | Works after product schema setup |
+| List documents | `HomePage` and `WorkspacePage` -> `listDocuments()` | `GET /api/documents` | Works after product schema setup |
+| Create blank document | `HomePage -> createDocument()` | `POST /api/documents` | Works after product schema setup |
+| Open persisted document | `WorkspacePage -> getDocument()` | `GET /api/documents/:id` | Works after product schema setup |
+| Save document | `WorkspacePage -> saveDocument()` | `PATCH /api/documents/:id` | Works after product schema setup |
+| Upload `.md` / `.docx` document | `HomePage` / `WorkspacePage` -> `uploadDocument()` | `POST /api/documents/upload` | Works after product schema setup |
+| Update block status | `WorkspacePage -> updateDocumentBlockStatus()` | `PATCH /api/documents/:id/blocks/:blockId` | Works after product schema setup |
+| List/review/revert versions | `HomepageVersionControl` -> `listVersions()`, `getVersion()`, `revertVersion()` | `GET /api/documents/:id/versions`, `GET /:versionId`, `POST /revert` | Works after product schema setup |
+| Move to trash / restore / delete forever | `HomePage`, `HomepageTrash` | `/api/documents/:id`, `/api/trash/:id/restore`, `/api/trash/:id` | Works after product schema setup |
+
+### Flows that still fail because of setup or missing verification
+
+These are not primarily missing-feature problems. They depend on real Google-session verification or on frontend fallback behavior during API failure.
+
+| Feature | Failure mode | Cause |
+| --- | --- | --- |
+| Real end-to-end CRUD through a Google-authenticated browser session | Requires interactive sign-in to verify on the live UI | Product routes are now session-aware and reject anonymous access, but browser-session validation still depends on completing OAuth locally |
+| Homepage/workspace behavior when the session expires mid-run | The frontend may still fall back to demo/local behavior rather than forcing re-auth in every branch | Some page code was originally built around offline/demo resilience |
+
+### Flows that are frontend-complete or frontend-dominant
+
+These behaviors either do not require the backend or remain intentionally local even when the backend exists.
+
+| Feature | Why it is frontend-dominant |
+| --- | --- |
+| Owl animation system | Entirely client-side SVG/CSS/JS behavior |
+| Rewriting card generation | Placeholder text, timing, and error simulation are local only |
+| Practicing responses | Placeholder generation is local only |
+| Workspace analyzing card | Local derived statistics only |
+| Demo/fallback document opening | Homepage and workspace can synthesize local documents if CRUD fails |
+| Local avatar preview | Account UI can preview uploads before backend persistence succeeds |
+
+### Flows currently disabled or incomplete because logic is missing
+
+| Feature | Current state |
+| --- | --- |
+| Subscription/billing | Placeholder page only |
+| Support workflow | Placeholder page only |
+| Credits page completeness | Minimal placeholder content |
+| Rewriting/practicing service backend | Not implemented |
+| Realtime collaboration | Not implemented |
 
 ## Unimplemented Or Placeholder Subpages
 
@@ -177,11 +268,12 @@ These are the main client-side issues still implied by the current implementatio
 | Express app | `app.js` | Active scaffold | Mounts Auth.js, `/api`, middleware, and production static serving. |
 | Auth config | `server/auth.js` | Active scaffold | Reads env vars, configures Google provider, and creates the DB adapter. |
 | API router | `server/routers/index.js` | Active scaffold | Mounts `users`, `documents`, and `trash`; `/api/me` is protected. |
-| Documents routes | `server/routers/documents.js` | Partial | Routes exist, but full DB-backed reliability still depends on environment and data-model completion. |
-| Trash routes | `server/routers/trash.js` | Partial | Exists, but frontend still falls back to demo data frequently. |
-| Users routes | `server/routers/users.js` | Partial | Exists for profile info and avatar upload. |
+| Product schema bootstrap | `scripts/db/schema.sql`, `scripts/db/seed.cjs` | Partial and setup-sensitive | The schema exists and supports CRUD, but it is not part of `db:migrate`, and the seed script default DB URL is currently inconsistent with the Docker credentials. |
+| Documents routes | `server/routers/documents.js` | Verified after schema setup | Real create/read/update/upload/trash/version/revert logic works, but it is tied to the fixed test user instead of Auth.js session identity. |
+| Trash routes | `server/routers/trash.js` | Verified after schema setup | Restore and delete-forever work, but still through the fixed test user. |
+| Users routes | `server/routers/users.js` | Verified after schema setup | `/users/me` and avatar upload/fetch are now protected by the Auth.js session user. |
 | Auth adapter | `server/models/auth-adapter.js` | Active scaffold | Session, user, and account persistence for Auth.js. |
-| Product models | `server/models/documents.js`, `blocks.js`, `versions.js`, `users.js` | Partial | Product persistence is present but not yet fully verified end-to-end. |
+| Product models | `server/models/documents.js`, `blocks.js`, `versions.js`, `users.js` | Verified after schema setup | CRUD, block progression, rate calculation, version snapshots, revert, trash, and avatar storage are implemented against PostgreSQL and now resolve product users from the Google session. |
 | Realtime | `server/realtime/` | Not started | Reserved location only. |
 
 ## Owl Animation Architecture
@@ -201,4 +293,3 @@ At a high level:
 - Express backend: `http://localhost:3001/`
 - Vite proxies `/api`, `/auth`, and `/socket.io` to Express.
 - Local auth/database startup still depends on Docker Desktop, PostgreSQL, `.env`, and `npm run db:migrate`.
-

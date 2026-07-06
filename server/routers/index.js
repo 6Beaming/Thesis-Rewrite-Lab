@@ -13,11 +13,13 @@ router.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
+router.use(loadAuthSession, requireAuth);
+
 router.use('/users', usersRouter);
 router.use('/documents', documentsRouter);
 router.use('/trash', trashRouter);
 
-router.get('/me', loadAuthSession, requireAuth, (_req, res) => {
+router.get('/me', (_req, res) => {
   res.json({ user: res.locals.session.user });
 });
 

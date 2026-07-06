@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getOrCreateTestUser } from '../models/users.js';
+import { getOrCreateUserFromSession } from '../models/users.js';
 import {
   deleteDocumentForever,
   listDocuments,
@@ -9,7 +9,7 @@ import {
 const router = Router();
 
 router.get('/', async (_req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const documents = await listDocuments({
     userId: user.id,
     trashed: true,
@@ -19,7 +19,7 @@ router.get('/', async (_req, res) => {
 });
 
 router.post('/:id/restore', async (req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const document = await restoreDocument(req.params.id, user.id);
   if (!document) {
     res.status(404).json({ error: 'Document not found' });
@@ -29,7 +29,7 @@ router.post('/:id/restore', async (req, res) => {
 });
 
 router.delete('/:id', async (req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const document = await deleteDocumentForever(req.params.id, user.id);
   if (!document) {
     res.status(404).json({ error: 'Document not found' });

@@ -280,8 +280,23 @@ export async function checkExpiredTrash(userId) {
   return result.rows;
 }
 
-export async function updateDocumentBlockStatus({ documentId, blockId, status }) {
+export async function updateDocumentBlockStatus({ documentId, userId, blockId, status }) {
   return withTransaction(async (client) => {
+    const ownedDocument = await client.query(
+      `
+        select id
+        from documents
+        where id = $1
+          and user_id = $2
+        for update
+      `,
+      [documentId, userId]
+    );
+
+    if (!ownedDocument.rows[0]) {
+      return null;
+    }
+
     const next = await updateBlockStatus(client, { documentId, blockId, status });
     await appendDocumentVersion(client, documentId, `Block ${status}`);
     return next;

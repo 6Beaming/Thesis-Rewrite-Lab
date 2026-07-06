@@ -1,17 +1,28 @@
 import { query } from './db.js';
 
-const TEST_EMAIL = 'test@example.com';
+function normalizeSessionUser(sessionUser) {
+  const email = String(sessionUser?.email ?? '').trim().toLowerCase();
+  if (!email) {
+    throw new Error('Authenticated session is missing an email address.');
+  }
 
-export async function getOrCreateTestUser() {
+  const displayName = String(sessionUser?.name ?? '').trim() || email.split('@')[0] || 'Signed-in user';
+  return { email, displayName };
+}
+
+export async function getOrCreateUserFromSession(sessionUser) {
+  const { email, displayName } = normalizeSessionUser(sessionUser);
   const result = await query(
     `
       insert into users (email, display_name)
       values ($1, $2)
       on conflict (email)
-      do update set updated_at = users.updated_at
+      do update set
+        display_name = coalesce(excluded.display_name, users.display_name),
+        updated_at = now()
       returning id, email, display_name, profile_picture_mime, created_at, updated_at
     `,
-    [TEST_EMAIL, 'test@example']
+    [email, displayName]
   );
 
   const user = result.rows[0];
@@ -27,8 +38,8 @@ export async function getOrCreateTestUser() {
   return user;
 }
 
-export async function getCurrentUserProfile() {
-  const user = await getOrCreateTestUser();
+export async function getCurrentUserProfile(sessionUser) {
+  const user = await getOrCreateUserFromSession(sessionUser);
   const stats = await query(
     `
       select completed_chars, total_chars, completed_rate, streak_day_count,

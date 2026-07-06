@@ -3,7 +3,7 @@ import path from 'path';
 import { createRequire } from 'module';
 import mammoth from 'mammoth';
 import { upload } from '../middlewares/upload.js';
-import { getOrCreateTestUser } from '../models/users.js';
+import { getOrCreateUserFromSession } from '../models/users.js';
 import {
   checkExpiredTrash,
   createBlankDocument,
@@ -188,7 +188,7 @@ async function extractBlocks(file) {
 }
 
 router.get('/', async (req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const documents = await listDocuments({
     userId: user.id,
     q: String(req.query.q ?? ''),
@@ -199,7 +199,7 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/', async (_req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const document = await createBlankDocument(user.id);
   res.status(201).json({ document });
 });
@@ -210,7 +210,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     return;
   }
 
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const blocks = await extractBlocks(req.file);
   const document = await createDocumentWithBlocks({
     userId: user.id,
@@ -226,13 +226,13 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 });
 
 router.post('/trash/check-expired', async (_req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const deleted = await checkExpiredTrash(user.id);
   res.json({ deleted });
 });
 
 router.get('/:id', async (req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const document = await getDocument(req.params.id, user.id);
   if (!document) {
     res.status(404).json({ error: 'Document not found' });
@@ -242,7 +242,7 @@ router.get('/:id', async (req, res) => {
 });
 
 router.get('/:id/rate', async (req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const rate = await getDocumentRate(req.params.id, user.id);
   if (!rate) {
     res.status(404).json({ error: 'Document not found' });
@@ -252,7 +252,7 @@ router.get('/:id/rate', async (req, res) => {
 });
 
 router.patch('/:id', async (req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const document = await saveDocument(req.params.id, user.id, req.body);
   if (!document) {
     res.status(404).json({ error: 'Document not found' });
@@ -262,7 +262,7 @@ router.patch('/:id', async (req, res) => {
 });
 
 router.delete('/:id', async (req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const document = await moveDocumentToTrash(req.params.id, user.id);
   if (!document) {
     res.status(404).json({ error: 'Document not found' });
@@ -272,6 +272,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 router.patch('/:id/blocks/:blockId', async (req, res) => {
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const status = req.body.status;
   if (!['unprocessed', 'processing', 'processed', 'skipped'].includes(status)) {
     res.status(400).json({ error: 'Invalid block status' });
@@ -280,36 +281,55 @@ router.patch('/:id/blocks/:blockId', async (req, res) => {
 
   const next = await updateDocumentBlockStatus({
     documentId: req.params.id,
+    userId: user.id,
     blockId: req.params.blockId,
     status,
   });
+  if (next === null) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
   res.json({ nextProcessingBlock: next });
 });
 
 router.post('/:id/blocks/:blockId/skip', async (req, res) => {
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const next = await updateDocumentBlockStatus({
     documentId: req.params.id,
+    userId: user.id,
     blockId: req.params.blockId,
     status: 'skipped',
   });
+  if (next === null) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
   res.json({ nextProcessingBlock: next });
 });
 
 router.post('/:id/blocks/:blockId/complete', async (req, res) => {
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const next = await updateDocumentBlockStatus({
     documentId: req.params.id,
+    userId: user.id,
     blockId: req.params.blockId,
     status: 'processed',
   });
+  if (next === null) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
   res.json({ nextProcessingBlock: next });
 });
 
 router.get('/:id/versions', async (req, res) => {
-  res.json({ versions: await listVersions(req.params.id) });
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  res.json({ versions: await listVersions(req.params.id, user.id) });
 });
 
 router.get('/:id/versions/:versionId', async (req, res) => {
-  const version = await getVersion(req.params.id, req.params.versionId);
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const version = await getVersion(req.params.id, req.params.versionId, user.id);
   if (!version) {
     res.status(404).json({ error: 'Version not found' });
     return;
@@ -318,8 +338,8 @@ router.get('/:id/versions/:versionId', async (req, res) => {
 });
 
 router.post('/:id/revert', async (req, res) => {
-  const user = await getOrCreateTestUser();
-  const version = await revertDocumentToVersion(req.params.id, req.body.versionId);
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const version = await revertDocumentToVersion(req.params.id, req.body.versionId, user.id);
   if (!version) {
     res.status(404).json({ error: 'Version not found' });
     return;

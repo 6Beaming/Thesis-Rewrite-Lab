@@ -70,7 +70,7 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
           </button>
           <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleFileChange} />
         </div>
-        <h2>{user?.email || user?.display_name || 'test@example.com'}</h2>
+        <h2>{user?.email || user?.display_name || 'Your account'}</h2>
         <section className="account-streak">
           <div ref={streakRef} className="account-streak-lottie" aria-hidden="true" />
           <span className="account-streak-spark account-streak-spark--one" aria-hidden="true" />

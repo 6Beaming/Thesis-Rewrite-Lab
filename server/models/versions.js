@@ -63,43 +63,49 @@ export async function appendDocumentVersion(client, documentId, label) {
   return inserted.rows[0];
 }
 
-export async function listVersions(documentId) {
+export async function listVersions(documentId, userId) {
   const result = await query(
     `
-      select id, document_id, version_number, label, academic_style_snapshot, text_preview, created_at
-      from document_versions
-      where document_id = $1
+      select dv.id, dv.document_id, dv.version_number, dv.label, dv.academic_style_snapshot, dv.text_preview, dv.created_at
+      from document_versions dv
+      join documents d on d.id = dv.document_id
+      where dv.document_id = $1
+        and d.user_id = $2
       order by version_number desc
     `,
-    [documentId]
+    [documentId, userId]
   );
   return result.rows;
 }
 
-export async function getVersion(documentId, versionId) {
+export async function getVersion(documentId, versionId, userId) {
   const result = await query(
     `
-      select id, document_id, version_number, label, academic_style_snapshot,
-             text_preview, snapshot_json, created_at
-      from document_versions
-      where document_id = $1
-        and id = $2
+      select dv.id, dv.document_id, dv.version_number, dv.label, dv.academic_style_snapshot,
+             dv.text_preview, dv.snapshot_json, dv.created_at
+      from document_versions dv
+      join documents d on d.id = dv.document_id
+      where dv.document_id = $1
+        and dv.id = $2
+        and d.user_id = $3
     `,
-    [documentId, versionId]
+    [documentId, versionId, userId]
   );
   return result.rows[0] ?? null;
 }
 
-export async function revertDocumentToVersion(documentId, versionId) {
+export async function revertDocumentToVersion(documentId, versionId, userId) {
   return withTransaction(async (client) => {
     const versionResult = await client.query(
       `
-        select version_number, snapshot_json
-        from document_versions
-        where document_id = $1
-          and id = $2
+        select dv.version_number, dv.snapshot_json
+        from document_versions dv
+        join documents d on d.id = dv.document_id
+        where dv.document_id = $1
+          and dv.id = $2
+          and d.user_id = $3
       `,
-      [documentId, versionId]
+      [documentId, versionId, userId]
     );
     const version = versionResult.rows[0];
     if (!version) {

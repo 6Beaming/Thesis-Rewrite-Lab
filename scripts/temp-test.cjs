@@ -1,7 +1,8 @@
+require('dotenv/config');
 const pg = require('pg');
 
 // Temporary status generator for testing editor highlights and next-block selection.
-const DEFAULT_DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/project_thesis_rewriter';
+const DEFAULT_DATABASE_URL = 'postgresql://thesis_rewriter:thesis_rewriter_dev@localhost:5432/thesis_rewriter';
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL || DEFAULT_DATABASE_URL,
 });

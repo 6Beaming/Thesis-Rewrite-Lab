@@ -14,8 +14,8 @@ import HomepageTrash from './homepageTrash.jsx';
 import HomepageVersionControl from './homepageVersionControl.jsx';
 
 const DEMO_USER = {
-  display_name: 'test@example',
-  email: 'test@example.com',
+  display_name: 'Signed-in user',
+  email: '',
   stats: {
     completed_rate: 0.78,
     streak_day_count: 1,

@@ -1,3 +1,4 @@
+require('dotenv/config');
 const fs = require('fs/promises');
 const path = require('path');
 const pg = require('pg');
@@ -6,13 +7,13 @@ const { randomUUID } = require('crypto');
 const { initialClustering } = require('./lib/initialClustering.cjs');
 
 // Temporary CLI importer for local testing until the upload API covers every fixture workflow.
-const DEFAULT_DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/project_thesis_rewriter';
+const DEFAULT_DATABASE_URL = 'postgresql://thesis_rewriter:thesis_rewriter_dev@localhost:5432/thesis_rewriter';
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL || DEFAULT_DATABASE_URL,
 });
 
 function usage() {
-  console.log('Usage: node scripts/process-upload.cjs <file-path> [title]');
+  console.log('Usage: node scripts/process-upload.cjs <file-path> <user-email> [title]');
 }
 
 function decodeHtmlEntities(value) {
@@ -204,7 +205,8 @@ function extensionMime(extension) {
 
 async function main() {
   const filePath = process.argv[2];
-  if (!filePath) {
+  const userEmail = String(process.argv[3] ?? '').trim().toLowerCase();
+  if (!filePath || !userEmail) {
     usage();
     process.exit(1);
   }
@@ -212,7 +214,7 @@ async function main() {
   const buffer = await fs.readFile(filePath);
   const extractedBlocks = await extractBlocks(filePath, buffer);
   const extension = path.extname(filePath).toLowerCase();
-  const title = process.argv[3] || path.basename(filePath, extension).replace(/[_-]+/g, ' ');
+  const title = process.argv[4] || path.basename(filePath, extension).replace(/[_-]+/g, ' ');
   const blocks = extractedBlocks.map(createBlock);
   const contentJson = { type: 'doc', content: blocks.map((block) => block.node) };
   const totalChars = blocks.reduce((sum, block) => sum + block.text.length, 0);
@@ -225,10 +227,12 @@ async function main() {
         insert into users (email, display_name)
         values ($1, $2)
         on conflict (email)
-        do update set updated_at = users.updated_at
+        do update set
+          display_name = coalesce(excluded.display_name, users.display_name),
+          updated_at = now()
         returning id
       `,
-      ['test@example.com', 'test@example']
+      [userEmail, userEmail.split('@')[0] || 'Signed-in user']
     );
     await client.query(
       `

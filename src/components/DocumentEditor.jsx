@@ -3,6 +3,7 @@ import Blockquote from '@tiptap/extension-blockquote';
 import BulletList from '@tiptap/extension-bullet-list';
 import Color from '@tiptap/extension-color';
 import FontFamily from '@tiptap/extension-font-family';
+import Heading from '@tiptap/extension-heading';
 import Highlight from '@tiptap/extension-highlight';
 import ListItem from '@tiptap/extension-list-item';
 import OrderedList from '@tiptap/extension-ordered-list';
@@ -10,6 +11,7 @@ import Paragraph from '@tiptap/extension-paragraph';
 import TextAlign from '@tiptap/extension-text-align';
 import { FontSize, TextStyle } from '@tiptap/extension-text-style';
 import Underline from '@tiptap/extension-underline';
+import { isHistoryTransaction } from 'prosemirror-history';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
@@ -17,6 +19,55 @@ import A4EditorPage from './A4EditorPage.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 
 const A4_PAGE_HEIGHT_PX = 1123;
+const TRACKED_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
+
+function generateBlockId(prefix) {
+  const randomId = globalThis.crypto?.randomUUID?.();
+  if (randomId) return `${prefix}-${randomId}`;
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isTrackedTextBlockNode(node) {
+  return TRACKED_TEXT_BLOCK_TYPES.has(node?.type?.name);
+}
+
+function normalizeBlockStatus(status) {
+  return ['unprocessed', 'processing', 'processed', 'skipped'].includes(status)
+    ? status
+    : 'unprocessed';
+}
+
+function buildTrackedBlockStyleAttrs(attrs = {}) {
+  return {
+    lineHeight: attrs.lineHeight || '2.0',
+    textIndent: attrs.textIndent || '0.5in',
+    textAlign: attrs.textAlign || 'left',
+    fontFamily: attrs.fontFamily || 'Times New Roman',
+    fontSize: attrs.fontSize || '12pt',
+  };
+}
+
+function renderTrackedBlock(tag, HTMLAttributes) {
+  const style = [
+    `line-height: ${HTMLAttributes.lineHeight}`,
+    `text-indent: ${HTMLAttributes.textIndent}`,
+    `text-align: ${HTMLAttributes.textAlign}`,
+    `font-family: ${HTMLAttributes.fontFamily}`,
+    `font-size: ${HTMLAttributes.fontSize}`,
+  ].join('; ');
+
+  return [
+    tag,
+    {
+      ...HTMLAttributes,
+      class: `doc-block doc-block--${HTMLAttributes.status || 'unprocessed'}`,
+      'data-block-id': HTMLAttributes.blockId,
+      'data-status': HTMLAttributes.status,
+      style,
+    },
+    0,
+  ];
+}
 
 const AcademicParagraph = Paragraph.extend({
   addAttributes() {
@@ -32,25 +83,26 @@ const AcademicParagraph = Paragraph.extend({
     };
   },
   renderHTML({ HTMLAttributes }) {
-    const style = [
-      `line-height: ${HTMLAttributes.lineHeight}`,
-      `text-indent: ${HTMLAttributes.textIndent}`,
-      `text-align: ${HTMLAttributes.textAlign}`,
-      `font-family: ${HTMLAttributes.fontFamily}`,
-      `font-size: ${HTMLAttributes.fontSize}`,
-    ].join('; ');
+    return renderTrackedBlock('p', HTMLAttributes);
+  },
+});
 
-    return [
-      'p',
-      {
-        ...HTMLAttributes,
-        class: `doc-block doc-block--${HTMLAttributes.status || 'unprocessed'}`,
-        'data-block-id': HTMLAttributes.blockId,
-        'data-status': HTMLAttributes.status,
-        style,
-      },
-      0,
-    ];
+const AcademicHeading = Heading.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      blockId: { default: null },
+      status: { default: 'unprocessed' },
+      lineHeight: { default: '2.0' },
+      textIndent: { default: '0.5in' },
+      textAlign: { default: 'left' },
+      fontFamily: { default: 'Times New Roman' },
+      fontSize: { default: '12pt' },
+    };
+  },
+  renderHTML({ node, HTMLAttributes }) {
+    const level = this.options.levels.includes(node.attrs.level) ? node.attrs.level : this.options.levels[0];
+    return renderTrackedBlock(`h${level}`, HTMLAttributes);
   },
 });
 
@@ -170,78 +222,154 @@ function selectedParagraphInfo(editor) {
   const { $from } = state.selection;
   for (let depth = $from.depth; depth > 0; depth -= 1) {
     const node = $from.node(depth);
-    if (node.type.name === 'paragraph') {
+    if (isTrackedTextBlockNode(node)) {
       return {
         blockId: node.attrs.blockId ?? null,
-        status: node.attrs.status ?? 'unprocessed',
+        status: normalizeBlockStatus(node.attrs.status),
       };
     }
   }
   return { blockId: null, status: 'unprocessed' };
 }
 
-function ensureEditorBlockMetadata(editor, documentId) {
+function collectTrackedBlocks(state) {
+  const blocks = [];
+  let order = 0;
+  state.doc.descendants((node, pos) => {
+    if (!isTrackedTextBlockNode(node)) return;
+
+    const text = node.textContent ?? '';
+    blocks.push({
+      node,
+      pos,
+      order,
+      blockId: node.attrs.blockId ?? null,
+      status: normalizeBlockStatus(node.attrs.status),
+      isEmpty: !text.trim(),
+      text,
+      length: text.length,
+      type: node.type.name,
+      attrs: {
+        ...node.attrs,
+        ...buildTrackedBlockStyleAttrs(node.attrs),
+        blockId: node.attrs.blockId ?? null,
+        status: normalizeBlockStatus(node.attrs.status),
+        length: text.length,
+      },
+    });
+    order += 1;
+  });
+  return blocks;
+}
+
+function createEditorSnapshot(editor) {
+  if (!editor || editor.isDestroyed) {
+    return {
+      contentJson: null,
+      blocks: [],
+      currentProcessingBlockId: null,
+    };
+  }
+
+  const blocks = collectTrackedBlocks(editor.state).map((block) => ({
+    id: block.blockId,
+    blockId: block.blockId,
+    type: block.type,
+    order: block.order,
+    text: block.text,
+    text_content: block.text,
+    status: block.status,
+    isEmpty: block.isEmpty,
+    length: block.length,
+    char_length: block.length,
+    attrs: block.attrs,
+  }));
+  const currentProcessingBlockId = blocks.find((block) => !block.isEmpty && block.status === 'processing')?.id ?? null;
+
+  return {
+    contentJson: editor.getJSON(),
+    blocks,
+    currentProcessingBlockId,
+  };
+}
+
+function reconcileEditorBlocks(editor, previousSnapshot, documentId, { skipEditedStatusReset = false } = {}) {
   if (!editor || editor.isDestroyed) return editor?.getJSON();
 
   let changed = false;
-  let hasProcessing = false;
-  let manualIndex = 0;
   const prefix = documentId || 'manual-document';
-  const seenBlockIds = new Set();
 
   editor.commands.command(({ state, tr, dispatch }) => {
-    state.doc.descendants((node, pos) => {
-      if (node.type.name !== 'paragraph') return;
-      const isEmpty = !node.textContent?.trim();
+    const seenBlockIds = new Set();
+    let processingBlockId = null;
+    const blocks = [];
 
-      const nextAttrs = { ...node.attrs };
-      let nodeChanged = false;
-      if (!nextAttrs.blockId || seenBlockIds.has(nextAttrs.blockId)) {
-        manualIndex += 1;
-        nextAttrs.blockId = `${prefix}-manual-${Date.now()}-${manualIndex}`;
-        nextAttrs.status = 'unprocessed';
-        nodeChanged = true;
+    state.doc.descendants((node, pos) => {
+      if (!isTrackedTextBlockNode(node)) return;
+
+      const text = node.textContent ?? '';
+      const isEmpty = !text.trim();
+      let blockId = node.attrs.blockId ?? null;
+      if (!blockId || seenBlockIds.has(blockId)) {
+        blockId = generateBlockId(`${prefix}-block`);
       }
-      seenBlockIds.add(nextAttrs.blockId);
-      if (!nextAttrs.status) {
-        nextAttrs.status = 'unprocessed';
-        nodeChanged = true;
+      seenBlockIds.add(blockId);
+
+      let status = normalizeBlockStatus(node.attrs.status);
+      if (!skipEditedStatusReset && previousSnapshot?.has(blockId) && ['processed', 'skipped'].includes(status)) {
+        if ((previousSnapshot.get(blockId) ?? '') !== text) {
+          status = 'unprocessed';
+        }
       }
-      if (isEmpty && nextAttrs.status === 'processing') {
-        nextAttrs.status = 'unprocessed';
-        nodeChanged = true;
+      if (isEmpty && status === 'processing') {
+        status = 'unprocessed';
       }
-      if (!isEmpty && nextAttrs.status === 'processing') {
-        hasProcessing = true;
+      if (!isEmpty && status === 'processing') {
+        if (!processingBlockId) {
+          processingBlockId = blockId;
+        } else {
+          status = 'unprocessed';
+        }
       }
-      if (!nextAttrs.length) {
-        nextAttrs.length = node.textContent?.length ?? 0;
-        nodeChanged = true;
-      }
-      if (nodeChanged) {
+
+      const nextAttrs = {
+        ...node.attrs,
+        ...buildTrackedBlockStyleAttrs(node.attrs),
+        blockId,
+        status,
+        length: text.length,
+      };
+      blocks.push({ pos, nextAttrs, isEmpty, blockId, status });
+
+      if (
+        node.attrs.blockId !== nextAttrs.blockId
+        || normalizeBlockStatus(node.attrs.status) !== nextAttrs.status
+        || node.attrs.length !== nextAttrs.length
+        || node.attrs.lineHeight !== nextAttrs.lineHeight
+        || node.attrs.textIndent !== nextAttrs.textIndent
+        || node.attrs.textAlign !== nextAttrs.textAlign
+        || node.attrs.fontFamily !== nextAttrs.fontFamily
+        || node.attrs.fontSize !== nextAttrs.fontSize
+      ) {
         tr.setNodeMarkup(pos, undefined, nextAttrs);
         changed = true;
       }
     });
 
-    if (!hasProcessing) {
-      let marked = false;
-      tr.doc.descendants((node, pos) => {
-        if (
-          marked
-          || node.type.name !== 'paragraph'
-          || !node.textContent?.trim()
-          || node.attrs?.status !== 'unprocessed'
-        ) {
-          return;
-        }
-        tr.setNodeMarkup(pos, undefined, { ...node.attrs, status: 'processing' });
-        marked = true;
+    if (!processingBlockId) {
+      const firstUnprocessed = blocks.find((block) => !block.isEmpty && block.nextAttrs.status === 'unprocessed');
+      if (firstUnprocessed) {
+        processingBlockId = firstUnprocessed.blockId;
+        tr.setNodeMarkup(firstUnprocessed.pos, undefined, {
+          ...firstUnprocessed.nextAttrs,
+          status: 'processing',
+        });
         changed = true;
-      });
+      }
     }
 
     if (changed) {
+      tr.setMeta('addToHistory', false);
       dispatch?.(tr);
     }
     return true;
@@ -251,33 +379,24 @@ function ensureEditorBlockMetadata(editor, documentId) {
 }
 
 function collectParagraphs(state) {
-  const paragraphs = [];
-  state.doc.descendants((node, pos) => {
-    if (node.type.name !== 'paragraph') return;
-
-    paragraphs.push({
-      node,
-      pos,
-      blockId: node.attrs.blockId ?? null,
-      status: node.attrs.status ?? 'unprocessed',
-      isEmpty: !node.textContent?.trim(),
-    });
-  });
-  return paragraphs;
+  return collectTrackedBlocks(state);
 }
 
 function selectedParagraphFromState(state) {
   const { $from } = state.selection;
   for (let depth = $from.depth; depth > 0; depth -= 1) {
     const node = $from.node(depth);
-    if (node.type.name !== 'paragraph') continue;
+    if (!isTrackedTextBlockNode(node)) continue;
 
     return {
       node,
       pos: $from.before(depth),
       blockId: node.attrs.blockId ?? null,
-      status: node.attrs.status ?? 'unprocessed',
+      status: normalizeBlockStatus(node.attrs.status),
       isEmpty: !node.textContent?.trim(),
+      text: node.textContent ?? '',
+      length: (node.textContent ?? '').length,
+      type: node.type.name,
     };
   }
   return null;
@@ -294,35 +413,10 @@ function paragraphTextSnapshot(editor) {
   if (!editor || editor.isDestroyed) return snapshot;
 
   editor.state.doc.descendants((node) => {
-    if (node.type.name !== 'paragraph' || !node.attrs.blockId) return;
+    if (!isTrackedTextBlockNode(node) || !node.attrs.blockId) return;
     snapshot.set(node.attrs.blockId, node.textContent ?? '');
   });
   return snapshot;
-}
-
-function markEditedCompletedBlocks(editor, previousSnapshot) {
-  if (!editor || editor.isDestroyed || !previousSnapshot?.size) return false;
-
-  let changed = false;
-  editor.commands.command(({ state, tr, dispatch }) => {
-    state.doc.descendants((node, pos) => {
-      if (node.type.name !== 'paragraph') return;
-      const blockId = node.attrs.blockId;
-      if (!blockId || !previousSnapshot.has(blockId)) return;
-      if (node.attrs.status !== 'processed' && node.attrs.status !== 'skipped') return;
-      if ((node.textContent ?? '') === previousSnapshot.get(blockId)) return;
-
-      tr.setNodeMarkup(pos, undefined, { ...node.attrs, status: 'unprocessed' });
-      changed = true;
-    });
-
-    if (changed) {
-      dispatch?.(tr);
-    }
-    return true;
-  });
-
-  return changed;
 }
 
 const DocumentEditor = forwardRef(function DocumentEditor({
@@ -352,6 +446,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     extensions: [
       StarterKit.configure({
         paragraph: false,
+        heading: false,
         underline: false,
         bulletList: false,
         orderedList: false,
@@ -359,6 +454,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         blockquote: false,
       }),
       AcademicParagraph,
+      AcademicHeading,
       PageBreak,
       BulletList.configure({ keepMarks: true }),
       OrderedList.configure({ keepMarks: true }),
@@ -378,15 +474,21 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         class: 'document-editor-surface',
       },
     },
-    onUpdate({ editor: activeEditor }) {
-      if (suppressEditedStatusResetRef.current) {
-        suppressEditedStatusResetRef.current = false;
-      } else {
-        markEditedCompletedBlocks(activeEditor, paragraphTextSnapshotRef.current);
-      }
-      const normalizedJson = ensureEditorBlockMetadata(activeEditor, document?.id);
+    onUpdate({ editor: activeEditor, transaction }) {
+      const skipEditedStatusReset = suppressEditedStatusResetRef.current || isHistoryTransaction(transaction);
+      const normalizedJson = reconcileEditorBlocks(
+        activeEditor,
+        paragraphTextSnapshotRef.current,
+        document?.id,
+        { skipEditedStatusReset }
+      );
+      suppressEditedStatusResetRef.current = false;
       const info = selectedParagraphInfo(activeEditor);
-      onChange?.(normalizedJson);
+      onChange?.({
+        ...createEditorSnapshot(activeEditor),
+        contentJson: normalizedJson,
+        activeBlock: info,
+      });
       onActiveBlockChange?.(info);
       setActiveBlockStatus(info.status);
       paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
@@ -418,7 +520,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     editor.commands.command(({ state, tr, dispatch }) => {
       let changed = false;
       state.doc.descendants((node, pos) => {
-        if (node.type.name !== 'paragraph') return;
+        if (!isTrackedTextBlockNode(node)) return;
 
         const nextAttrs = { ...node.attrs, ...attrs };
         const didChange = Object.entries(attrs).some(([key, value]) => node.attrs[key] !== value);
@@ -428,7 +530,10 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         changed = true;
       });
 
-      if (changed) dispatch?.(tr);
+      if (changed) {
+        tr.setMeta('addToHistory', false);
+        dispatch?.(tr);
+      }
       return true;
     });
   }, [editor, styleSignature, normalizedStyle]);
@@ -498,7 +603,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     ...pageNumberPosition(normalizedStyle.pageNumber),
   };
 
-  function applyCurrentBlockStatus({ status, replacementText = null } = {}) {
+  function applyCurrentBlockStatus({ status, replacementText = null, targetBlockId = null } = {}) {
     if (!editor || editor.isDestroyed) return;
 
     let updatedBlockId = selectedParagraphInfo(editor).blockId;
@@ -509,10 +614,17 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     editor.commands.command(({ state, tr, dispatch }) => {
       const paragraphs = collectParagraphs(state);
       const selected = selectedParagraphFromState(state);
-      const target = (selected && !selected.isEmpty && ['processing', 'unprocessed'].includes(selected.status))
+      const target = (targetBlockId
+        ? paragraphs.find((paragraph) => (
+          paragraph.blockId === targetBlockId
+          && !paragraph.isEmpty
+          && ['processing', 'unprocessed'].includes(paragraph.status)
+        ))
+        : null)
+        ?? ((selected && !selected.isEmpty && ['processing', 'unprocessed'].includes(selected.status))
         ? selected
         : paragraphs.find((paragraph) => !paragraph.isEmpty && paragraph.status === 'processing')
-          ?? paragraphs.find((paragraph) => !paragraph.isEmpty && paragraph.status === 'unprocessed');
+          ?? paragraphs.find((paragraph) => !paragraph.isEmpty && paragraph.status === 'unprocessed'));
       if (!target) return false;
 
       updatedBlockId = target.blockId;
@@ -581,22 +693,23 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       suppressEditedStatusResetRef.current = false;
     }
 
+    const snapshot = createEditorSnapshot(editor);
     setActiveBlockStatus(nextLocalProcessingId ? 'processing' : status);
-    const contentJson = editor.getJSON();
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
     if (applied && updatedBlockId) {
       onBlockStatusChange?.({
         blockId: updatedBlockId,
         status,
         nextProcessingBlockId: nextLocalProcessingId,
-        contentJson,
+        ...snapshot,
       });
     }
-    return applied ? contentJson : null;
+    return applied ? snapshot : null;
   }
 
   useImperativeHandle(ref, () => ({
     applyCurrentBlockStatus,
+    getSnapshot: () => createEditorSnapshot(editor),
   }), [editor, onBlockStatusChange]);
 
   function setSelectedBlockStatus(status) {

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { upload } from '../middlewares/upload.js';
 import {
   getCurrentUserProfile,
-  getOrCreateTestUser,
+  getOrCreateUserFromSession,
   getProfilePicture,
   updateProfilePicture,
 } from '../models/users.js';
@@ -10,11 +10,11 @@ import {
 const router = Router();
 
 router.get('/me', async (_req, res) => {
-  res.json(await getCurrentUserProfile());
+  res.json(await getCurrentUserProfile(res.locals.session.user));
 });
 
 router.get('/me/profile-picture', async (_req, res) => {
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const picture = await getProfilePicture(user.id);
   if (!picture?.profile_picture) {
     res.status(404).json({ error: 'Profile picture not found' });
@@ -34,7 +34,7 @@ router.post('/me/profile-picture', upload.single('file'), async (req, res) => {
     return;
   }
 
-  const user = await getOrCreateTestUser();
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
   const updated = await updateProfilePicture({
     userId: user.id,
     buffer: req.file.buffer,
