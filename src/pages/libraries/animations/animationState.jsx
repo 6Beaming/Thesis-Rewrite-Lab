@@ -16,6 +16,7 @@ export function createAnimationState() {
     wandTremorActive: false,
     wandTremorTimer: null,
     wandSuppressUntil: 0,
+    pendingWandShow: false,
     retractionTimer: null,
     chaseVector: { x: 0, y: 0 },
     projectileNodes: new Set(),
@@ -63,6 +64,10 @@ export function createTimerRegistry() {
         clearTimeout(id);
         timers.delete(id);
       }
+    },
+    clearIntervalsTracked() {
+      intervals.forEach((id) => clearInterval(id));
+      intervals.clear();
     },
     wait(ms) {
       return new Promise((resolve) => {

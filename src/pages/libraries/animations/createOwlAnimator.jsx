@@ -214,7 +214,17 @@ function createRightWingController(ctx) {
 }
 
 function createWandController(ctx) {
-  const { state, els, random: randomValue, clearTimer, requestFrame, setTimeoutTracked, wait } = ctx;
+  const {
+    state,
+    els,
+    random: randomValue,
+    clearTimer,
+    clearIntervalsTracked,
+    requestFrame,
+    setTimeoutTracked,
+    wait,
+    clearVariantTimers,
+  } = ctx;
   let magicPriorityPromise = null;
 
   function beginMagicPriority() {
@@ -315,6 +325,20 @@ function createWandController(ctx) {
     }
   }
 
+  function keepWandPoseActive() {
+    clearIntervalsTracked?.();
+    clearVariantTimers?.();
+    state.activeVariant = null;
+    els.stage?.classList.remove('left-wing-clench');
+    els.stage?.classList.add('left-wing-wand-ready');
+    const wand = getMagicWand();
+    wand?.classList.remove('is-materializing', 'is-retracting');
+    wand?.classList.add('is-visible', 'is-ready');
+    snapLeftWingPaths('after');
+    snapWandPaths('after');
+    refreshRetractionTimer();
+  }
+
   function runWandTremorCycle() {
     if (!state.wandTremorActive || state.wand !== 'tremor') {
       return;
@@ -395,7 +419,7 @@ function createWandController(ctx) {
   }
 
   async function retractWand() {
-    if (state.wand === 'hidden' || state.wand === 'showing' || state.wand === 'using') {
+    if (state.wand === 'hidden' || state.wand === 'showing') {
       return;
     }
     state.wand = 'retracting';
@@ -416,7 +440,10 @@ function createWandController(ctx) {
     if (!wand) {
       return;
     }
+    state.wandSuppressUntil = 0;
     if (state.wand === 'showing' || state.wand === 'ready' || state.wand === 'tremor') {
+      state.pendingWandShow = false;
+      keepWandPoseActive();
       refreshRetractionTimer();
       if (state.wand === 'ready' && !state.wandTremorActive) {
         maybeStartWandTremor();
@@ -424,10 +451,18 @@ function createWandController(ctx) {
       return;
     }
     if (state.error || state.thinking) {
+      state.pendingWandShow = true;
       return;
     }
+    if (state.wand === 'retracting') {
+      resetWand();
+    }
 
+    state.pendingWandShow = false;
     state.wand = 'showing';
+    clearIntervalsTracked?.();
+    clearVariantTimers?.();
+    state.activeVariant = null;
     wand.classList.remove('is-retracting');
     snapWandPaths('intermediate');
     refreshRetractionTimer();
@@ -452,6 +487,7 @@ function createWandController(ctx) {
     getMagicWand()?.classList.remove('is-materializing');
     getMagicWand()?.classList.add('is-ready');
     state.wand = 'ready';
+    keepWandPoseActive();
     maybeStartWandTremor();
   }
 
@@ -478,29 +514,32 @@ function createWandController(ctx) {
       if (state.wand === 'showing') {
         await wait(600);
       }
-      if (state.wand === 'tremor') {
-        await stopWandTremor(100);
-      } else {
-        await wait(100);
-      }
       if (state.wand === 'hidden') {
         return;
       }
 
-      state.wand = 'using';
-      state.wandSuppressUntil = Date.now() + 10000;
+      keepWandPoseActive();
       ctx.particles.clearProjectiles();
       const particleDuration = ctx.particles.fireMagicAt(target, options) ?? MAGIC_PARTICLE_FLIGHT_MS;
       refreshRetractionTimer();
       await wait(particleDuration);
-      if (state.wand === 'using') {
+      state.wandSuppressUntil = 0;
+      if (state.wand !== 'tremor') {
         state.wand = 'ready';
       }
-      setTimeoutTracked(() => {
+      keepWandPoseActive();
+      if (state.pendingWandShow) {
+        state.pendingWandShow = false;
+        refreshRetractionTimer();
         if (state.wand === 'ready') {
           maybeStartWandTremor();
         }
-      }, 10000);
+      } else {
+        refreshRetractionTimer();
+        if (state.wand === 'ready') {
+          maybeStartWandTremor();
+        }
+      }
     } finally {
       releaseMagicPriority();
     }
@@ -581,6 +620,16 @@ export function createOwlAnimator(stageRoot) {
     ctx.standby.enterStandby(choice);
   }
 
+  function showPendingWandAfterMode() {
+    if (!state.pendingWandShow) {
+      return;
+    }
+    state.pendingWandShow = false;
+    timers.setTimeoutTracked(() => {
+      ctx.wand.showWand();
+    }, 0);
+  }
+
   async function startThinking() {
     if (state.thinking) {
       return;
@@ -618,6 +667,7 @@ export function createOwlAnimator(stageRoot) {
     ctx.setIndicator('answer', false);
     ctx.eyes.startBlink();
     startStandby(state.standbyChoice || 'random');
+    showPendingWandAfterMode();
   }
 
   async function triggerError() {
@@ -657,6 +707,7 @@ export function createOwlAnimator(stageRoot) {
     ctx.setIndicator('error', false);
     state.error = false;
     startStandby(state.standbyChoice || 'random');
+    showPendingWandAfterMode();
   }
 
   ctx.endThinking = endThinking;
