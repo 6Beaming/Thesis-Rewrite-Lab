@@ -613,8 +613,8 @@ export default function WorkspacePage() {
         setEditorContent(nextDraft.contentJson);
         setEditorReloadKey((value) => value + 1);
       })
-      .catch((error) => {
-        if (alive) setWorkspaceNotice(error.message || 'Could not load document details.');
+      .catch(() => {
+        if (alive) setWorkspaceNotice('');
       });
 
     return () => {
@@ -1620,6 +1620,7 @@ export default function WorkspacePage() {
 
   if (view === 'workspace') {
     const documentTitle = selectedDocument?.title ?? 'Assignment 2: article 2';
+    const headerNotice = /document not found/i.test(workspaceNotice) ? '' : workspaceNotice;
     const recentDocuments = workspaceHistoryDocuments.length
       ? workspaceHistoryDocuments
       : workspaceHistoryFallback(selectedDocument);
@@ -1674,8 +1675,8 @@ export default function WorkspacePage() {
                 aria-label="Document title"
               />
             </div>
-            {(workspaceNotice || workspaceDirty) && (
-              <small>{workspaceNotice || 'Unsaved changes'}</small>
+            {(headerNotice || workspaceDirty) && (
+              <small>{headerNotice || 'Unsaved changes'}</small>
             )}
             <button
               ref={mobileOptionsButtonRef}

@@ -304,6 +304,10 @@
   min-width: 0;
 }
 
+.editor-toolbar .toolbar-select-trigger {
+  min-width: 0;
+}
+
 .toolbar-select-wrapper--wide {
   min-width: 180px;
 }
