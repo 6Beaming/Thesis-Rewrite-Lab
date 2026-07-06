@@ -757,6 +757,7 @@ export default function WorkspacePage() {
         setWorkspaceNotice('Saved locally');
       } else {
         const result = await saveDocument(document.id, {
+          title: document.title,
           academicStyle: styleName,
           styleSettings,
           contentJson: document.content_json,
@@ -1530,7 +1531,7 @@ export default function WorkspacePage() {
             />
           ) : null}
           {mobileOptionsTab === 'analyzing' ? (
-            <section className="workspace-mode-card">
+            <section className="workspace-mode-card workspace-mode-card--interactive">
               <h2>Analyzing</h2>
               <p>Local writing signals and style-fit grades stay editable here.</p>
               {renderAnalysisStats()}
@@ -1544,7 +1545,7 @@ export default function WorkspacePage() {
   function renderWorkspaceMode() {
     if (workspaceMode === 'analyzing') {
       return (
-        <section className="workspace-mode-card">
+        <section className="workspace-mode-card workspace-mode-card--interactive">
           <h2>Analyzing</h2>
           <p>Local writing signals and style-fit grades stay editable here.</p>
           {renderAnalysisStats()}
