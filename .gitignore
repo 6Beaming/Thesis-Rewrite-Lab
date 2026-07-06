@@ -7,3 +7,9 @@ dist/
 
 !.env.example
 .DS_Store
+
+# Oversized / intermediate frontend transcript splits (use *-part*.jsonl commits only)
+docs/session transcripts/frontend-with-codex.jsonl
+docs/session transcripts/frontend-with-codex-part1.jsonl
+docs/session transcripts/frontend-with-codex-part2.jsonl
+docs/session transcripts/frontend-with-codex-part2-part2.jsonl
