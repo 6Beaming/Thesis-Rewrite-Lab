@@ -44,6 +44,19 @@ HTTP-only cookie backed by PostgreSQL.
 Only verified Google email addresses are accepted. Google access, refresh, and
 ID tokens are not stored.
 
+## Authentication security
+
+| Protection | Purpose | Location |
+| --- | --- | --- |
+| CSRF token | Acts like a request guard so another website cannot submit sign-in or sign-out using the browser's cookies. | Requested and submitted by `src/services/auth.js`; checked by Auth.js. |
+| PKCE, state, and nonce | Protect the Google authorization code and connect the callback to the sign-in request that started it. | Configured in `server/auth.js`; handled by Auth.js. |
+| Origin check | Accepts authentication requests only through the configured application URL. | Defined in `server/middlewares/requireAuth.js` and applied in `app.js`. |
+| Rate limiting | Allows at most 60 authentication requests per client every 15 minutes. | Configured and applied in `app.js`. |
+| Security headers | Adds browser protections and limits which sources can load content. | Configured with Helmet in `app.js`. |
+
+CSRF checks whether an action came through this application. The separate
+`requireAuth` middleware checks whether the user is signed in.
+
 ## How Auth.js works
 
 Auth.js is the library that controls the OAuth workflow. `app.js` mounts it at
@@ -71,13 +84,6 @@ components, Express routes, and middleware never call the adapter directly.
 After validating Google, Auth.js chooses the required operation, and
 `auth-adapter.js` translates it into PostgreSQL queries.
 
-### CSRF request guard
-
-A CSRF token acts like an API guard for actions such as sign-in and sign-out. It
-proves that the request was intentionally started through this application, not
-submitted by another website using the browser's cookies. Auth.js creates and
-checks this token automatically. This is different from `requireAuth`, which
-checks whether the user is signed in.
 
 ## Auth.js files and sign-in use case
 
