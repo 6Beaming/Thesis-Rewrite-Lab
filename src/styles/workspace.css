@@ -2651,15 +2651,15 @@
 .chalk-auth-form {
   width: 74%;
   max-width: 560px;
-  max-height: calc(66.666dvh - 24px);
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  justify-content: center;
+  justify-content: flex-start;
   gap: clamp(8px, 1.65dvh, 18px);
 }
 
 .chalk-auth-form--oauth {
+  width: min(74%, 480px);
   gap: 40px;
 }
 
@@ -2779,8 +2779,12 @@
   padding: 0 clamp(16px, 3dvh, 28px);
   transform: rotate(0.12deg);
   font-size: clamp(0.88rem, 2dvh, 1.35rem);
-  line-height: 1;
-  white-space: nowrap;
+  line-height: 1.2;
+  min-height: clamp(44px, 6.7dvh, 76px);
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chalk-message--loading,
@@ -2872,6 +2876,11 @@
     width: calc(100vw - 88px);
     max-width: 280px;
     gap: 40px;
+  }
+
+  .chalk-auth-form--oauth {
+    width: calc(100vw - 88px);
+    max-width: 280px;
   }
 
   .chalk-tab {
