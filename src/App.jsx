@@ -14,6 +14,14 @@ function App() {
           </RequireSignIn>
         )}
       />
+      <Route
+        path="/worksapce"
+        element={(
+          <RequireSignIn>
+            <WorkspacePage />
+          </RequireSignIn>
+        )}
+      />
       <Route path="/profile" element={<Profile />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
