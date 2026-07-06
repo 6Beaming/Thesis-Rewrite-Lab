@@ -1061,8 +1061,7 @@
     min-width: 0;
   }
 
-  .workspace-paper-header small,
-  .workspace-paper-header-main span {
+  .workspace-paper-header small {
     display: none;
   }
 

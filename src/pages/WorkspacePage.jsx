@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router';
 import blackboardUrl from '../assets/blackboard.png';
 import AcademicStylePanel, {
   DEFAULT_CUSTOM_STYLE,
@@ -22,6 +23,7 @@ import HomePage from './HomePage.jsx';
 const PLACEHOLDER_DELAY_MS = 5000;
 const REGEN_COOLDOWN_MS = 10000;
 const DEMO_STORE_KEY = 'project-thesis-rewriter:demo-store:v1';
+const LAST_WORKSPACE_DOCUMENT_KEY = 'project-thesis-rewriter:last-workspace-document:v1';
 const DEMO_BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 const ANALYSIS_SIGNAL_LABELS = {
   passive: 'Passive constructions',
@@ -103,6 +105,25 @@ function readDemoStore() {
 function writeDemoStore(store) {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(DEMO_STORE_KEY, JSON.stringify(store));
+}
+
+function readLastWorkspaceDocument() {
+  if (typeof window === 'undefined') return null;
+  try {
+    return JSON.parse(window.sessionStorage.getItem(LAST_WORKSPACE_DOCUMENT_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function rememberWorkspaceDocument(document) {
+  if (typeof window === 'undefined' || !document?.id) return;
+  window.sessionStorage.setItem(LAST_WORKSPACE_DOCUMENT_KEY, JSON.stringify({
+    id: document.id,
+    title: document.title,
+    academic_style: document.academic_style,
+    style_settings: document.style_settings,
+  }));
 }
 
 function textFromDemoNode(node) {
@@ -439,7 +460,11 @@ function hydrateWorkspaceDocument(document) {
 }
 
 export default function WorkspacePage() {
-  const [view, setView] = useState('home');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [view, setView] = useState(() => (
+    location.pathname === '/worksapce' ? 'workspace' : 'home'
+  ));
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [workspaceNotice, setWorkspaceNotice] = useState('');
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
@@ -516,6 +541,38 @@ export default function WorkspacePage() {
   }, []);
 
   useEffect(() => {
+    if (location.pathname !== '/worksapce') {
+      setView('home');
+      return undefined;
+    }
+
+    setView('workspace');
+    if (selectedDocument) return undefined;
+
+    const rememberedDocument = readLastWorkspaceDocument();
+    if (rememberedDocument) {
+      openWorkspace(rememberedDocument, { updateRoute: false });
+      return undefined;
+    }
+
+    let alive = true;
+    listDocuments({ sort: 'most_recent' })
+      .then((data) => {
+        if (!alive) return;
+        const document = data.documents?.[0] ?? workspaceHistoryFallback(null)[0];
+        openWorkspace(document, { updateRoute: false });
+      })
+      .catch(() => {
+        if (!alive) return;
+        openWorkspace(workspaceHistoryFallback(null)[0], { updateRoute: false });
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [location.pathname]);
+
+  useEffect(() => {
     if (!mobileOptionsOpen) return undefined;
 
     function closeMobileOptions(event) {
@@ -588,8 +645,10 @@ export default function WorkspacePage() {
     };
   }, [view, selectedDocument?.id]);
 
-  function openWorkspace(document) {
+  function openWorkspace(document, { updateRoute = true } = {}) {
     const hydratedDocument = hydrateWorkspaceDocument(document);
+    if (!hydratedDocument) return;
+
     const nextStyleName = hydratedDocument?.academic_style || 'APA';
     const nextStyleSettings = {
       ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
@@ -619,7 +678,11 @@ export default function WorkspacePage() {
       applyWithExplanation: false,
     })));
     setWorkspaceHistoryExpanded(false);
+    rememberWorkspaceDocument(hydratedDocument);
     setView('workspace');
+    if (updateRoute && location.pathname !== '/worksapce') {
+      navigate('/worksapce');
+    }
   }
 
   function handleTemplateChange(nextStyleName) {
@@ -694,6 +757,7 @@ export default function WorkspacePage() {
         setWorkspaceNotice('Saved locally');
       } else {
         const result = await saveDocument(document.id, {
+          title: document.title,
           academicStyle: styleName,
           styleSettings,
           contentJson: document.content_json,
@@ -712,6 +776,7 @@ export default function WorkspacePage() {
       setShowUnsavedBackPrompt(false);
       if (leaveAfterSave) {
         setView('home');
+        navigate('/');
       }
       return true;
     } catch (error) {
@@ -728,12 +793,14 @@ export default function WorkspacePage() {
       return;
     }
     setView('home');
+    navigate('/');
   }
 
   function leaveWorkspaceWithoutSaving() {
     setShowUnsavedBackPrompt(false);
     setWorkspaceDirty(false);
     setView('home');
+    navigate('/');
   }
 
   function handleWorkspaceUploadInputChange(event) {
@@ -1464,7 +1531,7 @@ export default function WorkspacePage() {
             />
           ) : null}
           {mobileOptionsTab === 'analyzing' ? (
-            <section className="workspace-mode-card">
+            <section className="workspace-mode-card workspace-mode-card--interactive">
               <h2>Analyzing</h2>
               <p>Local writing signals and style-fit grades stay editable here.</p>
               {renderAnalysisStats()}
@@ -1478,7 +1545,7 @@ export default function WorkspacePage() {
   function renderWorkspaceMode() {
     if (workspaceMode === 'analyzing') {
       return (
-        <section className="workspace-mode-card">
+        <section className="workspace-mode-card workspace-mode-card--interactive">
           <h2>Analyzing</h2>
           <p>Local writing signals and style-fit grades stay editable here.</p>
           {renderAnalysisStats()}
@@ -1600,7 +1667,6 @@ export default function WorkspacePage() {
           <div className="workspace-paper-header">
             <button type="button" className="workspace-back-button" onClick={requestWorkspaceBack}>Back</button>
             <div className="workspace-paper-header-main">
-              <span>{styleName}</span>
               <input
                 className="workspace-title-input"
                 value={documentTitle}
@@ -1608,7 +1674,9 @@ export default function WorkspacePage() {
                 aria-label="Document title"
               />
             </div>
-            <small>{workspaceNotice || (workspaceDirty ? 'Unsaved changes' : 'Ready')}</small>
+            {(workspaceNotice || workspaceDirty) && (
+              <small>{workspaceNotice || 'Unsaved changes'}</small>
+            )}
             <button
               ref={mobileOptionsButtonRef}
               type="button"
