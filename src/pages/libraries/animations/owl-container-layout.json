@@ -1,0 +1,109 @@
+{
+  "generatedAt": "2026-07-05T10:49:06.512Z",
+  "blackboard": {
+    "naturalWidth": 768,
+    "naturalHeight": 1376,
+    "maxWidth": "33dvw"
+  },
+  "desktop": {
+    "id": "desktop",
+    "referenceViewBox": {
+      "width": 512,
+      "height": 709
+    },
+    "containerHeight": 700.402,
+    "aspectRatio": 0.7310087635386535,
+    "layers": {
+      "indicator": {
+        "top": "0.0000%",
+        "width": "18.0130%",
+        "height": "26.9090%",
+        "centerX": "48.6550%"
+      },
+      "owl": {
+        "top": "17.6696%",
+        "width": "100%",
+        "height": "73.1009%"
+      },
+      "bottom": {
+        "top": "78.9301%",
+        "height": "21.0699%",
+        "width": "100%"
+      }
+    },
+    "regions": {
+      "indicator": {
+        "heightRatio": 0.26908975131424523,
+        "widthRatio": 0.18013046875,
+        "centerXRatio": 0.486549609375
+      },
+      "owl": {
+        "topRatio": 0.17669566905862633,
+        "heightRatio": 0.7310087635386535,
+        "viewBox": {
+          "width": 512,
+          "height": 512
+        }
+      },
+      "bottom": {
+        "topRatio": 0.7893010014248959,
+        "heightRatio": 0.2106989985751041,
+        "assetId": "books"
+      }
+    }
+  },
+  "mobile": {
+    "id": "mobile",
+    "referenceViewBox": {
+      "width": 748,
+      "height": 748
+    },
+    "containerHeight": 703.229,
+    "aspectRatio": 1.0636648943658467,
+    "layers": {
+      "indicator": {
+        "top": "0.0000%",
+        "width": "12.3298%",
+        "height": "26.8726%",
+        "centerX": "49.8329%"
+      },
+      "owl": {
+        "top": "27.1930%",
+        "width": "100%",
+        "height": "72.8070%"
+      },
+      "bottom": {
+        "top": "72.3601%",
+        "height": "27.5519%",
+        "width": "100%"
+      }
+    },
+    "regions": {
+      "indicator": {
+        "heightRatio": 0.2687261190878078,
+        "widthRatio": 0.12329786096256684,
+        "centerXRatio": 0.4983294117647059
+      },
+      "owl": {
+        "topRatio": 0.27192991187792315,
+        "heightRatio": 0.7280700881220769,
+        "viewBox": {
+          "width": 512,
+          "height": 512
+        }
+      },
+      "bottom": {
+        "topRatio": 0.7236007047490931,
+        "heightRatio": 0.2755190698904624,
+        "assetId": "twig"
+      }
+    }
+  },
+  "mobileFloating": {
+    "visibleWidth": "min(128px, 33.33dvw)",
+    "hiddenOverflowRatio": 0.25,
+    "visibleWidthRatio": 0.75,
+    "minTop": "0dvh",
+    "snapSide": "left"
+  }
+}

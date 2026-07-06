@@ -23,9 +23,12 @@ This project is a sentence-level academic writing platform that utilizes determi
 ## Capabilities
 
 ### Authentication
-Implement secure user login and registration.
+Secure user login and registration is implemented with Google OAuth 2.0 through
+Auth.js. The first successful Google sign-in creates a local user record; later
+sign-ins reuse that account. The application has no password flow and stores no
+Google access, refresh, or ID tokens.
 * **Assignee:** Eric
-* **OAuth Provider:** Google OAuth 2.0 (implemented via NextAuth.js/Auth.js for seamless integration).
+* **OAuth Provider:** Google OAuth 2.0 (implemented via Auth.js for Express).
 
 ### Look and Feel
 Refine the UI/UX for a professional and intuitive user experience. Serves as the mockup step.

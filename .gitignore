@@ -1,0 +1,9 @@
+local/
+AGENTS.md
+.env
+
+node_modules/
+dist/
+
+!.env.example
+.DS_Store

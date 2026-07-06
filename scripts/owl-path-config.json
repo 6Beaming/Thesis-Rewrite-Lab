@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "defaultViewBox": {
+    "width": 512,
+    "height": 512
+  },
+  "assets": {
+    "owlSvg": "src/assets/owl.svg",
+    "rightWingRefSvg": "src/assets/test_right_wing_anim.svg",
+    "leftWingRefSvg": "src/assets/test_left_wing_anim.svg",
+    "magicWandSvg": "src/assets/magic_wand.svg"
+  },
+  "rightWing": {
+    "referenceGroups": {
+      "before": "before",
+      "after": "after"
+    },
+    "referenceAnchor": {
+      "before": "right_wing_bg_2",
+      "after": "right_wing_bg"
+    },
+    "owlAnchorId": "right_wing",
+    "idMap": {
+      "before": {
+        "right_wing_bg_2": "right_wing",
+        "right_wing_3_and_4_2": "right_wing_3_and_4",
+        "right_wing_separator_34_2": "right_wing_separator_34",
+        "right_wing_2_2": "right_wing_2",
+        "right_wing_separator_23_2": "right_wing_separator_23",
+        "right_wing_1_2": "right_wing_1",
+        "right_wing_separator_12_2": "right_wing_separator_12"
+      },
+      "after": {
+        "right_wing_bg": "right_wing",
+        "right_wing_3_and_4": "right_wing_3_and_4",
+        "right_wing_separator_34": "right_wing_separator_34",
+        "right_wing_2": "right_wing_2",
+        "right_wing_separator_23": "right_wing_separator_23",
+        "right_wing_1": "right_wing_1",
+        "right_wing_separator_12": "right_wing_separator_12"
+      }
+    },
+    "afterState": {
+      "groupRotateDeg": -10
+    }
+  },
+  "leftWing": {
+    "referenceGroups": {
+      "before": "before",
+      "intermediate": "intermediate",
+      "after": "after"
+    },
+    "referenceAnchor": {
+      "before": "left_wing_3",
+      "intermediate": "left_wing_2",
+      "after": "left_wing"
+    },
+    "owlAnchorId": "left_wing",
+    "idMap": {
+      "before": {
+        "left_wing_3": "left_wing",
+        "left_wing_2_and_3_and_4_3": "left_wing_2_and_3_and_4",
+        "left_wing_separator_34_3": "left_wing_separator_34",
+        "left_wing_1_and_2_3": "left_wing_1_and_2",
+        "left_wing_separator_23_3": "left_wing_separator_23",
+        "left_wing_1_3": "left_wing_1",
+        "left_wing_separator_12_3": "left_wing_separator_12"
+      },
+      "intermediate": {
+        "left_wing_2": "left_wing",
+        "left_wing_2_and_3_and_4_2": "left_wing_2_and_3_and_4",
+        "left_wing_separator_34_2": "left_wing_separator_34",
+        "left_wing_1_and_2_2": "left_wing_1_and_2",
+        "left_wing_separator_23_2": "left_wing_separator_23",
+        "left_wing_1_2": "left_wing_1",
+        "left_wing_separator_12_2": "left_wing_separator_12"
+      },
+      "after": {
+        "left_wing": "left_wing",
+        "left_wing_2_and_3_and_4": "left_wing_2_and_3_and_4",
+        "left_wing_separator_34": "left_wing_separator_34",
+        "left_wing_1_and_2": "left_wing_1_and_2",
+        "left_wing_separator_23": "left_wing_separator_23",
+        "left_wing_1": "left_wing_1",
+        "left_wing_separator_12": "left_wing_separator_12"
+      }
+    },
+    "wandIdMap": {
+      "intermediate": {
+        "wand_frame_2": "wand_frame",
+        "right_filler_2": "right_filler",
+        "left_filler_2": "left_filler",
+        "middle_filler_2": "middle_filler",
+        "wand_filler_2": "wand_filler"
+      },
+      "after": {
+        "wand_frame": "wand_frame",
+        "right_filler": "right_filler",
+        "left_filler": "left_filler",
+        "middle_filler": "middle_filler",
+        "wand_filler": "wand_filler"
+      }
+    }
+  },
+  "wandPresentation": {
+    "readyScale": 1.15,
+    "hiddenScale": 1.035,
+    "transformOrigin": {
+      "x": 448,
+      "y": 345
+    }
+  },
+  "output": {
+    "catalogJson": "scripts/generated/owl-path-catalog.json"
+  }
+}
