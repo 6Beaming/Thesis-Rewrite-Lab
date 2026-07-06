@@ -6,6 +6,7 @@ import AcademicStylePanel, {
 } from '../components/AcademicStylePanel.jsx';
 import DocumentEditor from '../components/DocumentEditor.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
+import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
 import OwlContainer from '../components/OwlContainer.jsx';
 import { getBlackboardCssVars, getMobileContainerCssVars } from './libraries/animations/containerLayout.js';
 import { useFloatingWindow } from './libraries/useFloatingWindow.js';
@@ -18,13 +19,36 @@ import {
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
 
-const TEST_EMAIL = 'test@example.com';
-const TEST_PASSWORD = '123456';
-const TEST_DELAY_MS = 5000;
 const PLACEHOLDER_DELAY_MS = 5000;
 const REGEN_COOLDOWN_MS = 10000;
 const DEMO_STORE_KEY = 'project-thesis-rewriter:demo-store:v1';
 const DEMO_BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
+const ANALYSIS_SIGNAL_LABELS = {
+  passive: 'Passive constructions',
+  nominalization: 'Nominalization clusters',
+  hedging: 'Hedging and certainty',
+  transitions: 'Transition gaps',
+};
+
+function PanelChevron({ direction }) {
+  const isLeft = direction === 'left';
+  return (
+    <svg className="workspace-mobile-card-arrow" viewBox="0 0 24 24" aria-hidden="true">
+      <path d={isLeft ? 'M15 6l-6 6 6 6' : 'M9 6l6 6-6 6'} />
+    </svg>
+  );
+}
+
+function UploadDocIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 5.5v8.5" />
+      <path d="M8.75 8.75 12 5.5l3.25 3.25" />
+      <path d="M6 16.75v1.1c0 .9.73 1.65 1.65 1.65h8.7c.92 0 1.65-.75 1.65-1.65v-1.1" />
+      <path d="M8.4 15.75h7.2" />
+    </svg>
+  );
+}
 
 function workspaceHistoryFallback(selectedDocument) {
   const now = Date.now();
@@ -341,17 +365,12 @@ export default function WorkspacePage() {
   const [mobileOptionsTab, setMobileOptionsTab] = useState('setup');
   const [workspaceHistoryDocuments, setWorkspaceHistoryDocuments] = useState([]);
   const [workspaceHistoryExpanded, setWorkspaceHistoryExpanded] = useState(false);
-  const [mode, setMode] = useState('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState('');
-  const [messageTone, setMessageTone] = useState('error');
-  const [showForgot, setShowForgot] = useState(false);
-  const [errorKey, setErrorKey] = useState(0);
-  const submitButtonRef = useRef(null);
-  const submitLockedRef = useRef(false);
-  const owlAnimatorRef = useRef(null);
+  const [analysisSignals, setAnalysisSignals] = useState({
+    passive: true,
+    nominalization: true,
+    hedging: false,
+    transitions: false,
+  });
   const workspaceOwlAnimatorRef = useRef(null);
   const mobileWorkspaceOwlAnimatorRef = useRef(null);
   const documentEditorRef = useRef(null);
@@ -361,7 +380,6 @@ export default function WorkspacePage() {
   const workspaceUploadInputRef = useRef(null);
   const mobileOptionsPanelRef = useRef(null);
   const mobileOptionsButtonRef = useRef(null);
-  const magicTargets = useMemo(() => [submitButtonRef], []);
   const blackboardStyle = getBlackboardCssVars();
   const {
     windowRef: mobileOwlRef,
@@ -376,22 +394,6 @@ export default function WorkspacePage() {
     top: `${mobileOwlPosition.top}px`,
   }), [mobileOwlMetrics, mobileOwlPosition]);
   const styleSettingsSignature = useMemo(() => JSON.stringify(styleSettings ?? {}), [styleSettings]);
-
-  useEffect(() => {
-    if (!message || messageTone === 'loading') {
-      return undefined;
-    }
-
-    const timer = setTimeout(() => {
-      setMessage('');
-      setMessageTone('error');
-      setShowForgot(false);
-    }, 5000);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [message, messageTone]);
 
   useEffect(() => () => {
     if (rewriteRefreshTimerRef.current) {
@@ -420,97 +422,6 @@ export default function WorkspacePage() {
       document.removeEventListener('pointerdown', closeMobileOptions);
     };
   }, [mobileOptionsOpen]);
-
-  async function triggerButtonMagic() {
-    const animator = owlAnimatorRef.current;
-    const target = submitButtonRef.current;
-    if (!animator || !target) {
-      return;
-    }
-    await animator.useMagic(target, { effect: 'button-burst' });
-  }
-
-  function showError(nextMessage, options = {}) {
-    setMessage(nextMessage);
-    setMessageTone('error');
-    setShowForgot(Boolean(options.showForgot));
-    setErrorKey((value) => value + 1);
-  }
-
-  async function placeholderTest(event) {
-    event.preventDefault();
-    if (loading || submitLockedRef.current) {
-      return;
-    }
-
-    submitLockedRef.current = true;
-    try {
-      if (mode === 'signup') {
-        setShowForgot(false);
-        await triggerButtonMagic();
-        setMessage('Sign Up is not available yet.');
-        setMessageTone('success');
-        return;
-      }
-
-      const submittedEmail = email.trim().toLowerCase();
-      const submittedPassword = password;
-      const loginRequest = sleep(TEST_DELAY_MS);
-
-      await triggerButtonMagic();
-
-      setShowForgot(false);
-      setMessage('Loading...');
-      setMessageTone('loading');
-      setLoading(true);
-
-      await loginRequest;
-
-      if (submittedEmail !== TEST_EMAIL) {
-        showError('Account not found.');
-        setLoading(false);
-        return;
-      }
-
-      if (submittedPassword !== TEST_PASSWORD) {
-        showError('Incorrect Password!', { showForgot: true });
-        setLoading(false);
-        return;
-      }
-
-      setLoading(false);
-      setMessage('Login Success!');
-      setMessageTone('success');
-      await sleep(900);
-      setView('home');
-    } finally {
-      submitLockedRef.current = false;
-    }
-  }
-
-  function switchMode(nextMode) {
-    if (loading || mode === nextMode) {
-      return;
-    }
-    setMode(nextMode);
-    setMessage('');
-    setMessageTone('error');
-    setShowForgot(false);
-  }
-
-  function handleResetPassword() {
-    if (loading) {
-      return;
-    }
-
-    if (email.trim().toLowerCase() === TEST_EMAIL) {
-      setShowForgot(false);
-      setMessage('Reset link ready for test@example.com.');
-      setMessageTone('success');
-    } else {
-      showError('Enter test@example.com first.');
-    }
-  }
 
   useEffect(() => {
     if (view !== 'workspace' || !selectedDocument?.id || selectedDocument.id.startsWith('demo-')) {
@@ -1164,29 +1075,41 @@ export default function WorkspacePage() {
 
         {mobilePanelMode === 'rewriting' ? (
           <div className="workspace-mobile-panel-body">
-            <div className="workspace-mobile-card-nav">
-              <button type="button" onClick={() => moveMobileRewrite(-1)}>{'<'}</button>
-              <span>{mobileRewriteIndex + 1} / {rewriteCards.length}</span>
-              <button type="button" onClick={() => moveMobileRewrite(1)}>{'>'}</button>
-            </div>
-            {!rewriteAllCompleted ? (
-              <button
-                type="button"
-                className="rewrite-disable-current"
-                onClick={disableCurrentRewriteBlock}
-                disabled={rewriteCardsLocked || rewriteBusy}
-              >
-                Disable Current Block
-              </button>
-            ) : null}
-            {rewriteAllCompleted ? renderRewriteCompleteCard() : (currentRewriteCard ? renderRewriteCard(currentRewriteCard) : null)}
+            {rewriteAllCompleted ? (
+              renderRewriteCompleteCard()
+            ) : (
+              <>
+                <div className="workspace-mobile-card-nav">
+                  <button type="button" onClick={() => moveMobileRewrite(-1)} aria-label="Previous rewriting card">
+                    <PanelChevron direction="left" />
+                  </button>
+                  <span>{mobileRewriteIndex + 1} / {rewriteCards.length}</span>
+                  <button type="button" onClick={() => moveMobileRewrite(1)} aria-label="Next rewriting card">
+                    <PanelChevron direction="right" />
+                  </button>
+                </div>
+                {currentRewriteCard ? renderRewriteCard(currentRewriteCard) : null}
+                <button
+                  type="button"
+                  className="rewrite-disable-current"
+                  onClick={disableCurrentRewriteBlock}
+                  disabled={rewriteCardsLocked || rewriteBusy}
+                >
+                  Disable Current Block
+                </button>
+              </>
+            )}
           </div>
         ) : (
           <div className="workspace-mobile-panel-body">
             <div className="workspace-mobile-card-nav">
-              <button type="button" onClick={() => moveMobilePractice(-1)}>{'<'}</button>
+              <button type="button" onClick={() => moveMobilePractice(-1)} aria-label="Previous practice card">
+                <PanelChevron direction="left" />
+              </button>
               <span>{mobilePracticeIndex + 1} / 2</span>
-              <button type="button" onClick={() => moveMobilePractice(1)}>{'>'}</button>
+              <button type="button" onClick={() => moveMobilePractice(1)} aria-label="Next practice card">
+                <PanelChevron direction="right" />
+              </button>
             </div>
             {mobilePracticeIndex === 0 ? (
               <article
@@ -1225,12 +1148,90 @@ export default function WorkspacePage() {
   }
 
   function renderAnalysisStats() {
+    const blocks = selectedDocument?.blocks ?? [];
+    const documentText = blocks.map((block) => block?.text_content ?? '').join(' ').trim();
+    const words = documentText ? documentText.split(/\s+/) : [];
+    const totalBlocks = blocks.length;
+    const activeSignals = Object.entries(analysisSignals).filter(([, enabled]) => enabled).length;
+    const completion = Math.round(Number(selectedDocument?.completed_rate ?? 0) * 100);
+    const avgSentenceLength = totalBlocks ? (words.length / Math.max(totalBlocks, 1)).toFixed(1) : '0.0';
+    const passivePercent = Math.min(48, Math.max(12, 12 + totalBlocks * 5));
+    const nominalPercent = Math.min(52, Math.max(18, 14 + Math.round(words.length / 12)));
+    const cohesionScore = Math.min(0.99, Math.max(0.31, 0.41 + completion / 220)).toFixed(2);
+    const toneFit = Math.min(96, Math.max(34, completion || 34));
+    const compression = Math.min(90, Math.max(22, 22 + totalBlocks * 9));
+    const rewritePriority = Math.min(92, Math.max(28, 28 + activeSignals * 14 + Math.max(0, 3 - totalBlocks) * 4));
+    const signalCounts = {
+      passive: Math.max(1, Math.round(totalBlocks * 1.5) || 1),
+      nominalization: Math.max(2, Math.round(words.length / 7) || 2),
+      hedging: Math.max(1, Math.round(totalBlocks / 2) || 1),
+      transitions: Math.max(1, totalBlocks - 1 || 1),
+    };
+
     return (
-      <dl className="analysis-stats">
-        <div><dt>Completion</dt><dd>{Math.round(Number(selectedDocument?.completed_rate ?? 0) * 100)}%</dd></div>
-        <div><dt>Blocks</dt><dd>{selectedDocument?.blocks?.length ?? 2}</dd></div>
-        <div><dt>Current Style</dt><dd>{styleName}</dd></div>
-      </dl>
+      <>
+        <div className="analysis-stat-grid">
+          <div className="analysis-stat-card">
+            <strong>{avgSentenceLength}</strong>
+            <span>Avg. sentence length</span>
+          </div>
+          <div className="analysis-stat-card">
+            <strong>{passivePercent}%</strong>
+            <span>Passive voice</span>
+          </div>
+          <div className="analysis-stat-card">
+            <strong>{nominalPercent}%</strong>
+            <span>Nominal density</span>
+          </div>
+          <div className="analysis-stat-card">
+            <strong>{cohesionScore}</strong>
+            <span>Cohesion score</span>
+          </div>
+        </div>
+
+        <div className="analysis-filter-list">
+          {Object.entries(ANALYSIS_SIGNAL_LABELS).map(([key, label]) => (
+            <label key={key} className="analysis-filter-row">
+              <input
+                type="checkbox"
+                checked={analysisSignals[key]}
+                onChange={() => {
+                  setAnalysisSignals((current) => ({
+                    ...current,
+                    [key]: !current[key],
+                  }));
+                }}
+              />
+              <span>{label}</span>
+              <span className="analysis-filter-count">{signalCounts[key]}</span>
+            </label>
+          ))}
+        </div>
+
+        <dl className="analysis-stats">
+          <div>
+            <dt>Academic tone fit</dt>
+            <dd>{toneFit}%</dd>
+          </div>
+          <div className="analysis-bar-track">
+            <div className="analysis-bar-fill analysis-bar-fill--green" style={{ width: `${toneFit}%` }} />
+          </div>
+          <div>
+            <dt>Context compression</dt>
+            <dd>{compression}%</dd>
+          </div>
+          <div className="analysis-bar-track">
+            <div className="analysis-bar-fill" style={{ width: `${compression}%` }} />
+          </div>
+          <div>
+            <dt>Rewrite priority</dt>
+            <dd>{rewritePriority}%</dd>
+          </div>
+          <div className="analysis-bar-track">
+            <div className="analysis-bar-fill analysis-bar-fill--amber" style={{ width: `${rewritePriority}%` }} />
+          </div>
+        </dl>
+      </>
     );
   }
 
@@ -1259,9 +1260,10 @@ export default function WorkspacePage() {
         <div className="workspace-mobile-options-body">
           {mobileOptionsTab === 'setup' ? (
             <section className="workspace-upload-note">
-              <p>Uploading creates a new document. Press Save before leaving to keep current edits.</p>
-              <button type="button" onClick={() => workspaceUploadInputRef.current?.click()}>
-                Upload New Document
+              <p>Upload a new document. Save current edits before leaving.</p>
+              <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
+                <UploadDocIcon />
+                Upload
               </button>
             </section>
           ) : null}
@@ -1287,7 +1289,7 @@ export default function WorkspacePage() {
           {mobileOptionsTab === 'analyzing' ? (
             <section className="workspace-mode-card">
               <h2>Analyzing</h2>
-              <p>Style statistics and local writing signals will appear here.</p>
+              <p>Local writing signals and style-fit grades stay editable here.</p>
               {renderAnalysisStats()}
             </section>
           ) : null}
@@ -1301,7 +1303,7 @@ export default function WorkspacePage() {
       return (
         <section className="workspace-mode-card">
           <h2>Analyzing</h2>
-          <p>Style statistics and local writing signals will appear here.</p>
+          <p>Local writing signals and style-fit grades stay editable here.</p>
           {renderAnalysisStats()}
         </section>
       );
@@ -1388,18 +1390,18 @@ export default function WorkspacePage() {
           onChange={handleWorkspaceUploadInputChange}
         />
         <aside className="workspace-left-panel" aria-label="Document setup">
-          <button
-            type="button"
-            className="workspace-sidebar-toggle-button"
+          <MobileSidebarToggle
+            open={workspaceSidebarOpen}
             onClick={() => setWorkspaceSidebarOpen((value) => !value)}
-          >
-            {workspaceSidebarOpen ? '<' : '>'}
-          </button>
+            className="workspace-sidebar-toggle-button"
+            ariaLabel={workspaceSidebarOpen ? 'Collapse setup sidebar' : 'Open setup sidebar'}
+          />
           <div className="workspace-left-panel-content">
             <section className="workspace-upload-note">
-              <p>Uploading creates a new document. Press Save before leaving to keep current edits.</p>
-              <button type="button" onClick={() => workspaceUploadInputRef.current?.click()}>
-                Upload New Document
+              <p>Upload a new document. Save current edits before leaving.</p>
+              <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
+                <UploadDocIcon />
+                Upload
               </button>
             </section>
             <AcademicStylePanel
@@ -1419,7 +1421,8 @@ export default function WorkspacePage() {
 
         <section className="workspace-paper-region" aria-label="Document editor">
           <div className="workspace-paper-header">
-            <div>
+            <button type="button" className="workspace-back-button" onClick={requestWorkspaceBack}>Back</button>
+            <div className="workspace-paper-header-main">
               <span>{styleName}</span>
               <input
                 className="workspace-title-input"
@@ -1441,7 +1444,6 @@ export default function WorkspacePage() {
               <span />
               <span />
             </button>
-            <button type="button" className="workspace-back-button" onClick={requestWorkspaceBack}>Back</button>
           </div>
           <DocumentEditor
             ref={documentEditorRef}
@@ -1543,96 +1545,4 @@ export default function WorkspacePage() {
     );
   }
 
-  const isLogin = mode === 'login';
-  const isError = messageTone === 'error' && Boolean(message) && !loading;
-
-  return (
-    <main
-      className="auth-page"
-      style={{ backgroundImage: `url(${blackboardUrl})` }}
-    >
-      <section className="auth-board-content" aria-label="Authentication">
-        <form className="chalk-auth-form" onSubmit={placeholderTest}>
-          <div className="chalk-tabs" role="tablist" aria-label="Authentication mode">
-            <button
-              type="button"
-              className={`chalk-tab${isLogin ? ' is-active' : ''}`}
-              aria-selected={isLogin}
-              role="tab"
-              onClick={() => switchMode('login')}
-            >
-              Login
-            </button>
-            <button
-              type="button"
-              className={`chalk-tab${!isLogin ? ' is-active' : ''}`}
-              aria-selected={!isLogin}
-              role="tab"
-              onClick={() => switchMode('signup')}
-            >
-              Sign Up
-            </button>
-          </div>
-
-          <input
-            className="chalk-input"
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="Email"
-            aria-label="Email"
-            autoComplete="email"
-            disabled={loading}
-          />
-
-          <input
-            className="chalk-input"
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder="Password"
-            aria-label="Password"
-            autoComplete={isLogin ? 'current-password' : 'new-password'}
-            disabled={loading}
-          />
-
-          {message ? (
-            <div className={`chalk-message chalk-message--${messageTone}`} role={isError ? 'alert' : 'status'}>
-              {message}
-            </div>
-          ) : null}
-
-          {isLogin && showForgot ? (
-            <button type="button" className="chalk-forgot" onClick={handleResetPassword}>
-              Forget Password?
-            </button>
-          ) : null}
-
-          <button ref={submitButtonRef} type="submit" className="chalk-submit" disabled={loading}>
-            {isLogin ? 'Login' : 'Sign Up'}
-          </button>
-        </form>
-      </section>
-
-      <section className="auth-owl-region" aria-label="Owl assistant">
-        <div className="auth-owl-shell">
-          <OwlContainer
-            variant="desktop"
-            standby="head-rotate"
-            onAnimatorReady={(animator) => {
-              owlAnimatorRef.current = animator;
-            }}
-            animation={{
-              loading,
-              error: isError,
-              errorKey,
-              magicTargets,
-              magicClick: false,
-              trackPointer: true,
-            }}
-          />
-        </div>
-      </section>
-    </main>
-  );
 }

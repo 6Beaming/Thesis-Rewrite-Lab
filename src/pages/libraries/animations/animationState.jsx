@@ -16,6 +16,7 @@ export function createAnimationState() {
     wandTremorActive: false,
     wandTremorTimer: null,
     wandSuppressUntil: 0,
+    wandPinnedUntil: 0,
     pendingWandShow: false,
     retractionTimer: null,
     chaseVector: { x: 0, y: 0 },

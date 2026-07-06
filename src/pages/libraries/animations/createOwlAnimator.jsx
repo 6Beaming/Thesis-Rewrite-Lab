@@ -325,10 +325,21 @@ function createWandController(ctx) {
     }
   }
 
-  function keepWandPoseActive() {
-    clearIntervalsTracked?.();
-    clearVariantTimers?.();
-    state.activeVariant = null;
+  function keepWandPoseActive(options = {}) {
+    const preserveIntervals = Boolean(options.preserveIntervals);
+    const preserveVariantTimers = Boolean(options.preserveVariantTimers);
+    const resumeTremor = Boolean(options.resumeTremor);
+    const refreshPin = Boolean(options.refreshPin);
+    state.wand = 'ready';
+    stopWandTremorNow();
+    clearTremorTransforms();
+    if (!preserveIntervals) {
+      clearIntervalsTracked?.();
+    }
+    if (!preserveVariantTimers) {
+      clearVariantTimers?.();
+      state.activeVariant = null;
+    }
     els.stage?.classList.remove('left-wing-clench');
     els.stage?.classList.add('left-wing-wand-ready');
     const wand = getMagicWand();
@@ -336,7 +347,12 @@ function createWandController(ctx) {
     wand?.classList.add('is-visible', 'is-ready');
     snapLeftWingPaths('after');
     snapWandPaths('after');
-    refreshRetractionTimer();
+    if (refreshPin) {
+      refreshRetractionTimer();
+    }
+    if (resumeTremor) {
+      maybeStartWandTremor();
+    }
   }
 
   function runWandTremorCycle() {
@@ -393,17 +409,32 @@ function createWandController(ctx) {
     });
   }
 
-  function refreshRetractionTimer() {
-    clearTimer(state.retractionTimer);
-    state.retractionTimer = setTimeoutTracked(() => {
-      retractWand();
-    }, 30000);
+  function getWandPinRemaining() {
+    return Math.max(0, state.wandPinnedUntil - Date.now());
   }
 
-  function resetWand() {
+  function refreshRetractionTimer() {
+    state.wandPinnedUntil = Date.now() + 30000;
+    clearTimer(state.retractionTimer);
+    state.retractionTimer = setTimeoutTracked(() => {
+      if (getWandPinRemaining() > 0) {
+        refreshRetractionTimer();
+        return;
+      }
+      retractWand();
+    }, Math.max(20, getWandPinRemaining()));
+  }
+
+  function resetWand(options = {}) {
+    const force = Boolean(options.force);
+    if (!force && getWandPinRemaining() > 0) {
+      keepWandPoseActive({ resumeTremor: true });
+      return;
+    }
     stopWandTremorNow();
     clearTimer(state.retractionTimer);
     state.retractionTimer = null;
+    state.wandPinnedUntil = 0;
     state.wand = 'hidden';
     els.stage?.classList.remove('left-wing-clench', 'left-wing-wand-ready', 'wand-tremor-active');
     getMagicWand()?.classList.remove('is-visible', 'is-materializing', 'is-ready', 'is-tremoring', 'is-retracting');
@@ -420,6 +451,11 @@ function createWandController(ctx) {
 
   async function retractWand() {
     if (state.wand === 'hidden' || state.wand === 'showing') {
+      return;
+    }
+    if (getWandPinRemaining() > 0) {
+      refreshRetractionTimer();
+      keepWandPoseActive({ resumeTremor: true });
       return;
     }
     state.wand = 'retracting';
@@ -443,8 +479,7 @@ function createWandController(ctx) {
     state.wandSuppressUntil = 0;
     if (state.wand === 'showing' || state.wand === 'ready' || state.wand === 'tremor') {
       state.pendingWandShow = false;
-      keepWandPoseActive();
-      refreshRetractionTimer();
+      keepWandPoseActive({ refreshPin: true });
       if (state.wand === 'ready' && !state.wandTremorActive) {
         maybeStartWandTremor();
       }
@@ -455,7 +490,7 @@ function createWandController(ctx) {
       return;
     }
     if (state.wand === 'retracting') {
-      resetWand();
+      resetWand({ force: true });
     }
 
     state.pendingWandShow = false;
@@ -487,7 +522,7 @@ function createWandController(ctx) {
     getMagicWand()?.classList.remove('is-materializing');
     getMagicWand()?.classList.add('is-ready');
     state.wand = 'ready';
-    keepWandPoseActive();
+    keepWandPoseActive({ refreshPin: true });
     maybeStartWandTremor();
   }
 
@@ -508,7 +543,7 @@ function createWandController(ctx) {
         await ctx.endThinking();
       }
       if (state.wand === 'hidden' || state.wand === 'retracting') {
-        resetWand();
+        resetWand({ force: true });
         await showWand();
       }
       if (state.wand === 'showing') {
@@ -518,24 +553,21 @@ function createWandController(ctx) {
         return;
       }
 
-      keepWandPoseActive();
+      keepWandPoseActive({ refreshPin: true });
       ctx.particles.clearProjectiles();
       const particleDuration = ctx.particles.fireMagicAt(target, options) ?? MAGIC_PARTICLE_FLIGHT_MS;
-      refreshRetractionTimer();
       await wait(particleDuration);
       state.wandSuppressUntil = 0;
       if (state.wand !== 'tremor') {
         state.wand = 'ready';
       }
-      keepWandPoseActive();
+      keepWandPoseActive({ refreshPin: true, resumeTremor: true });
       if (state.pendingWandShow) {
         state.pendingWandShow = false;
-        refreshRetractionTimer();
         if (state.wand === 'ready') {
           maybeStartWandTremor();
         }
       } else {
-        refreshRetractionTimer();
         if (state.wand === 'ready') {
           maybeStartWandTremor();
         }
@@ -547,6 +579,7 @@ function createWandController(ctx) {
 
   return {
     resetWand,
+    keepWandPoseActive,
     showWand,
     useMagic,
     waitForMagicPriority,
@@ -592,6 +625,8 @@ export function createOwlAnimator(stageRoot) {
     const keepBlink = Boolean(options.keepBlink);
     const keepWand = Boolean(options.keepWand);
     const keepRightWing = Boolean(options.keepRightWing);
+    const preserveWandPose = keepWand && state.wand !== 'hidden';
+    const resumeWandTremor = preserveWandPose && (state.wand === 'tremor' || state.wandTremorActive);
 
     state.activeVariant = null;
     state.headLocked = false;
@@ -608,15 +643,17 @@ export function createOwlAnimator(stageRoot) {
       ctx.rightWing.resetRightWing();
     }
     if (!keepWand) {
-      ctx.wand.resetWand();
+      ctx.wand.resetWand({ force: true });
+    } else if (preserveWandPose) {
+      ctx.wand.keepWandPoseActive({ resumeTremor: resumeWandTremor });
     }
     if (keepBlink) {
       ctx.eyes.startBlink();
     }
   }
 
-  function startStandby(choice) {
-    stopPassiveAnimations();
+  function startStandby(choice, options = {}) {
+    stopPassiveAnimations(options);
     ctx.standby.enterStandby(choice);
   }
 
@@ -638,7 +675,7 @@ export function createOwlAnimator(stageRoot) {
     if (state.thinking || state.error) {
       return;
     }
-    stopPassiveAnimations({ keepBlink: true });
+    stopPassiveAnimations({ keepBlink: true, keepWand: true });
     state.mode = 'thinking';
     state.thinking = true;
     state.error = false;
@@ -656,6 +693,7 @@ export function createOwlAnimator(stageRoot) {
     if (!state.thinking) {
       return;
     }
+    const keepWand = state.wand !== 'hidden';
     state.thinking = false;
     ctx.setIndicator('thinking', false);
     ctx.eyes.stopBlink();
@@ -666,7 +704,7 @@ export function createOwlAnimator(stageRoot) {
     await timers.wait(750);
     ctx.setIndicator('answer', false);
     ctx.eyes.startBlink();
-    startStandby(state.standbyChoice || 'random');
+    startStandby(state.standbyChoice || 'random', { keepWand });
     showPendingWandAfterMode();
   }
 
@@ -743,7 +781,7 @@ export function createOwlAnimator(stageRoot) {
       timers.clearAll();
       clearStageModes(els.stage, els.headGroup);
       ctx.rightWing.resetRightWing();
-      ctx.wand.resetWand();
+      ctx.wand.resetWand({ force: true });
     },
   };
 }

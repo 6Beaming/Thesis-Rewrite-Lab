@@ -16,7 +16,7 @@ function RequireSignIn({ children }) {
   const busy = isLoading || isSubmitting || localSubmitting;
   const message = error
     || localMessage
-    || (isLoading ? 'Checking your session...' : 'Sign in with Google to continue.');
+    || (isLoading ? 'Checking your session...' : 'Sign In to continue.');
   const messageTone = error ? 'error' : busy ? 'loading' : 'success';
 
   async function handleSignIn(event) {
@@ -24,7 +24,7 @@ function RequireSignIn({ children }) {
     if (busy) return;
 
     setLocalSubmitting(true);
-    setLocalMessage('Opening Google sign in...');
+    setLocalMessage('Opening Google...');
 
     try {
       if (animatorRef.current && buttonRef.current) {
@@ -48,15 +48,6 @@ function RequireSignIn({ children }) {
     >
       <section className="auth-board-content" aria-label="Authentication">
         <form className="chalk-auth-form chalk-auth-form--oauth" onSubmit={handleSignIn}>
-          <div className="chalk-tabs" role="tablist" aria-label="Authentication mode">
-            <button type="button" className="chalk-tab is-active" aria-selected="true" role="tab">
-              Login
-            </button>
-            <button type="button" className="chalk-tab" aria-selected="false" role="tab">
-              Sign Up
-            </button>
-          </div>
-
           <div
             className={`chalk-message chalk-message--${messageTone}`}
             role={error ? 'alert' : 'status'}
@@ -72,7 +63,7 @@ function RequireSignIn({ children }) {
             onPointerEnter={handleButtonHover}
             onFocus={handleButtonHover}
           >
-            {busy ? 'Loading...' : 'Sign in with Google'}
+            {busy ? 'Loading...' : 'Sign In'}
           </button>
         </form>
       </section>

@@ -58,6 +58,30 @@ const DEMO_DOCUMENTS = [
   },
 ];
 const DEMO_STORE_KEY = 'project-thesis-rewriter:demo-store:v1';
+const LOCAL_PROFILE_PICTURE_KEY = 'project-thesis-rewriter:local-profile-picture:v1';
+
+function readLocalProfilePicture() {
+  if (typeof window === 'undefined') return '';
+  return window.localStorage.getItem(LOCAL_PROFILE_PICTURE_KEY) || '';
+}
+
+function writeLocalProfilePicture(value) {
+  if (typeof window === 'undefined') return;
+  if (value) {
+    window.localStorage.setItem(LOCAL_PROFILE_PICTURE_KEY, value);
+  } else {
+    window.localStorage.removeItem(LOCAL_PROFILE_PICTURE_KEY);
+  }
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Could not read file.'));
+    reader.readAsDataURL(file);
+  });
+}
 
 function homeUserFromAuth(authUser, fallback = DEMO_USER) {
   if (!authUser) return fallback;
@@ -222,7 +246,14 @@ function createLocalDemoDocument({ title = 'Untitled document', text = 'Start wr
 export default function HomePage({ onOpenWorkspace }) {
   const { user: authUser, signOut } = useAuth();
   const storedDemo = useMemo(() => readDemoStore(), []);
-  const [user, setUser] = useState(() => homeUserFromAuth(authUser));
+  const [user, setUser] = useState(() => {
+    const localProfilePicture = readLocalProfilePicture();
+    return {
+      ...homeUserFromAuth(authUser),
+      profilePictureUrl: localProfilePicture,
+      hasProfilePicture: Boolean(localProfilePicture),
+    };
+  });
   const [demoDocuments, setDemoDocuments] = useState(storedDemo?.documents ?? DEMO_DOCUMENTS);
   const [documents, setDocuments] = useState(storedDemo?.documents ?? DEMO_DOCUMENTS);
   const [query, setQuery] = useState('');
@@ -254,12 +285,14 @@ export default function HomePage({ onOpenWorkspace }) {
     getMe()
       .then((profile) => {
         if (alive) {
+          const localProfilePicture = readLocalProfilePicture();
           setUser((current) => ({
             ...current,
             ...profile,
             email: authUser?.email || profile.email || current.email,
             display_name: authUser?.name || profile.display_name || current.display_name,
-            image: authUser?.image || profile.image || current.image,
+            profilePictureUrl: localProfilePicture || current.profilePictureUrl || '',
+            hasProfilePicture: Boolean(localProfilePicture || profile.hasProfilePicture || current.hasProfilePicture),
           }));
         }
       })
@@ -394,11 +427,29 @@ export default function HomePage({ onOpenWorkspace }) {
   }
 
   async function handleProfileUpload(file) {
+    let localDataUrl = '';
     try {
+      localDataUrl = await fileToDataUrl(file);
+      writeLocalProfilePicture(localDataUrl);
+      setUser((current) => ({
+        ...current,
+        profilePictureUrl: localDataUrl,
+        hasProfilePicture: true,
+      }));
+
       const nextUser = await uploadProfilePicture(file);
-      setUser((current) => ({ ...current, ...nextUser, hasProfilePicture: true }));
+      setUser((current) => ({
+        ...current,
+        ...nextUser,
+        profilePictureUrl: current.profilePictureUrl || localDataUrl,
+        hasProfilePicture: true,
+      }));
       setNotice('Profile picture updated.');
     } catch (error) {
+      if (localDataUrl) {
+        setNotice('Profile picture saved locally until the database is connected.');
+        return;
+      }
       setNotice(error.message || 'Profile upload failed.');
     }
   }

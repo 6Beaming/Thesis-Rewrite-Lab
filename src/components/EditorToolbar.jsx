@@ -1,14 +1,15 @@
 import ToolbarButton from './ToolbarButton.jsx';
 import { useEffect, useState } from 'react';
+import { DropdownSelect } from './SortDropdown.jsx';
 
 function ToolIcon({ type }) {
   const icons = {
-    bold: <text x="7" y="17" fontSize="14" fontWeight="700" fill="currentColor" stroke="none">B</text>,
-    italic: <text x="9" y="17" fontSize="14" fontStyle="italic" fill="currentColor" stroke="none">I</text>,
+    bold: <text x="6.5" y="18" fontSize="15.5" fontWeight="700" fill="currentColor" stroke="none">B</text>,
+    italic: <text x="8.5" y="18" fontSize="15.5" fontStyle="italic" fill="currentColor" stroke="none">I</text>,
     underline: (
       <>
-        <text x="7" y="15" fontSize="13" fill="currentColor" stroke="none">U</text>
-        <path d="M6 19h12" />
+        <text x="6.7" y="16" fontSize="14.5" fill="currentColor" stroke="none">U</text>
+        <path d="M5.5 19h13" />
       </>
     ),
     heading: <path d="M5 18V6M19 18V6M5 12h14" />,
@@ -40,6 +41,14 @@ const textColors = ['#111827', '#007a64', '#9a3328', '#1d4ed8'];
 const highlightColors = ['#fff2a8', '#ccebdc', '#ffd6d1'];
 const blockStatuses = ['processing', 'unprocessed', 'processed', 'skipped'];
 
+const fontFamilyOptions = fontFamilies.map((font) => ({ value: font, label: font }));
+const fontSizeOptions = fontSizes.map((size) => ({ value: size, label: size }));
+const lineHeightOptions = lineHeights.map((height) => ({ value: height, label: height }));
+const blockStatusOptions = blockStatuses.map((status) => ({
+  value: status,
+  label: status.charAt(0).toUpperCase() + status.slice(1),
+}));
+
 export default function EditorToolbar({
   editor,
   activeBlockStatus = 'unprocessed',
@@ -67,6 +76,11 @@ export default function EditorToolbar({
 
   if (!editor) return null;
 
+  const paragraphAttrs = editor.getAttributes('paragraph');
+  const currentFontFamily = paragraphAttrs.fontFamily || 'Times New Roman';
+  const currentFontSize = paragraphAttrs.fontSize || '12pt';
+  const currentLineHeight = paragraphAttrs.lineHeight || '2.0';
+
   function setFontSize(value) {
     editor.chain().focus().setFontSize(value).run();
   }
@@ -91,15 +105,33 @@ export default function EditorToolbar({
       </div>
 
       <div className="editor-toolbar-group">
-        <select className="toolbar-select" aria-label="Font family" onChange={(event) => editor.chain().focus().setFontFamily(event.target.value).run()} defaultValue="Times New Roman">
-          {fontFamilies.map((font) => <option key={font} value={font}>{font}</option>)}
-        </select>
-        <select className="toolbar-select" aria-label="Font size" onChange={(event) => setFontSize(event.target.value)} defaultValue="12pt">
-          {fontSizes.map((size) => <option key={size} value={size}>{size}</option>)}
-        </select>
-        <select className="toolbar-select" aria-label="Line spacing" onChange={(event) => editor.chain().focus().updateAttributes('paragraph', { lineHeight: event.target.value }).run()} defaultValue="2.0">
-          {lineHeights.map((height) => <option key={height} value={height}>{height}</option>)}
-        </select>
+        <DropdownSelect
+          value={currentFontFamily}
+          options={fontFamilyOptions}
+          onChange={(value) => editor.chain().focus().setFontFamily(value).run()}
+          ariaLabel="Font family"
+          wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--wide"
+          triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--wide"
+          menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--wide"
+        />
+        <DropdownSelect
+          value={currentFontSize}
+          options={fontSizeOptions}
+          onChange={setFontSize}
+          ariaLabel="Font size"
+          wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--compact"
+          triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--compact"
+          menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--compact"
+        />
+        <DropdownSelect
+          value={currentLineHeight}
+          options={lineHeightOptions}
+          onChange={(value) => editor.chain().focus().updateAttributes('paragraph', { lineHeight: value }).run()}
+          ariaLabel="Line spacing"
+          wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--compact"
+          triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--compact"
+          menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--compact"
+        />
       </div>
 
       <div className="editor-toolbar-group editor-toolbar-swatches" aria-label="Text color controls">
@@ -149,14 +181,15 @@ export default function EditorToolbar({
         <ToolbarButton label="Outdent" icon={<ToolIcon type="outdent" />} onClick={() => editor.chain().focus().updateAttributes('paragraph', { textIndent: '0in' }).run()} />
         <ToolbarButton label="Indent" icon={<ToolIcon type="indent" />} onClick={() => editor.chain().focus().updateAttributes('paragraph', { textIndent: '0.5in' }).run()} />
         <ToolbarButton label="Page break" icon={<ToolIcon type="break" />} onClick={insertPageBreak} />
-        <select
-          aria-label="Block status"
-          className="toolbar-select editor-status-select"
+        <DropdownSelect
           value={activeBlockStatus}
-          onChange={(event) => onBlockStatusChange?.(event.target.value)}
-        >
-          {blockStatuses.map((status) => <option key={status} value={status}>{status}</option>)}
-        </select>
+          options={blockStatusOptions}
+          onChange={(value) => onBlockStatusChange?.(value)}
+          ariaLabel="Block status"
+          wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--status"
+          triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--status"
+          menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--status"
+        />
         <ToolbarButton label="Undo" icon={<ToolIcon type="undo" />} disabled={!editor.can().undo()} onClick={() => editor.chain().focus().undo().run()} />
         <ToolbarButton label="Redo" icon={<ToolIcon type="redo" />} disabled={!editor.can().redo()} onClick={() => editor.chain().focus().redo().run()} />
       </div>

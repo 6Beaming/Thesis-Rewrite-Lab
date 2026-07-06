@@ -7,20 +7,30 @@ const options = [
   { value: 'least_completed', label: 'Least Completed' },
 ];
 
-function DownArrowIcon() {
+function DownArrowIcon({ className = 'sort-dropdown-arrow' }) {
   return (
-    <svg className="sort-dropdown-arrow" viewBox="0 0 24 24" aria-hidden="true">
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
       <path d="M6 9l6 6 6-6" />
     </svg>
   );
 }
 
-export default function SortDropdown({ value, onChange }) {
+export function DropdownSelect({
+  value,
+  options: dropdownOptions,
+  onChange,
+  ariaLabel,
+  triggerClassName = 'sort-dropdown-trigger',
+  menuClassName = 'sort-dropdown-menu',
+  wrapperClassName = 'dropdown-select',
+  arrowClassName = 'sort-dropdown-arrow',
+  menuRole = 'menu',
+}) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
   const selected = useMemo(
-    () => options.find((option) => option.value === value) ?? options[0],
-    [value],
+    () => dropdownOptions.find((option) => option.value === value) ?? dropdownOptions[0],
+    [dropdownOptions, value],
   );
 
   useEffect(() => {
@@ -37,20 +47,20 @@ export default function SortDropdown({ value, onChange }) {
   }, []);
 
   return (
-    <div className="sort-dropdown" ref={menuRef}>
-      <span>Sort by:</span>
+    <div className={wrapperClassName} ref={menuRef}>
       <button
         type="button"
-        className="sort-dropdown-trigger"
+        className={triggerClassName}
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
+        aria-label={ariaLabel}
       >
         {selected.label}
-        <DownArrowIcon />
+        <DownArrowIcon className={arrowClassName} />
       </button>
       {open ? (
-        <div className="sort-dropdown-menu" role="menu">
-          {options.map((option) => (
+        <div className={menuClassName} role={menuRole}>
+          {dropdownOptions.map((option) => (
             <button
               key={option.value}
               type="button"
@@ -67,6 +77,20 @@ export default function SortDropdown({ value, onChange }) {
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+export default function SortDropdown({ value, onChange }) {
+  return (
+    <div className="sort-dropdown">
+      <span>Sort by:</span>
+      <DropdownSelect
+        value={value}
+        options={options}
+        onChange={onChange}
+        ariaLabel="Sort documents"
+      />
     </div>
   );
 }

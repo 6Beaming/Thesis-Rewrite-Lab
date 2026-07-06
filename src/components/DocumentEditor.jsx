@@ -1,7 +1,11 @@
 import { Node } from '@tiptap/core';
+import Blockquote from '@tiptap/extension-blockquote';
+import BulletList from '@tiptap/extension-bullet-list';
 import Color from '@tiptap/extension-color';
 import FontFamily from '@tiptap/extension-font-family';
 import Highlight from '@tiptap/extension-highlight';
+import ListItem from '@tiptap/extension-list-item';
+import OrderedList from '@tiptap/extension-ordered-list';
 import Paragraph from '@tiptap/extension-paragraph';
 import TextAlign from '@tiptap/extension-text-align';
 import { FontSize, TextStyle } from '@tiptap/extension-text-style';
@@ -346,9 +350,20 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   }, [document]);
   const editor = useEditor({
     extensions: [
-      StarterKit.configure({ paragraph: false, underline: false }),
+      StarterKit.configure({
+        paragraph: false,
+        underline: false,
+        bulletList: false,
+        orderedList: false,
+        listItem: false,
+        blockquote: false,
+      }),
       AcademicParagraph,
       PageBreak,
+      BulletList.configure({ keepMarks: true }),
+      OrderedList.configure({ keepMarks: true }),
+      ListItem,
+      Blockquote,
       TextStyle,
       FontSize,
       FontFamily,

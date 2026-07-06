@@ -13,7 +13,7 @@ function ProfileContent() {
           to="/"
           className="text-sm font-semibold text-sky-700 hover:underline"
         >
-          ← Dashboard
+          Back to Workspace
         </Link>
 
         <div className="mt-8 flex items-center gap-4">
@@ -41,7 +41,7 @@ function ProfileContent() {
           disabled={isSubmitting}
           className="mt-8 w-full rounded-xl border border-slate-300 px-4 py-3 font-semibold transition hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-600 disabled:cursor-wait disabled:opacity-60"
         >
-          {isSubmitting ? 'Signing out…' : 'Sign out'}
+          {isSubmitting ? 'Signing out...' : 'Sign out'}
         </button>
       </section>
     </main>

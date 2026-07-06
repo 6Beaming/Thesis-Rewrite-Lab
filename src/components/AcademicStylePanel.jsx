@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { DropdownSelect } from './SortDropdown.jsx';
 import TemplateCards from './TemplateCards.jsx';
 
 export const DEFAULT_CUSTOM_STYLE = {
@@ -84,9 +85,15 @@ export default function AcademicStylePanel({
           {Object.entries(styleOptions).map(([key, options]) => (
             <label key={key}>
               <span>{key.replace(/([A-Z])/g, ' $1')}</span>
-              <select value={custom[key]} onChange={(event) => updateCustom(key, event.target.value)}>
-                {options.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
+              <DropdownSelect
+                value={custom[key]}
+                options={options.map((option) => ({ value: option, label: option }))}
+                onChange={(value) => updateCustom(key, value)}
+                ariaLabel={key.replace(/([A-Z])/g, ' $1')}
+                wrapperClassName="dropdown-select custom-style-select-wrapper"
+                triggerClassName="sort-dropdown-trigger custom-style-select-trigger"
+                menuClassName="sort-dropdown-menu custom-style-select-menu"
+              />
             </label>
           ))}
         </div>
