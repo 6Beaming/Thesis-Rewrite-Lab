@@ -32,6 +32,18 @@ import {
   hashBlockText,
   normalizeAnalysisFilters,
 } from '../ai/blockAnalysis.js';
+import {
+  BLOCK_REWRITE_PROMPT_VERSION,
+  REWRITE_TONES,
+  generateBlockRewrites,
+  normalizeRewriteTone,
+} from '../ai/blockRewrites.js';
+import {
+  findCachedBlockRewrites,
+  formatBlockRewrite,
+  markRewriteAccepted,
+  saveBlockRewrite,
+} from '../models/rewrites.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -40,7 +52,7 @@ const {
 } = require('../../scripts/lib/clustering.cjs');
 
 const router = Router();
-const analysisRateLimiter = rateLimit({
+const aiRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 30,
   standardHeaders: 'draft-8',
@@ -366,7 +378,7 @@ router.patch('/:id/blocks/:blockId', async (req, res) => {
   res.json({ nextProcessingBlock: next });
 });
 
-router.post('/:id/blocks/:blockId/analyze', analysisRateLimiter, async (req, res) => {
+router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
   const requestedFilters = req.body?.filters;
   if (
     !Array.isArray(requestedFilters)
@@ -425,6 +437,78 @@ router.post('/:id/blocks/:blockId/analyze', analysisRateLimiter, async (req, res
   });
 
   res.status(201).json({ analysis: formatBlockAnalysis(saved), cached: false });
+});
+
+router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => {
+  const requestedTone = req.body?.tone ?? null;
+  const tone = requestedTone === null ? null : normalizeRewriteTone(requestedTone);
+  const force = req.body?.force ?? false;
+
+  if ((requestedTone !== null && !tone) || typeof force !== 'boolean') {
+    res.status(400).json({ error: 'Rewrite request is invalid.' });
+    return;
+  }
+
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const context = await getOwnedBlockContext({
+    documentId: req.params.id,
+    blockId: req.params.blockId,
+    userId: user.id,
+  });
+  if (!context) {
+    res.status(404).json({ error: 'Document block not found' });
+    return;
+  }
+
+  const tones = tone ? [tone] : REWRITE_TONES;
+  const sourceTextHash = hashBlockText(context.text_content);
+  const model = process.env.OPENAI_REWRITE_MODEL || 'gpt-5.4-mini';
+
+  if (!force) {
+    const cached = await findCachedBlockRewrites({
+      documentId: context.document_id,
+      blockId: context.id,
+      sourceTextHash,
+      tones,
+      model,
+      promptVersion: BLOCK_REWRITE_PROMPT_VERSION,
+    });
+    if (cached.length === tones.length) {
+      const order = new Map(tones.map((item, index) => [item, index]));
+      cached.sort((a, b) => order.get(a.tone) - order.get(b.tone));
+      res.json({ rewrites: cached.map(formatBlockRewrite), cached: true });
+      return;
+    }
+  }
+
+  const generated = await generateBlockRewrites({ context, tone });
+  const saved = await Promise.all(generated.options.map((option) => saveBlockRewrite({
+    documentId: context.document_id,
+    blockId: context.id,
+    sourceTextHash,
+    option,
+    usage: generated.usage,
+    model: generated.model,
+    promptVersion: BLOCK_REWRITE_PROMPT_VERSION,
+  })));
+
+  res.status(201).json({ rewrites: saved.map(formatBlockRewrite), cached: false });
+});
+
+router.post('/:id/blocks/:blockId/rewrites/:rewriteId/accept', async (req, res) => {
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const accepted = await markRewriteAccepted({
+    documentId: req.params.id,
+    blockId: req.params.blockId,
+    rewriteId: req.params.rewriteId,
+    userId: user.id,
+  });
+  if (!accepted) {
+    res.status(404).json({ error: 'Rewrite option not found' });
+    return;
+  }
+
+  res.json({ rewrite: formatBlockRewrite(accepted) });
 });
 
 router.post('/:id/blocks/:blockId/skip', async (req, res) => {

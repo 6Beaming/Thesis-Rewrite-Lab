@@ -1044,6 +1044,48 @@
   gap: 12px;
 }
 
+.rewrite-title-actions,
+.rewrite-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rewrite-generate-all {
+  min-height: 34px;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 12px;
+  background: rgba(230, 255, 237, 0.94);
+  color: #17663a;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.rewrite-generate-all:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.rewrite-source-preview {
+  max-height: 92px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  overflow-y: auto;
+  border-left: 3px solid rgba(209, 255, 220, 0.72);
+  background: rgba(7, 27, 18, 0.18);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.rewrite-panel-error,
+.rewrite-card-error,
+.rewrite-card-safety {
+  color: #ffd7d1;
+}
+
 .rewrite-card-list {
   display: grid;
   gap: 12px;
@@ -1063,6 +1105,10 @@
   will-change: transform;
 }
 
+.rewrite-card {
+  cursor: default;
+}
+
 .rewrite-card:hover,
 .practice-card:hover {
   background: rgba(255, 255, 255, 0.17);
@@ -1079,6 +1125,10 @@
   border-color: rgba(255, 119, 102, 0.72);
   background: rgba(255, 119, 102, 0.16);
   cursor: default;
+}
+
+.rewrite-card.is-unsafe {
+  border-color: rgba(255, 196, 107, 0.72);
 }
 
 .rewrite-card.is-locked {
@@ -1111,6 +1161,54 @@
   margin-bottom: 10px;
 }
 
+.rewrite-card-best-for,
+.rewrite-card-focus,
+.rewrite-card-empty {
+  margin: 6px 0;
+  font-size: 0.8rem;
+  line-height: 1.42;
+  opacity: 0.88;
+}
+
+.rewrite-card-response {
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(5, 27, 16, 0.24);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.rewrite-card-actions {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.rewrite-card .rewrite-card-apply {
+  background: rgba(217, 255, 225, 0.96);
+  color: #14582f;
+  font-weight: 700;
+}
+
+.rewrite-card-explanation {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.rewrite-card-explanation ul,
+.rewrite-card-warnings {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.rewrite-card-warnings {
+  color: #ffe0a8;
+  font-size: 0.8rem;
+}
+
 .rewrite-card button,
 .practice-card button,
 .rewrite-disable-current {
@@ -1131,7 +1229,8 @@
 
 .rewrite-card button:disabled,
 .practice-card button:disabled,
-.rewrite-disable-current:disabled {
+.rewrite-disable-current:disabled,
+.rewrite-generate-all:disabled {
   cursor: wait;
   opacity: 0.58;
 }

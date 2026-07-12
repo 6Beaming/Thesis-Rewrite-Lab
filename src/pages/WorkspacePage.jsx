@@ -12,7 +12,9 @@ import OwlContainer from '../components/OwlContainer.jsx';
 import { getBlackboardCssVars, getMobileContainerCssVars } from './libraries/animations/containerLayout.js';
 import { useFloatingWindow } from './libraries/useFloatingWindow.js';
 import {
+  acceptDocumentBlockRewrite,
   analyzeDocumentBlock,
+  generateDocumentBlockRewrites,
   getDocument,
   listDocuments,
   saveDocument,
@@ -32,6 +34,57 @@ const ANALYSIS_SIGNAL_LABELS = {
   hedging: 'Hedging and certainty',
   transitions: 'Transition gaps',
 };
+const REWRITE_TONE_CARDS = Object.freeze([
+  {
+    id: 1,
+    tone: 'formal-academic',
+    title: 'Formal & Academic Tone',
+    bestFor: 'Best for dissertations, peer-reviewed journals, and committee submissions.',
+    focus: 'Objectivity, precise academic vocabulary, neutrality, and research-centered phrasing.',
+  },
+  {
+    id: 2,
+    tone: 'persuasive-argumentative',
+    title: 'Persuasive & Argumentative Tone',
+    bestFor: 'Best for thesis statements, proposals, and op-eds.',
+    focus: 'Active verbs, strong reasoning, and the significance of the claim or findings.',
+  },
+  {
+    id: 3,
+    tone: 'accessible-concise',
+    title: 'Accessible & Concise Tone',
+    bestFor: 'Best for executive summaries, abstract overviews, and elevator pitches.',
+    focus: 'Short sentences, active verbs, plain language, and no unnecessary filler.',
+  },
+]);
+
+function createRewriteCards() {
+  return REWRITE_TONE_CARDS.map((card) => ({
+    ...card,
+    rewriteId: null,
+    response: '',
+    explanation: '',
+    changes: [],
+    warnings: [],
+    meaningPreserved: true,
+    error: '',
+    applyWithExplanation: false,
+  }));
+}
+
+function resetRewriteCard(card) {
+  return {
+    ...card,
+    rewriteId: null,
+    response: '',
+    explanation: '',
+    changes: [],
+    warnings: [],
+    meaningPreserved: true,
+    error: '',
+    applyWithExplanation: false,
+  };
+}
 
 function PanelChevron({ direction }) {
   const isLeft = direction === 'left';
@@ -484,14 +537,11 @@ export default function WorkspacePage() {
   const [styleSettings, setStyleSettings] = useState(TEMPLATE_STYLE_SETTINGS.APA);
   const [editorContent, setEditorContent] = useState(null);
   const [activeEditorBlock, setActiveEditorBlock] = useState({ blockId: null, status: 'unprocessed' });
-  const [rewriteCards, setRewriteCards] = useState([
-    { id: 1, title: 'Rewriting Card 1', response: '', error: '', skipped: false, applyWithExplanation: false },
-    { id: 2, title: 'Rewriting Card 2', response: '', error: '', skipped: false, applyWithExplanation: false },
-    { id: 3, title: 'Rewriting Card 3', response: '', error: '', skipped: false, applyWithExplanation: false },
-  ]);
+  const [rewriteCards, setRewriteCards] = useState(createRewriteCards);
   const [rewriteCardsLocked, setRewriteCardsLocked] = useState(false);
   const [rewriteAllCompleted, setRewriteAllCompleted] = useState(false);
   const [rewriteBusy, setRewriteBusy] = useState(false);
+  const [rewriteError, setRewriteError] = useState('');
   const [rewriteCooldownUntil, setRewriteCooldownUntil] = useState(0);
   const [practiceInput, setPracticeInput] = useState('');
   const [practiceResponse, setPracticeResponse] = useState('');
@@ -518,6 +568,7 @@ export default function WorkspacePage() {
   const documentEditorRef = useRef(null);
   const mobileDragEndedAtRef = useRef(0);
   const rewriteRefreshTimerRef = useRef(null);
+  const rewriteContextKeyRef = useRef('');
   const wandHoverTimerRef = useRef(null);
   const workspaceUploadInputRef = useRef(null);
   const mobileOptionsPanelRef = useRef(null);
@@ -548,10 +599,24 @@ export default function WorkspacePage() {
       : ''
   ), [activeEditorBlock?.blockId, activeEditorBlock?.text, selectedAnalysisFilters]);
   const currentBlockAnalysis = currentAnalysisKey ? blockAnalyses[currentAnalysisKey] ?? null : null;
+  const currentRewriteBlockId = workspaceDraft?.currentProcessingBlockId
+    ?? activeEditorBlock?.blockId
+    ?? null;
+  const currentRewriteBlock = workspaceDraft?.blocks?.find((block) => block.id === currentRewriteBlockId)
+    ?? null;
+  const currentRewriteKey = selectedDocument?.id && currentRewriteBlockId
+    ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}`
+    : '';
+  rewriteContextKeyRef.current = currentRewriteKey;
 
   useEffect(() => {
     setAnalysisError('');
   }, [currentAnalysisKey]);
+
+  useEffect(() => {
+    setRewriteError('');
+    setRewriteCards(createRewriteCards());
+  }, [currentRewriteKey]);
 
   useEffect(() => () => {
     if (rewriteRefreshTimerRef.current) {
@@ -694,13 +759,8 @@ export default function WorkspacePage() {
     setAnalysisError('');
     setRewriteCardsLocked(false);
     setRewriteAllCompleted(false);
-    setRewriteCards((cards) => cards.map((card) => ({
-      ...card,
-      response: '',
-      error: '',
-      skipped: false,
-      applyWithExplanation: false,
-    })));
+    setRewriteCards((cards) => cards.map(resetRewriteCard));
+    setRewriteError('');
     setWorkspaceHistoryExpanded(false);
     rememberWorkspaceDocument(hydratedDocument);
     setView('workspace');
@@ -848,13 +908,8 @@ export default function WorkspacePage() {
 
     setRewriteAllCompleted(false);
     setRewriteCardsLocked(false);
-    setRewriteCards((cards) => cards.map((card) => ({
-      ...card,
-      response: '',
-      error: '',
-      skipped: false,
-      applyWithExplanation: false,
-    })));
+    setRewriteCards((cards) => cards.map(resetRewriteCard));
+    setRewriteError('');
     if (notice) setWorkspaceNotice(notice);
   }
 
@@ -1072,10 +1127,62 @@ export default function WorkspacePage() {
     }, 5600);
   }
 
-  async function regenerateRewriteCard(cardId) {
-    if (rewriteCardsLocked || rewriteAllCompleted) {
+  async function generateRewrites({ tone = null, force = false } = {}) {
+    const documentId = selectedDocument?.id;
+    const blockId = currentRewriteBlockId;
+    if (!documentId || !blockId) {
+      setRewriteError('Select a text block to rewrite.');
       return;
     }
+    if (documentId.startsWith('demo-')) {
+      setRewriteError('Save this document to the backend before using AI rewriting.');
+      return;
+    }
+    if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy) return;
+
+    const requestKey = currentRewriteKey;
+    setRewriteBusy(true);
+    setRewriteError('');
+    setWorkspaceNotice('');
+    setWorkspaceOwlError(false);
+    setWorkspaceOwlLoading(true);
+
+    try {
+      if (workspaceDirty) {
+        const saved = await saveWorkspaceDocument();
+        if (!saved) return;
+      }
+
+      const response = await generateDocumentBlockRewrites(documentId, blockId, { tone, force });
+      if (rewriteContextKeyRef.current !== requestKey) return;
+
+      setRewriteCards((cards) => cards.map((card) => {
+        const option = response.rewrites.find((rewrite) => rewrite.tone === card.tone);
+        if (!option) return card;
+        return {
+          ...card,
+          rewriteId: option.id,
+          response: option.rewrittenText,
+          explanation: option.explanation,
+          changes: option.changes ?? [],
+          warnings: option.warnings ?? [],
+          meaningPreserved: option.meaningPreserved,
+          error: '',
+          applyWithExplanation: false,
+        };
+      }));
+      setWorkspaceNotice(response.cached ? 'Loaded saved rewrite options.' : 'Rewrite options are ready.');
+    } catch (error) {
+      setRewriteError(error.message || 'AI rewriting is temporarily unavailable.');
+      triggerWorkspaceError();
+    } finally {
+      setWorkspaceOwlLoading(false);
+      setRewriteBusy(false);
+    }
+  }
+
+  async function regenerateRewriteCard(cardId) {
+    if (rewriteCardsLocked || rewriteAllCompleted) return;
     const now = Date.now();
     if (now < rewriteCooldownUntil) {
       setWorkspaceNotice('Regeneration is cooling down. Please wait a moment.');
@@ -1085,36 +1192,34 @@ export default function WorkspacePage() {
       setWorkspaceNotice('A regeneration is already running.');
       return;
     }
-
-    setRewriteBusy(true);
+    const card = rewriteCards.find((item) => item.id === cardId);
+    if (!card) return;
     setRewriteCooldownUntil(now + REGEN_COOLDOWN_MS);
-    setWorkspaceNotice('');
-    setWorkspaceOwlError(false);
-    setWorkspaceOwlLoading(true);
-    await sleep(PLACEHOLDER_DELAY_MS);
+    await generateRewrites({ tone: card.tone, force: Boolean(card.response) });
+  }
 
-    if (cardId === 2) {
-      setRewriteCards((cards) => cards.map((card) => (
-        card.id === cardId ? { ...card, error: 'Network Problems', response: '' } : card
-      )));
+  async function handleRewriteCardClick(card, event) {
+    if (
+      rewriteCardsLocked
+      || rewriteAllCompleted
+      || rewriteBusy
+      || !card.rewriteId
+      || !card.response
+      || !card.meaningPreserved
+    ) return;
+    setRewriteBusy(true);
+    setRewriteError('');
+    try {
+      await acceptDocumentBlockRewrite(selectedDocument.id, currentRewriteBlockId, card.rewriteId);
+    } catch (error) {
+      setRewriteError(error.message || 'The rewrite could not be applied.');
       triggerWorkspaceError();
       setRewriteBusy(false);
       return;
     }
-
-    setRewriteCards((cards) => cards.map((card) => (
-      card.id === cardId
-        ? { ...card, response: `This is placeholder response of Rewriting Card ${cardId}.`, error: '' }
-        : card
-    )));
-    setWorkspaceOwlLoading(false);
-    setRewriteBusy(false);
-  }
-
-  async function handleRewriteCardClick(card, event) {
-    if (rewriteCardsLocked || rewriteAllCompleted || card.error || card.skipped) return;
     await runWorkspaceMagic(event.currentTarget);
     applyRewriteCard(card);
+    setRewriteBusy(false);
   }
 
   function resetRewriteCardsForNextBlock(nextNotice = 'Cards refreshed for the next processing block.') {
@@ -1123,13 +1228,8 @@ export default function WorkspacePage() {
     }
 
     rewriteRefreshTimerRef.current = setTimeout(() => {
-      setRewriteCards((cards) => cards.map((card) => ({
-        ...card,
-        response: '',
-        error: '',
-        skipped: false,
-        applyWithExplanation: false,
-      })));
+      setRewriteCards((cards) => cards.map(resetRewriteCard));
+      setRewriteError('');
       setRewriteCardsLocked(false);
       setWorkspaceNotice(nextNotice);
     }, 650);
@@ -1267,9 +1367,8 @@ export default function WorkspacePage() {
   }
 
   function applyRewriteCard(card) {
-    const replacement = card.response || `This is placeholder response of Rewriting Card ${card.id}.`;
-    const replacementText = replacement;
-    const document = applyStatusToCurrentProcessingBlock('processed', replacementText);
+    if (!card.response) return;
+    const document = applyStatusToCurrentProcessingBlock('processed', card.response);
     if (document) {
       lockOrCompleteRewriteCards(document, `${card.title} applied. Cards refreshed for the next block.`);
     }
@@ -1306,13 +1405,11 @@ export default function WorkspacePage() {
     return (
       <article
         key={card.id}
-        className={`rewrite-card${card.error ? ' has-error' : ''}${rewriteCardsLocked ? ' is-locked' : ''}`}
+        className={`rewrite-card${card.error ? ' has-error' : ''}${rewriteCardsLocked ? ' is-locked' : ''}${card.meaningPreserved === false ? ' is-unsafe' : ''}`}
         data-workspace-wand-target="true"
         onMouseEnter={holdWorkspaceWand}
         onPointerEnter={holdWorkspaceWand}
         onFocus={holdWorkspaceWand}
-        onClick={(event) => handleRewriteCardClick(card, event)}
-        tabIndex={0}
       >
         <div className="rewrite-card-header">
           <strong>{card.title}</strong>
@@ -1324,10 +1421,48 @@ export default function WorkspacePage() {
             }}
             disabled={rewriteBusy || rewriteCardsLocked || rewriteAllCompleted}
           >
-            Regenerate
+            {card.response ? 'Regenerate' : 'Generate'}
           </button>
         </div>
-        <p>{card.error || card.response || 'Hover for wand, click to use magic, or regenerate a placeholder response.'}</p>
+        <p className="rewrite-card-best-for">{card.bestFor}</p>
+        <p className="rewrite-card-focus"><strong>Focus:</strong> {card.focus}</p>
+        {card.error ? <p className="rewrite-card-error">{card.error}</p> : null}
+        {card.response ? (
+          <>
+            <p className="rewrite-card-response">{card.response}</p>
+            {card.warnings.length ? (
+              <ul className="rewrite-card-warnings">
+                {card.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            ) : null}
+            <div className="rewrite-card-actions">
+              <button type="button" onClick={() => toggleRewriteExplanation(card.id)}>
+                {card.applyWithExplanation ? 'Hide explanation' : 'Why this works'}
+              </button>
+              <button
+                type="button"
+                className="rewrite-card-apply"
+                onClick={(event) => handleRewriteCardClick(card, event)}
+                disabled={rewriteBusy || rewriteCardsLocked || !card.meaningPreserved}
+              >
+                Use this rewrite
+              </button>
+            </div>
+            {card.applyWithExplanation ? (
+              <div className="rewrite-card-explanation">
+                <p>{card.explanation}</p>
+                <ul>
+                  {card.changes.map((change) => <li key={change}>{change}</li>)}
+                </ul>
+              </div>
+            ) : null}
+            {!card.meaningPreserved ? (
+              <p className="rewrite-card-safety">This option is disabled because the model could not preserve the original meaning safely.</p>
+            ) : null}
+          </>
+        ) : (
+          <p className="rewrite-card-empty">Generate this tone, or generate all three options together.</p>
+        )}
       </article>
     );
   }
@@ -1401,6 +1536,15 @@ export default function WorkspacePage() {
                     <PanelChevron direction="right" />
                   </button>
                 </div>
+                {rewriteError ? <p className="rewrite-panel-error" role="alert">{rewriteError}</p> : null}
+                <button
+                  type="button"
+                  className="rewrite-generate-all"
+                  onClick={() => generateRewrites()}
+                  disabled={rewriteBusy || rewriteCardsLocked || !currentRewriteBlockId}
+                >
+                  {rewriteBusy ? 'Generating...' : 'Generate all three tones'}
+                </button>
                 {currentRewriteCard ? renderRewriteCard(currentRewriteCard) : null}
                 <button
                   type="button"
@@ -1657,16 +1801,30 @@ export default function WorkspacePage() {
           <div className="workspace-mode-card-title-row">
             <h2>Rewriting</h2>
             {!rewriteAllCompleted ? (
-              <button
-                type="button"
-                className="rewrite-disable-current"
-                onClick={disableCurrentRewriteBlock}
-                disabled={rewriteCardsLocked || rewriteBusy}
-              >
-                Disable Current Block
-              </button>
+              <div className="rewrite-title-actions">
+                <button
+                  type="button"
+                  className="rewrite-generate-all"
+                  onClick={() => generateRewrites()}
+                  disabled={rewriteCardsLocked || rewriteBusy || !currentRewriteBlockId}
+                >
+                  {rewriteBusy ? 'Generating...' : 'Generate all three tones'}
+                </button>
+                <button
+                  type="button"
+                  className="rewrite-disable-current"
+                  onClick={disableCurrentRewriteBlock}
+                  disabled={rewriteCardsLocked || rewriteBusy}
+                >
+                  Disable Current Block
+                </button>
+              </div>
             ) : null}
           </div>
+          {currentRewriteBlock?.text ? (
+            <p className="rewrite-source-preview"><strong>Selected block:</strong> {currentRewriteBlock.text}</p>
+          ) : null}
+          {rewriteError ? <p className="rewrite-panel-error" role="alert">{rewriteError}</p> : null}
           <div className="rewrite-card-list">
             {rewriteAllCompleted ? renderRewriteCompleteCard() : rewriteCards.map((card) => renderRewriteCard(card))}
           </div>

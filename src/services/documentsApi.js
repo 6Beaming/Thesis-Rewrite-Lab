@@ -48,3 +48,16 @@ export function analyzeDocumentBlock(documentId, blockId, filters) {
     body: JSON.stringify({ filters }),
   });
 }
+
+export function generateDocumentBlockRewrites(documentId, blockId, { tone = null, force = false } = {}) {
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/rewrites`, {
+    method: 'POST',
+    body: JSON.stringify({ tone, force }),
+  });
+}
+
+export function acceptDocumentBlockRewrite(documentId, blockId, rewriteId) {
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/rewrites/${rewriteId}/accept`, {
+    method: 'POST',
+  });
+}

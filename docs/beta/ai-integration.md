@@ -20,10 +20,10 @@ backend path, persistence, and verification are implemented.
 | Deterministic block metrics | Implemented | Counts and simple writing signals are calculated locally before the model call. |
 | Selected-block analysis | Implemented | Users select one editor block, choose filters, and request focused coaching. |
 | Analysis persistence | Implemented | Results are cached in `block_analyses` using document, block, text hash, filters, model, and prompt version. |
-| Three rewriting options | Placeholder | Existing cards still simulate responses and errors with timers. |
+| Three rewriting options | Implemented | Users generate, inspect, regenerate, and apply Formal & Academic, Persuasive & Argumentative, and Accessible & Concise rewrites. |
 | Practice feedback | Placeholder | Existing feedback is still generated locally after a simulated delay. |
 | Realtime AI progress | Not implemented | Socket.io is installed, but AI processing events are not connected. |
-| Per-user AI credits | Not implemented | The analysis route has an IP rate limit but no user quota or subscription enforcement. |
+| Per-user AI credits | Not implemented | The analysis and rewriting routes have an IP rate limit but no user quota or subscription enforcement. |
 
 ## User Workflow
 
@@ -71,7 +71,7 @@ OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 
 - `OPENAI_API_KEY` authenticates requests made by Express.
 - `OPENAI_ANALYSIS_MODEL` selects the block-analysis model.
-- `OPENAI_REWRITE_MODEL` is reserved for the rewriting workflow.
+- `OPENAI_REWRITE_MODEL` selects the three-tone rewriting model.
 - `OPENAI_EMBEDDING_MODEL` is reserved for future embedding-based features;
   current semantic partitioning runs locally and does not call this model.
 
@@ -352,7 +352,7 @@ Implemented controls:
 - Zod-validated Structured Output;
 - 30-second OpenAI client timeout;
 - one SDK retry;
-- 30 analysis requests per 15 minutes per rate-limit identity;
+- 30 analysis or rewrite-generation requests per 15 minutes per rate-limit identity;
 - safe messages for upstream failures and rate limits;
 - source-text hashing and response caching;
 - `store: false` on the Responses API request; and
@@ -370,42 +370,65 @@ Current limitations:
 Application logs must not print API keys, full papers, or raw OpenAI error
 objects containing sensitive request details.
 
-## Planned Three-Tone Rewriting
+## Implemented Three-Tone Rewriting
 
-Planned endpoint:
+Generation endpoint:
 
 ```http
 POST /api/documents/:documentId/blocks/:blockId/rewrites
 ```
 
-Initial tones:
+Request body for all three tones:
 
-| Tone | Behavior |
-| --- | --- |
-| Concise | Reduce unnecessary wording while preserving every claim. |
-| Formal | Use conventional academic language without unnecessary complexity. |
-| Accessible | Improve readability without weakening academic accuracy. |
+```json
+{
+  "tone": null,
+  "force": false
+}
+```
 
-Each option should return rewritten text, concrete changes, explanations,
+Passing one supported tone regenerates only that card. `force: true` bypasses
+the exact cache match for that tone.
+
+Implemented tones:
+
+| Tone | Best for | Focus |
+| --- | --- | --- |
+| Formal & Academic | Dissertations, peer-reviewed journals, and committee submissions. | Objectivity, precise academic vocabulary, neutrality, and appropriately impersonal or passive constructions. |
+| Persuasive & Argumentative | Thesis statements, proposals, and op-eds. | Active verbs, strong reasoning, and why the claim or finding matters. |
+| Accessible & Concise | Executive summaries, abstract overviews, and elevator pitches. | Short sentences, active verbs, plain language, and no filler or unnecessary jargon. |
+
+Each option returns rewritten text, concrete changes, explanations,
 meaning-preservation status, and warnings. Citations, quotations, names,
 numbers, equations, and technical terms must be preserved.
 
-Accepting an option should reuse the current editor API:
+The formal prompt may foreground research with passive or impersonal language,
+but it must not create “empirical evidence” that was absent from the source.
+All three tones prohibit invented evidence, facts, citations, examples, results,
+or stronger certainty.
+
+Rewrite options are cached in `block_rewrite_options` by document, stable block
+ID, exact source-text hash, tone, model, and prompt version. Regeneration updates
+that exact option and clears its previous acceptance timestamp.
+
+Accepting an option uses:
 
 ```text
 AI option selected
+    -> POST /api/documents/:documentId/blocks/:blockId/rewrites/:rewriteId/accept
+    -> record accepted_at
     -> DocumentEditor.applyCurrentBlockStatus({
          status: 'processed',
          replacementText,
          targetBlockId
        })
-    -> save document
-    -> persist accepted-option metadata
+    -> mark the workspace dirty for saving
     -> advance to the next processing block
 ```
 
-The existing rewriting cards are still placeholders and must not be described
-as model-generated.
+The frontend saves unsaved source text before generation, rejects stale results
+when the active block changes during a request, shows explanations and warnings,
+and disables options where the model reports that meaning was not preserved.
 
 ## Planned Practice Feedback
 
@@ -428,18 +451,21 @@ The existing practice response remains a local placeholder.
 
 ## AI-Related File Inventory
 
-### Implemented analysis files
+### Implemented AI files
 
 | File | Responsibility |
 | --- | --- |
 | `.env.example` | Documents server-only API key and model configuration. |
 | `server/ai/blockAnalysis.js` | Metrics, filter normalization, hash creation, Zod schema, versioned prompt, OpenAI client, and Responses API call. |
 | `server/ai/blockAnalysis.test.js` | Tests deterministic metrics, filter normalization, signatures, and hashing. |
+| `server/ai/blockRewrites.js` | Defines the three tones, Structured Output schemas, versioned safety prompt, and rewrite generation calls. |
+| `server/ai/blockRewrites.test.js` | Tests supported tones and stable structured-result mapping. |
 | `server/models/analyses.js` | Loads owned block context and reads/writes cached analyses. |
-| `server/routers/documents.js` | Exposes the authenticated analysis endpoint and rate limiter. |
-| `scripts/db/schema.sql` | Defines `block_analyses` and its indexes/migration compatibility. |
-| `src/services/documentsApi.js` | Calls the block-analysis endpoint. |
-| `src/pages/WorkspacePage.jsx` | Saves pending edits, requests analysis, caches client results, and renders the Analyzing panel. |
+| `server/models/rewrites.js` | Reads/writes cached rewrite options and records accepted options. |
+| `server/routers/documents.js` | Exposes authenticated analysis, rewrite-generation, and rewrite-acceptance endpoints. |
+| `scripts/db/schema.sql` | Defines `block_analyses`, `block_rewrite_options`, and their cache indexes. |
+| `src/services/documentsApi.js` | Calls the analysis and rewriting endpoints. |
+| `src/pages/WorkspacePage.jsx` | Saves pending edits, requests AI results, rejects stale results, renders coaching, and applies accepted rewrites. |
 | `src/components/DocumentEditor.jsx` | Reports the currently selected block and its text. |
 | `src/styles/workspace.css` | Styles analysis controls, metrics, scores, issues, goals, loading, errors, and responsive layouts. |
 
@@ -460,8 +486,6 @@ implemented.
 
 | Planned area | Intended responsibility |
 | --- | --- |
-| Rewrite schema/service | Generate and validate three tone-based options. |
-| Rewrite model module | Persist options and accepted choices. |
 | Practice schema/service | Evaluate a user's revision and return teaching feedback. |
 | Practice model module | Persist attempts, feedback, and scores. |
 | Prompt regression fixtures | Detect behavior changes across prompt/model updates. |
@@ -469,7 +493,8 @@ implemented.
 
 ## Verification
 
-The block-analysis implementation was verified on 2026-07-12 with:
+The block-analysis and three-tone rewriting implementations were verified on
+2026-07-12 with:
 
 ```bash
 npm run db:migrate
@@ -483,11 +508,11 @@ Observed results:
 - product schema migration succeeded;
 - `block_analyses` exists in PostgreSQL;
 - server syntax checks passed;
-- all 22 automated tests passed; and
+- all 24 automated tests passed; and
 - the Vite production build succeeded.
 
 The build still reports existing dependency/bundle warnings for `lottie-web`
-and large chunks. These warnings are not produced by the analysis integration.
+and large chunks. These warnings are not produced by the AI integrations.
 
 No paid live OpenAI request was made during automated verification. A final
 manual test requires a valid `OPENAI_API_KEY`, a signed-in browser session, and
@@ -509,9 +534,9 @@ a persisted document.
 - [x] Add analysis rate limiting, timeout, token-usage storage, and safe errors.
 - [ ] Add prompt regression fixtures and authenticated endpoint integration tests.
 - [ ] Add per-user AI request or credit limits.
-- [ ] Add rewrite persistence and endpoint.
-- [ ] Replace placeholder rewrite cards with API results.
-- [ ] Persist accepted rewrite metadata.
+- [x] Add rewrite persistence and endpoint.
+- [x] Replace placeholder rewrite cards with API results.
+- [x] Persist accepted rewrite metadata.
 - [ ] Add practice-attempt persistence and endpoint.
 - [ ] Replace placeholder practice feedback with API results.
 - [ ] Add realtime progress only if observed request duration requires it.
@@ -520,6 +545,12 @@ a persisted document.
 
 ### 2026-07-12
 
+- Implemented Formal & Academic, Persuasive & Argumentative, and Accessible &
+  Concise block rewrites through the Responses API.
+- Added structured rewrite explanations, changes, meaning-preservation flags,
+  warnings, exact caching, per-tone regeneration, and acceptance timestamps.
+- Connected desktop and mobile rewrite cards to generation, safe application,
+  editor replacement, block completion, and next-block advancement.
 - Implemented selected-block analysis through the OpenAI Responses API.
 - Added local deterministic metrics for sentence length and writing signals.
 - Added strict filter validation and Zod Structured Output parsing.
