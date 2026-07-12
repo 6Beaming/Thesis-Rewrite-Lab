@@ -98,7 +98,7 @@ function sliceFormattedContent(content, start, end) {
   return trimContent(result);
 }
 
-function formattedBlocksFromHtml(html) {
+function formattedBlocksFromHtml(html, partitionMode) {
   const blocks = [];
   let activeMarks = [];
   let currentContent = [];
@@ -107,7 +107,10 @@ function formattedBlocksFromHtml(html) {
   function finishBlock({ resetAttrs = false } = {}) {
     const content = trimContent(currentContent);
     const text = textFromContent(content);
-    for (const range of characterBalancedRanges(text, { paragraphBreak: 'blank-line' })) {
+    for (const range of characterBalancedRanges(text, {
+      paragraphBreak: 'blank-line',
+      partitionMode,
+    })) {
       blocks.push({
         text: range.text,
         content: sliceFormattedContent(content, range.start, range.end),
@@ -168,24 +171,24 @@ function formattedBlocksFromHtml(html) {
   return blocks;
 }
 
-async function extractBlocks(filePath, buffer) {
+async function extractBlocks(filePath, buffer, partitionMode) {
   const extension = path.extname(filePath).toLowerCase();
   if (extension === '.doc') {
     throw new Error('.doc uploads are not supported. Use .docx, .md, or .txt.');
   }
   if (extension === '.docx') {
     const htmlResult = await mammoth.convertToHtml({ buffer });
-    const formattedBlocks = formattedBlocksFromHtml(htmlResult.value);
+    const formattedBlocks = formattedBlocksFromHtml(htmlResult.value, partitionMode);
     if (formattedBlocks.length) return formattedBlocks;
 
     const textResult = await mammoth.extractRawText({ buffer });
-    return clustering(textResult.value, { paragraphBreak: 'blank-line' });
+    return clustering(textResult.value, { paragraphBreak: 'blank-line', partitionMode });
   }
   if (extension === '.md') {
-    return clustering(buffer.toString('utf8'), { paragraphBreak: 'blank-line' });
+    return clustering(buffer.toString('utf8'), { paragraphBreak: 'blank-line', partitionMode });
   }
   if (extension === '.txt') {
-    return clustering(buffer.toString('utf8'));
+    return clustering(buffer.toString('utf8'), { partitionMode });
   }
   throw new Error('Only .txt, .md, and .docx uploads are supported.');
 }
@@ -241,7 +244,11 @@ async function main() {
   }
 
   const buffer = await fs.readFile(filePath);
-  const extractedBlocks = await extractBlocks(filePath, buffer);
+  const partitionMode = process.env.DOCUMENT_PARTITION_MODE ?? 'semantic';
+  if (!['character', 'semantic'].includes(partitionMode)) {
+    throw new Error('DOCUMENT_PARTITION_MODE must be character or semantic.');
+  }
+  const extractedBlocks = await extractBlocks(filePath, buffer, partitionMode);
   const extension = path.extname(filePath).toLowerCase();
   const title = process.argv[4] || path.basename(filePath, extension).replace(/[_-]+/g, ' ');
   const blocks = extractedBlocks.map(createBlock);

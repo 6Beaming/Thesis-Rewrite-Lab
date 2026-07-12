@@ -20,7 +20,8 @@ the OpenAI API yet.
 | Analyzing panel | UI placeholder | Statistics are derived locally in `WorkspacePage`; no model is called. |
 | Three rewriting options | UI placeholder | Cards simulate responses and errors with timers. |
 | Practice feedback | UI placeholder | Feedback is generated locally after a simulated delay. |
-| Semantic clustering | Not implemented | The embedding model is configured but is not called. |
+| Local semantic clustering | Implemented | winkNLP lemmatization, stop-word filtering, bag-of-words, and cosine similarity select topic boundaries near the character target. |
+| Embedding-based clustering | Not implemented | The embedding model is configured but is not called. |
 | AI result persistence | Not implemented | There are no analysis, rewrite-option, or practice-attempt tables yet. |
 | Realtime AI progress | Not implemented | Socket.io is installed, but AI processing events are not connected. |
 
@@ -86,12 +87,15 @@ OPENAI_API_KEY=
 OPENAI_REWRITE_MODEL=gpt-5.4-mini
 OPENAI_ANALYSIS_MODEL=gpt-5.4-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+DOCUMENT_PARTITION_MODE=semantic
 ```
 
 - `OPENAI_API_KEY` authenticates server-side API requests.
 - `OPENAI_REWRITE_MODEL` will generate the three rewrite choices and their explanations.
 - `OPENAI_ANALYSIS_MODEL` will analyze a block and evaluate practice attempts.
 - `OPENAI_EMBEDDING_MODEL` is reserved for optional semantic boundary detection.
+- `DOCUMENT_PARTITION_MODE` selects local `semantic` partitioning or the
+  sentence-aware `character` fallback for uploads.
 
 Real secrets belong in the untracked `.env` file during local development and
 in deployment secrets in production. Never add a `VITE_` prefix to the API key,
@@ -124,9 +128,11 @@ statuses in PostgreSQL. AI endpoints should identify a block by its UUID and
 load its text from the database. They should not trust block text submitted by
 the browser.
 
-Semantic clustering, if added, should operate after safe sentence segmentation.
-It should compare adjacent units and preserve document order rather than globally
-reordering sentences by similarity.
+Semantic clustering operates after safe sentence segmentation. winkNLP
+lemmatizes meaningful words, removes stop words, builds local bags of words, and
+uses cosine similarity to find low-similarity topic transitions near the target
+character count. It compares only adjacent context and preserves document order.
+Paragraph boundaries and the minimum/maximum character rules remain hard limits.
 
 ## Planned AI Workflows
 
@@ -203,7 +209,62 @@ example rewrite afterward.
 
 ### Semantic boundaries
 
-The Embeddings API may later support optional semantic blocks:
+The current default uses local winkNLP lexical-semantic similarity:
+
+1. segment text safely into sentences inside each paragraph;
+2. lemmatize words and remove stop words;
+3. create bags of words for the sentences surrounding each possible boundary;
+4. calculate cosine similarity between the left and right context;
+5. prefer a low-similarity boundary near the target character count; and
+6. enforce paragraph, sentence, minimum, and maximum constraints.
+
+#### How winkNLP processes the text
+
+winkNLP helps the partitioner turn sentences into comparable representations:
+
+1. **Tokenization:** separates each sentence into individual word and punctuation
+   tokens.
+2. **Lemmatization:** reduces related grammatical forms to a shared base form.
+
+   ```text
+   cats    -> cat
+   running -> run
+   studies -> study
+   ```
+
+3. **Stop-word removal:** removes frequent words that usually provide little
+   information about the subject.
+
+   ```text
+   the, is, of, and, to
+   ```
+
+4. **Bag-of-words creation:** counts the remaining lemmas to create a
+   word-frequency representation for the sentences on each side of a possible
+   boundary.
+5. **Cosine similarity:** compares the left and right word-frequency
+   representations. A score closer to `1` means the adjacent groups use similar
+   vocabulary; a score closer to `0` suggests a possible topic change.
+
+The final decision does not use similarity alone. It combines the similarity
+score with distance from the target character count and applies hard structural
+constraints:
+
+```text
+boundary score
+    = adjacent-context similarity
+    + distance-from-target penalty
+    + undersized-final-block penalty
+```
+
+The selected boundary must still preserve sentence order, stay inside the
+current paragraph, and respect the configured minimum and maximum whenever a
+complete sentence permits it.
+
+This is deterministic and requires no external API. The `character` partition
+mode remains available as a fallback that considers character balance only.
+
+The OpenAI Embeddings API may later provide stronger semantic representations:
 
 1. segment text safely into sentences or original paragraphs;
 2. embed each adjacent unit;
@@ -211,8 +272,8 @@ The Embeddings API may later support optional semantic blocks:
 4. create a boundary when similarity drops below an evaluated threshold; and
 5. enforce the same character minimum and maximum.
 
-This workflow is optional. Character-balanced deterministic clustering remains
-the default until semantic clustering is implemented and evaluated.
+Embedding-based boundaries remain optional and must be evaluated against the
+local winkNLP baseline before replacing it.
 
 ## Planned Persistence
 
@@ -285,6 +346,8 @@ Keep this inventory updated when files are added, renamed, or removed.
 | --- | --- | --- |
 | `scripts/lib/clustering.cjs` | Implemented | Creates deterministic sentence-aware, character-balanced model input blocks. |
 | `scripts/lib/clustering.test.cjs` | Implemented | Tests punctuation, abbreviations, decimals, boundaries, balancing, and oversized sentences. |
+| `scripts/lib/semanticClustering.cjs` | Implemented | Uses winkNLP normalization and cosine similarity to select adjacent topic boundaries. |
+| `scripts/lib/semanticClustering.test.cjs` | Implemented | Tests lemmatization, stop-word removal, topic-change scoring, and semantic boundary selection. |
 | `server/routers/documents.js` | Implemented preprocessing | Uses clustering for live `.txt`, `.md`, and `.docx` uploads while preserving supported formatting. |
 | `scripts/process-upload.cjs` | Implemented preprocessing | Uses the same clustering behavior in the CLI importer. |
 | `server/models/blocks.js` | Supporting | Creates stable block IDs, stores block text/status, and advances processing. |
@@ -342,6 +405,8 @@ different names.
 - [x] Install the OpenAI Node SDK and Zod.
 - [x] Replace period-only splitting with deterministic balanced clustering.
 - [x] Test clustering behavior.
+- [x] Add local winkNLP semantic partitioning with a character-only fallback.
+- [x] Test semantic normalization, similarity, and boundary selection.
 - [ ] Add the server-only OpenAI client.
 - [ ] Add structured response schemas.
 - [ ] Add versioned prompts.
@@ -355,7 +420,7 @@ different names.
 - [ ] Add stale-result detection using source-text hashes.
 - [ ] Add AI rate limits, timeouts, token tracking, and user quotas.
 - [ ] Add prompt regression fixtures and endpoint tests.
-- [ ] Evaluate whether semantic embeddings materially improve boundaries.
+- [ ] Evaluate whether OpenAI embeddings materially improve the winkNLP boundaries.
 - [ ] Add realtime progress only if request duration requires it.
 
 ## Change Log
@@ -366,4 +431,5 @@ different names.
 - Recorded the existing OpenAI configuration and installed dependencies.
 - Recorded that current analyzing, rewriting, and practice behavior is placeholder-only.
 - Documented deterministic sentence-aware, character-balanced preprocessing.
+- Added winkNLP semantic partitioning as the default upload mode.
 - Added the initial target architecture, file inventory, and implementation checklist.

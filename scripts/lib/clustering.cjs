@@ -26,6 +26,8 @@ function normalizeOptions(options = {}) {
     maxChars,
     locale: options.locale || DEFAULT_CLUSTER_OPTIONS.locale,
     paragraphBreak: options.paragraphBreak === 'blank-line' ? 'blank-line' : 'single-newline',
+    partitionMode: options.partitionMode === 'semantic' ? 'semantic' : 'character',
+    semantic: options.semantic,
   };
 }
 
@@ -144,7 +146,12 @@ function clustering(text, options = {}) {
     }
 
     const sentences = segmentSentences(section.text, normalizedOptions.locale);
-    blocks.push(...clusterSentences(sentences, normalizedOptions));
+    if (normalizedOptions.partitionMode === 'semantic') {
+      const { semanticClusterSentences } = require('./semanticClustering.cjs');
+      blocks.push(...semanticClusterSentences(sentences, normalizedOptions));
+    } else {
+      blocks.push(...clusterSentences(sentences, normalizedOptions));
+    }
   }
 
   return blocks;

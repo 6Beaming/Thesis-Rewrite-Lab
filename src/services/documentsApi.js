@@ -20,10 +20,11 @@ export function saveDocument(documentId, payload) {
   });
 }
 
-export function uploadDocument(file, academicStyle = 'APA') {
+export function uploadDocument(file, academicStyle = 'APA', partitionMode = 'semantic') {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('academicStyle', academicStyle);
+  formData.append('partitionMode', partitionMode);
   return requestJson('/documents/upload', {
     method: 'POST',
     body: formData,
