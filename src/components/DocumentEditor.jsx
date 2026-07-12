@@ -330,6 +330,21 @@ function selectedParagraphInfo(editor) {
   return { blockId: null, status: 'unprocessed' };
 }
 
+function syncSelectedBlockIndicator(editor, blockId) {
+  const editorRoot = editor?.view?.dom;
+  if (!editorRoot) return;
+
+  editorRoot.querySelectorAll('.doc-block[data-selected="true"]').forEach((block) => {
+    block.removeAttribute('data-selected');
+  });
+
+  if (!blockId) return;
+  const selectedBlock = editorRoot.querySelector(
+    `.doc-block[data-block-id="${CSS.escape(blockId)}"]`,
+  );
+  selectedBlock?.setAttribute('data-selected', 'true');
+}
+
 function collectTrackedBlocks(state) {
   const blocks = [];
   let order = 0;
@@ -583,6 +598,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       );
       suppressEditedStatusResetRef.current = false;
       const info = selectedParagraphInfo(activeEditor);
+      syncSelectedBlockIndicator(activeEditor, info.blockId);
       onChange?.({
         ...createEditorSnapshot(activeEditor),
         contentJson: normalizedJson,
@@ -594,6 +610,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     },
     onSelectionUpdate({ editor: activeEditor }) {
       const info = selectedParagraphInfo(activeEditor);
+      syncSelectedBlockIndicator(activeEditor, info.blockId);
       onActiveBlockChange?.(info);
       setActiveBlockStatus(info.status);
     },
@@ -602,6 +619,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   useEffect(() => {
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
     const info = selectedParagraphInfo(editor);
+    syncSelectedBlockIndicator(editor, info.blockId);
     onActiveBlockChange?.(info);
     setActiveBlockStatus(info.status);
   }, [editor, document?.id, onActiveBlockChange]);

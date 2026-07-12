@@ -637,11 +637,23 @@
 }
 
 .doc-block {
+  --block-selected-background: rgba(226, 242, 236, 0.78);
   padding: 0;
   border: 0;
   border-radius: 0;
   outline: 0;
+  cursor: text;
   transition: background-color 160ms ease, filter 160ms ease;
+}
+
+.doc-block:hover {
+  filter: brightness(0.94) saturate(1.08);
+}
+
+.doc-block[data-selected='true'] {
+  background: var(--block-selected-background);
+  filter: saturate(1.14);
+  animation: selected-block-pulse 420ms ease-out;
 }
 
 .document-editor-surface p.doc-block {
@@ -656,6 +668,7 @@
 }
 
 .doc-block--processing {
+  --block-selected-background: rgba(255, 225, 116, 0.72);
   background: rgba(255, 236, 166, 0.5);
 }
 
@@ -664,15 +677,18 @@
 }
 
 .doc-block--unprocessed {
+  --block-selected-background: rgba(255, 191, 186, 0.62);
   background: rgba(255, 220, 218, 0.4);
   text-decoration: none;
 }
 
 .doc-block--processed {
+  --block-selected-background: rgba(181, 229, 195, 0.68);
   background: rgba(219, 242, 225, 0.58);
 }
 
 .doc-block--skipped {
+  --block-selected-background: rgba(224, 230, 227, 0.72);
   background: transparent;
 }
 
@@ -690,6 +706,15 @@
   }
   50% {
     filter: brightness(0.9);
+  }
+}
+
+@keyframes selected-block-pulse {
+  0% {
+    filter: saturate(1.35) brightness(0.9);
+  }
+  100% {
+    filter: saturate(1.14) brightness(1);
   }
 }
 

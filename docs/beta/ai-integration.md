@@ -461,4 +461,6 @@ different names.
   no longer inserts line breaks inside an original paragraph.
 - Simplified inline block styling to unobtrusive status highlights without
   badges, outlines, padding, rounded boxes, or underlines.
+- Added hover feedback and a stronger transient highlight for the block that
+  contains the editor selection, without persisting UI-only selection state.
 - Added the initial target architecture, file inventory, and implementation checklist.
