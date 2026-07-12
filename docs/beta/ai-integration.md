@@ -16,16 +16,13 @@ the OpenAI API yet.
 | OpenAI configuration | Ready | Server-only environment variable placeholders and model defaults exist. |
 | OpenAI Node SDK | Installed | The `openai` package is installed but is not imported by application code yet. |
 | Structured-response validation | Installed | `zod` is installed but AI schemas have not been created yet. |
-| Deterministic document blocks | Implemented | Uploads and oversized text entered in the editor are separated into sentence-aware, character-balanced blocks. |
 | Analyzing panel | UI placeholder | Statistics are derived locally in `WorkspacePage`; no model is called. |
 | Three rewriting options | UI placeholder | Cards simulate responses and errors with timers. |
 | Practice feedback | UI placeholder | Feedback is generated locally after a simulated delay. |
-| Local semantic clustering | Implemented | winkNLP lemmatization, stop-word filtering, bag-of-words, and cosine similarity select topic boundaries near the character target. |
-| Embedding-based clustering | Not implemented | The embedding model is configured but is not called. |
 | AI result persistence | Not implemented | There are no analysis, rewrite-option, or practice-attempt tables yet. |
 | Realtime AI progress | Not implemented | Socket.io is installed, but AI processing events are not connected. |
 
-Do not describe analysis, rewriting, practice feedback, embeddings, or realtime
+Do not describe analysis, rewriting, practice feedback, or realtime
 AI processing as complete until their rows above have been updated.
 
 ## Intended User Workflow
@@ -33,10 +30,7 @@ AI processing as complete until their rows above have been updated.
 The application processes one selected document block at a time:
 
 ```text
-Upload document
-    -> extract text and formatting
-    -> create sentence-aware, character-balanced blocks
-    -> select the current processing block
+Select the current processing block
     -> analyze the block
     -> generate three tone-based rewrites
     -> let the user write and submit a practice rewrite
@@ -86,16 +80,11 @@ The current defaults in `.env.example` are:
 OPENAI_API_KEY=
 OPENAI_REWRITE_MODEL=gpt-5.4-mini
 OPENAI_ANALYSIS_MODEL=gpt-5.4-mini
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-DOCUMENT_PARTITION_MODE=semantic
 ```
 
 - `OPENAI_API_KEY` authenticates server-side API requests.
 - `OPENAI_REWRITE_MODEL` will generate the three rewrite choices and their explanations.
 - `OPENAI_ANALYSIS_MODEL` will analyze a block and evaluate practice attempts.
-- `OPENAI_EMBEDDING_MODEL` is reserved for optional semantic boundary detection.
-- `DOCUMENT_PARTITION_MODE` selects local `semantic` partitioning or the
-  sentence-aware `character` fallback for uploads.
 
 Real secrets belong in the untracked `.env` file during local development and
 in deployment secrets in production. Never add a `VITE_` prefix to the API key,
@@ -105,82 +94,9 @@ Model names must be read from environment variables rather than repeated across
 services. Pin model snapshots before a graded demonstration if consistent output
 is required.
 
-## Deterministic Preprocessing
-
-AI starts after deterministic preprocessing. The `clustering` helper currently:
-
-- uses sentence boundaries instead of `split('.')`;
-- recognizes periods, question marks, and exclamation marks;
-- avoids splitting common abbreviations and decimal numbers;
-- targets 800 characters per block;
-- uses a 450-character minimum and 1,200-character maximum;
-- keeps a sentence intact when one sentence exceeds the maximum;
-- treats every newline in `.txt` as a paragraph boundary;
-- follows Markdown rules in `.md`, where a blank line separates paragraphs and
-  a single newline remains inside the same paragraph;
-- ignores repeated newlines instead of creating empty blocks;
-- preserves `.docx` paragraph and heading boundaries while keeping soft line
-  breaks inside their containing paragraph; and
-- allows `.docx` text marks to be divided at the same calculated boundaries.
-
-These blocks already have stable UUIDs, character lengths, and processing
-statuses in PostgreSQL. AI endpoints should identify a block by its UUID and
-load its text from the database. They should not trust block text submitted by
-the browser.
-
-### Paragraphs and AI blocks are separate
-
-An original document paragraph is a structural editor node. An AI block is a
-tracked text segment used for analysis, rewriting, practice, and progress. A
-long paragraph may contain multiple AI blocks, but an AI boundary must not add a
-paragraph break:
-
-```text
-TipTap paragraph
-  -> inline blockSegment A
-  -> separating space
-  -> inline blockSegment B
-```
-
-Each `blockSegment` retains its own UUID, status, character length, and visual
-boundary. The containing TipTap paragraph retains the original line break,
-indentation, alignment, and paragraph-level formatting. `paragraphIndex` links
-database blocks that came from the same original paragraph.
-
-This distinction prevents semantic or character partitioning from changing the
-paper's visible paragraph structure.
-
-### Live editor partitioning
-
-`DocumentEditor` also runs local semantic clustering after the user pauses
-typing for 450 milliseconds. It checks tracked blocks and only repartitions a
-block after it exceeds the 1,200-character maximum. This avoids moving stable
-boundaries on every keystroke while still creating model-sized blocks for text
-typed or pasted directly into the editor.
-
-The editor behavior follows these rules:
-
-- the browser runs winkNLP locally and does not call OpenAI or the Express API;
-- winkNLP and its English model are loaded lazily only when a block exceeds the
-  maximum, keeping them out of the initial editor bundle;
-- sentence boundaries, abbreviations, the 800-character target, 450-character
-  minimum, and 1,200-character maximum match upload preprocessing;
-- the existing first block keeps its ID and processing status;
-- additional portions receive new IDs and start as `unprocessed`;
-- text typed at an inline block boundary is absorbed into its neighboring
-  tracked block instead of remaining outside the block system;
-- pressing Enter creates a TipTap paragraph boundary that clustering does not
-  cross; and
-- a single sentence may exceed the maximum because it is never cut mid-sentence.
-
-The partition transaction is excluded from undo history, so it does not add an
-extra undo step after ordinary typing.
-
-Semantic clustering operates after safe sentence segmentation. winkNLP
-lemmatizes meaningful words, removes stop words, builds local bags of words, and
-uses cosine similarity to find low-similarity topic transitions near the target
-character count. It compares only adjacent context and preserves document order.
-Paragraph boundaries and the minimum/maximum character rules remain hard limits.
+Block partitioning and file uploading are non-AI features documented separately
+in [`document-preprocessing.md`](./document-preprocessing.md) and
+[`file-upload.md`](./file-upload.md).
 
 ## Planned AI Workflows
 
@@ -255,74 +171,6 @@ The first response should provide strengths and targeted hints, not replace the
 student's work with a complete model answer. A separate action may reveal an
 example rewrite afterward.
 
-### Semantic boundaries
-
-The current default uses local winkNLP lexical-semantic similarity:
-
-1. segment text safely into sentences inside each paragraph;
-2. lemmatize words and remove stop words;
-3. create bags of words for the sentences surrounding each possible boundary;
-4. calculate cosine similarity between the left and right context;
-5. prefer a low-similarity boundary near the target character count; and
-6. enforce paragraph, sentence, minimum, and maximum constraints.
-
-#### How winkNLP processes the text
-
-winkNLP helps the partitioner turn sentences into comparable representations:
-
-1. **Tokenization:** separates each sentence into individual word and punctuation
-   tokens.
-2. **Lemmatization:** reduces related grammatical forms to a shared base form.
-
-   ```text
-   cats    -> cat
-   running -> run
-   studies -> study
-   ```
-
-3. **Stop-word removal:** removes frequent words that usually provide little
-   information about the subject.
-
-   ```text
-   the, is, of, and, to
-   ```
-
-4. **Bag-of-words creation:** counts the remaining lemmas to create a
-   word-frequency representation for the sentences on each side of a possible
-   boundary.
-5. **Cosine similarity:** compares the left and right word-frequency
-   representations. A score closer to `1` means the adjacent groups use similar
-   vocabulary; a score closer to `0` suggests a possible topic change.
-
-The final decision does not use similarity alone. It combines the similarity
-score with distance from the target character count and applies hard structural
-constraints:
-
-```text
-boundary score
-    = adjacent-context similarity
-    + distance-from-target penalty
-    + undersized-final-block penalty
-```
-
-The selected boundary must still preserve sentence order, stay inside the
-current paragraph, and respect the configured minimum and maximum whenever a
-complete sentence permits it.
-
-This is deterministic and requires no external API. The `character` partition
-mode remains available as a fallback that considers character balance only.
-
-The OpenAI Embeddings API may later provide stronger semantic representations:
-
-1. segment text safely into sentences or original paragraphs;
-2. embed each adjacent unit;
-3. calculate cosine similarity between adjacent units;
-4. create a boundary when similarity drops below an evaluated threshold; and
-5. enforce the same character minimum and maximum.
-
-Embedding-based boundaries remain optional and must be evaluated against the
-local winkNLP baseline before replacing it.
-
 ## Planned Persistence
 
 Dedicated tables should store AI data rather than putting large results into
@@ -383,35 +231,17 @@ Keep this inventory updated when files are added, renamed, or removed.
 | File | Status | AI responsibility |
 | --- | --- | --- |
 | `.env.example` | Active | Documents the server-only API key and model environment variables. |
-| `package.json` | Active | Declares `openai` and `zod`; runs clustering tests. |
+| `package.json` | Active | Declares the OpenAI SDK and Zod dependencies. |
 | `package-lock.json` | Active | Locks OpenAI SDK and validation-library dependency versions. |
 | `README.md` | Existing overview | Describes the original tentative AI architecture; some model/LangChain/MCP details may not match the current implementation plan. |
 | `docs/beta/ai-integration.md` | Active | Source of truth for current AI integration status and planned workflows. |
-
-### Preprocessing and upload
-
-| File | Status | AI responsibility |
-| --- | --- | --- |
-| `scripts/lib/clustering.cjs` | Implemented | Creates deterministic sentence-aware, character-balanced model input blocks. |
-| `scripts/lib/clustering.test.cjs` | Implemented | Tests punctuation, abbreviations, decimals, boundaries, balancing, and oversized sentences. |
-| `scripts/lib/semanticClustering.cjs` | Implemented | Uses winkNLP normalization and cosine similarity to select adjacent topic boundaries. |
-| `scripts/lib/semanticClustering.test.cjs` | Implemented | Tests lemmatization, stop-word removal, topic-change scoring, and semantic boundary selection. |
-| `src/lib/clustering.js` | Implemented | Browser ESM implementation of the same sentence-aware and winkNLP semantic clustering used for live editor input. |
-| `src/lib/clusteringOptions.js` | Implemented | Lightweight shared browser defaults that let the editor check limits before lazily loading winkNLP. |
-| `src/lib/clustering.test.js` | Implemented | Verifies browser sentence handling, winkNLP normalization, and character-balanced semantic blocks. |
-| `server/routers/documents.js` | Implemented preprocessing | Uses clustering for live `.txt`, `.md`, and `.docx` uploads while preserving supported formatting. |
-| `scripts/process-upload.cjs` | Implemented preprocessing | Uses the same clustering behavior in the CLI importer. |
-| `server/models/blocks.js` | Supporting | Creates stable block IDs, groups inline block segments into original TipTap paragraphs, stores status, and advances processing. |
-| `server/models/blocks.test.js` | Implemented | Verifies that multiple AI blocks remain inside one original paragraph. |
-| `server/models/documents.js` | Supporting | Persists uploaded documents, blocks, saves, and progress. |
-| `scripts/db/schema.sql` | Supporting; AI extension planned | Defines current document/block tables; future AI tables will be added here or through migrations. |
 
 ### Workspace and editor
 
 | File | Status | AI responsibility |
 | --- | --- | --- |
 | `src/pages/WorkspacePage.jsx` | Placeholder UI | Owns analyzing, rewriting, and practicing state; currently simulates AI responses and errors. |
-| `src/components/DocumentEditor.jsx` | Supporting | Renders inline `blockSegment` nodes, partitions oversized typed or pasted text after a short pause, exposes the selected AI block, and applies accepted replacement text/status changes without creating paragraph breaks. |
+| `src/components/DocumentEditor.jsx` | Supporting | Exposes the selected document block and applies accepted replacement text/status changes. |
 | `src/services/documentsApi.js` | Supporting | Saves documents and updates block statuses; AI API functions are not present yet. |
 | `src/styles/workspace.css` | Active UI | Styles lightweight editor block highlights and statuses, analysis statistics, rewrite cards, practice cards, errors, loading states, and responsive AI panels. |
 | `src/components/OwlContainer.jsx` | Supporting UI | Displays the assistant character used during workflow feedback. |
@@ -455,10 +285,6 @@ different names.
 
 - [x] Add server-only OpenAI environment placeholders.
 - [x] Install the OpenAI Node SDK and Zod.
-- [x] Replace period-only splitting with deterministic balanced clustering.
-- [x] Test clustering behavior.
-- [x] Add local winkNLP semantic partitioning with a character-only fallback.
-- [x] Test semantic normalization, similarity, and boundary selection.
 - [ ] Add the server-only OpenAI client.
 - [ ] Add structured response schemas.
 - [ ] Add versioned prompts.
@@ -472,7 +298,6 @@ different names.
 - [ ] Add stale-result detection using source-text hashes.
 - [ ] Add AI rate limits, timeouts, token tracking, and user quotas.
 - [ ] Add prompt regression fixtures and endpoint tests.
-- [ ] Evaluate whether OpenAI embeddings materially improve the winkNLP boundaries.
 - [ ] Add realtime progress only if request duration requires it.
 
 ## Change Log
@@ -482,12 +307,8 @@ different names.
 - Created this living AI integration document.
 - Recorded the existing OpenAI configuration and installed dependencies.
 - Recorded that current analyzing, rewriting, and practice behavior is placeholder-only.
-- Documented deterministic sentence-aware, character-balanced preprocessing.
-- Added winkNLP semantic partitioning as the default upload mode.
 - Added numbered editor-margin markers and outlines so persisted block boundaries
   remain visible in the frontend.
-- Separated structural TipTap paragraphs from inline AI blocks so partitioning
-  no longer inserts line breaks inside an original paragraph.
 - Simplified inline block styling to unobtrusive status highlights without
   badges, outlines, padding, rounded boxes, or underlines.
 - Added an immediate status-colored border and stronger highlight only for the
@@ -501,4 +322,6 @@ different names.
 - Moved the selected border to one positioned frame based on the block's full
   bounding rectangle, preventing multiline blocks from drawing one border per
   wrapped line.
+- Moved non-AI block-partitioning documentation to `document-preprocessing.md`
+  and upload-flow documentation to `file-upload.md`.
 - Added the initial target architecture, file inventory, and implementation checklist.
