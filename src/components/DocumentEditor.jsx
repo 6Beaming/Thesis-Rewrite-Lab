@@ -17,6 +17,7 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { DEFAULT_CLUSTER_OPTIONS } from '../lib/clusteringOptions.js';
 import A4EditorPage from './A4EditorPage.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 
@@ -600,6 +601,117 @@ function reconcileEditorBlocks(editor, previousSnapshot, documentId, { skipEdite
   return editor.getJSON();
 }
 
+function absorbUntrackedEditorText(editor) {
+  if (!editor || editor.isDestroyed) return false;
+
+  const replacements = [];
+  editor.state.doc.descendants((node, pos) => {
+    if (!LEGACY_TRACKED_BLOCK_TYPES.has(node.type.name)) return;
+    const children = Array.from({ length: node.childCount }, (_, index) => node.child(index));
+    if (!children.some((child) => child.type.name === 'blockSegment')) return;
+
+    let changed = false;
+    for (let index = 0; index < children.length; index += 1) {
+      const child = children[index];
+      if (!child.isText || !child.text?.trim()) continue;
+
+      let neighborIndex = index - 1;
+      while (neighborIndex >= 0 && children[neighborIndex].type.name !== 'blockSegment') {
+        neighborIndex -= 1;
+      }
+      const append = neighborIndex >= 0;
+      if (!append) {
+        neighborIndex = index + 1;
+        while (neighborIndex < children.length && children[neighborIndex].type.name !== 'blockSegment') {
+          neighborIndex += 1;
+        }
+      }
+      if (neighborIndex < 0 || neighborIndex >= children.length) continue;
+
+      const neighbor = children[neighborIndex];
+      const content = Array.from(
+        { length: neighbor.childCount },
+        (_, childIndex) => neighbor.child(childIndex),
+      );
+      children[neighborIndex] = neighbor.type.create(
+        neighbor.attrs,
+        append ? [...content, child] : [child, ...content],
+        neighbor.marks,
+      );
+      children.splice(index, 1);
+      index -= 1;
+      changed = true;
+    }
+
+    if (changed) replacements.push({ node, pos, children });
+  });
+  if (!replacements.length) return false;
+
+  editor.commands.command(({ tr, dispatch }) => {
+    replacements.sort((a, b) => b.pos - a.pos).forEach(({ node, pos, children }) => {
+      tr.replaceWith(pos, pos + node.nodeSize, node.type.create(node.attrs, children, node.marks));
+    });
+    tr.setMeta('editorBlockNormalization', true);
+    tr.setMeta('addToHistory', false);
+    dispatch?.(tr);
+    return true;
+  });
+  return true;
+}
+
+async function splitOversizedEditorBlocks(editor, documentId) {
+  if (!editor || editor.isDestroyed) return false;
+
+  const hasOversizedBlock = collectTrackedBlocks(editor.state)
+    .some((block) => block.length > DEFAULT_CLUSTER_OPTIONS.maxChars);
+  if (!hasOversizedBlock) return false;
+
+  const { semanticClustering } = await import('../lib/clustering.js');
+  if (editor.isDestroyed) return false;
+  const oversizedBlocks = collectTrackedBlocks(editor.state)
+    .filter((block) => block.length > DEFAULT_CLUSTER_OPTIONS.maxChars)
+    .map((block) => ({ ...block, parts: semanticClustering(block.text) }))
+    .filter((block) => block.parts.length > 1)
+    .sort((a, b) => b.pos - a.pos);
+  if (!oversizedBlocks.length) return false;
+
+  const prefix = documentId || 'manual-document';
+  editor.commands.command(({ state, tr, dispatch }) => {
+    for (const block of oversizedBlocks) {
+      const inlineBlocks = [];
+      block.parts.forEach((text, index) => {
+        if (index) inlineBlocks.push(state.schema.text(' '));
+        const status = index === 0 ? block.status : 'unprocessed';
+        inlineBlocks.push(state.schema.nodes.blockSegment.create({
+          ...buildTrackedBlockStyleAttrs(block.attrs),
+          paragraphIndex: block.attrs.paragraphIndex ?? null,
+          blockId: index === 0 ? block.blockId : generateBlockId(`${prefix}-block`),
+          status,
+          length: text.length,
+        }, text ? state.schema.text(text) : null));
+      });
+
+      if (block.type === 'blockSegment') {
+        tr.replaceWith(block.pos, block.pos + block.node.nodeSize, inlineBlocks);
+        continue;
+      }
+
+      tr.setNodeMarkup(block.pos, undefined, {
+        ...block.node.attrs,
+        blockId: null,
+        status: 'unprocessed',
+      });
+      tr.replaceWith(block.pos + 1, block.pos + block.node.nodeSize - 1, inlineBlocks);
+    }
+
+    tr.setMeta('editorBlockPartition', true);
+    tr.setMeta('addToHistory', false);
+    dispatch?.(tr);
+    return true;
+  });
+  return true;
+}
+
 function collectParagraphs(state) {
   return collectTrackedBlocks(state);
 }
@@ -657,6 +769,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   const pageRef = useRef(null);
   const paragraphTextSnapshotRef = useRef(new Map());
   const suppressEditedStatusResetRef = useRef(false);
+  const blockPartitionTimerRef = useRef(null);
   const [activeBlockStatus, setActiveBlockStatus] = useState('unprocessed');
   const [pageCount, setPageCount] = useState(1);
   const processingBlockId = useMemo(() => {
@@ -699,6 +812,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       },
     },
     onUpdate({ editor: activeEditor, transaction }) {
+      absorbUntrackedEditorText(activeEditor);
       const skipEditedStatusReset = suppressEditedStatusResetRef.current || isHistoryTransaction(transaction);
       const normalizedJson = reconcileEditorBlocks(
         activeEditor,
@@ -717,6 +831,18 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       onActiveBlockChange?.(info);
       setActiveBlockStatus(info.status);
       paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
+
+      if (
+        transaction.docChanged
+        && !transaction.getMeta('editorBlockPartition')
+        && !transaction.getMeta('editorBlockNormalization')
+        && !isHistoryTransaction(transaction)
+      ) {
+        clearTimeout(blockPartitionTimerRef.current);
+        blockPartitionTimerRef.current = setTimeout(() => {
+          void splitOversizedEditorBlocks(activeEditor, document?.id);
+        }, 450);
+      }
     },
     onSelectionUpdate({ editor: activeEditor }) {
       const info = selectedParagraphInfo(activeEditor);
@@ -733,6 +859,10 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     onActiveBlockChange?.(info);
     setActiveBlockStatus(info.status);
   }, [editor, document?.id, onActiveBlockChange]);
+
+  useEffect(() => () => {
+    clearTimeout(blockPartitionTimerRef.current);
+  }, [document?.id]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed || !pageRef.current) return undefined;

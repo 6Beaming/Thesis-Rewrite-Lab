@@ -17,7 +17,7 @@
     "dev:client": "vite",
     "build": "vite build",
     "check:server": "node --check app.js && node --check scripts/migrate-auth.js && node --check server/auth.js && node --check server/models/auth-adapter.js && node --check server/middlewares/requireAuth.js && node --check server/routers/index.js",
-    "test": "node --test server/models/auth-adapter.test.js server/models/blocks.test.js scripts/lib/clustering.test.cjs scripts/lib/semanticClustering.test.cjs",
+    "test": "node --test server/models/auth-adapter.test.js server/models/blocks.test.js scripts/lib/clustering.test.cjs scripts/lib/semanticClustering.test.cjs src/lib/clustering.test.js",
     "start": "node app.js",
     "preview": "vite preview",
     "db:seed": "node scripts/db/seed.cjs",

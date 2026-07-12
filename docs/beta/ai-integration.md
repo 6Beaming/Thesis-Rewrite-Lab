@@ -16,7 +16,7 @@ the OpenAI API yet.
 | OpenAI configuration | Ready | Server-only environment variable placeholders and model defaults exist. |
 | OpenAI Node SDK | Installed | The `openai` package is installed but is not imported by application code yet. |
 | Structured-response validation | Installed | `zod` is installed but AI schemas have not been created yet. |
-| Deterministic document blocks | Implemented | Uploads are separated into sentence-aware, character-balanced blocks. |
+| Deterministic document blocks | Implemented | Uploads and oversized text entered in the editor are separated into sentence-aware, character-balanced blocks. |
 | Analyzing panel | UI placeholder | Statistics are derived locally in `WorkspacePage`; no model is called. |
 | Three rewriting options | UI placeholder | Cards simulate responses and errors with timers. |
 | Practice feedback | UI placeholder | Feedback is generated locally after a simulated delay. |
@@ -149,6 +149,32 @@ database blocks that came from the same original paragraph.
 
 This distinction prevents semantic or character partitioning from changing the
 paper's visible paragraph structure.
+
+### Live editor partitioning
+
+`DocumentEditor` also runs local semantic clustering after the user pauses
+typing for 450 milliseconds. It checks tracked blocks and only repartitions a
+block after it exceeds the 1,200-character maximum. This avoids moving stable
+boundaries on every keystroke while still creating model-sized blocks for text
+typed or pasted directly into the editor.
+
+The editor behavior follows these rules:
+
+- the browser runs winkNLP locally and does not call OpenAI or the Express API;
+- winkNLP and its English model are loaded lazily only when a block exceeds the
+  maximum, keeping them out of the initial editor bundle;
+- sentence boundaries, abbreviations, the 800-character target, 450-character
+  minimum, and 1,200-character maximum match upload preprocessing;
+- the existing first block keeps its ID and processing status;
+- additional portions receive new IDs and start as `unprocessed`;
+- text typed at an inline block boundary is absorbed into its neighboring
+  tracked block instead of remaining outside the block system;
+- pressing Enter creates a TipTap paragraph boundary that clustering does not
+  cross; and
+- a single sentence may exceed the maximum because it is never cut mid-sentence.
+
+The partition transaction is excluded from undo history, so it does not add an
+extra undo step after ordinary typing.
 
 Semantic clustering operates after safe sentence segmentation. winkNLP
 lemmatizes meaningful words, removes stop words, builds local bags of words, and
@@ -370,6 +396,9 @@ Keep this inventory updated when files are added, renamed, or removed.
 | `scripts/lib/clustering.test.cjs` | Implemented | Tests punctuation, abbreviations, decimals, boundaries, balancing, and oversized sentences. |
 | `scripts/lib/semanticClustering.cjs` | Implemented | Uses winkNLP normalization and cosine similarity to select adjacent topic boundaries. |
 | `scripts/lib/semanticClustering.test.cjs` | Implemented | Tests lemmatization, stop-word removal, topic-change scoring, and semantic boundary selection. |
+| `src/lib/clustering.js` | Implemented | Browser ESM implementation of the same sentence-aware and winkNLP semantic clustering used for live editor input. |
+| `src/lib/clusteringOptions.js` | Implemented | Lightweight shared browser defaults that let the editor check limits before lazily loading winkNLP. |
+| `src/lib/clustering.test.js` | Implemented | Verifies browser sentence handling, winkNLP normalization, and character-balanced semantic blocks. |
 | `server/routers/documents.js` | Implemented preprocessing | Uses clustering for live `.txt`, `.md`, and `.docx` uploads while preserving supported formatting. |
 | `scripts/process-upload.cjs` | Implemented preprocessing | Uses the same clustering behavior in the CLI importer. |
 | `server/models/blocks.js` | Supporting | Creates stable block IDs, groups inline block segments into original TipTap paragraphs, stores status, and advances processing. |
@@ -382,7 +411,7 @@ Keep this inventory updated when files are added, renamed, or removed.
 | File | Status | AI responsibility |
 | --- | --- | --- |
 | `src/pages/WorkspacePage.jsx` | Placeholder UI | Owns analyzing, rewriting, and practicing state; currently simulates AI responses and errors. |
-| `src/components/DocumentEditor.jsx` | Supporting | Renders inline `blockSegment` nodes, exposes the selected AI block, and applies accepted replacement text/status changes without creating paragraph breaks. |
+| `src/components/DocumentEditor.jsx` | Supporting | Renders inline `blockSegment` nodes, partitions oversized typed or pasted text after a short pause, exposes the selected AI block, and applies accepted replacement text/status changes without creating paragraph breaks. |
 | `src/services/documentsApi.js` | Supporting | Saves documents and updates block statuses; AI API functions are not present yet. |
 | `src/styles/workspace.css` | Active UI | Styles lightweight editor block highlights and statuses, analysis statistics, rewrite cards, practice cards, errors, loading states, and responsive AI panels. |
 | `src/components/OwlContainer.jsx` | Supporting UI | Displays the assistant character used during workflow feedback. |
