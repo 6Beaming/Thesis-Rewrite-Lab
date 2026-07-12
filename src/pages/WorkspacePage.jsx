@@ -12,6 +12,7 @@ import OwlContainer from '../components/OwlContainer.jsx';
 import { getBlackboardCssVars, getMobileContainerCssVars } from './libraries/animations/containerLayout.js';
 import { useFloatingWindow } from './libraries/useFloatingWindow.js';
 import {
+  analyzeDocumentBlock,
   getDocument,
   listDocuments,
   saveDocument,
@@ -509,6 +510,9 @@ export default function WorkspacePage() {
     hedging: false,
     transitions: false,
   });
+  const [blockAnalyses, setBlockAnalyses] = useState({});
+  const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
   const workspaceOwlAnimatorRef = useRef(null);
   const mobileWorkspaceOwlAnimatorRef = useRef(null);
   const documentEditorRef = useRef(null);
@@ -532,6 +536,22 @@ export default function WorkspacePage() {
     top: `${mobileOwlPosition.top}px`,
   }), [mobileOwlMetrics, mobileOwlPosition]);
   const styleSettingsSignature = useMemo(() => JSON.stringify(styleSettings ?? {}), [styleSettings]);
+  const selectedAnalysisFilters = useMemo(() => (
+    Object.entries(analysisSignals)
+      .filter(([, enabled]) => enabled)
+      .map(([filter]) => filter)
+      .sort()
+  ), [analysisSignals]);
+  const currentAnalysisKey = useMemo(() => (
+    activeEditorBlock?.blockId
+      ? `${activeEditorBlock.blockId}|${activeEditorBlock.text ?? ''}|${selectedAnalysisFilters.join(',')}`
+      : ''
+  ), [activeEditorBlock?.blockId, activeEditorBlock?.text, selectedAnalysisFilters]);
+  const currentBlockAnalysis = currentAnalysisKey ? blockAnalyses[currentAnalysisKey] ?? null : null;
+
+  useEffect(() => {
+    setAnalysisError('');
+  }, [currentAnalysisKey]);
 
   useEffect(() => () => {
     if (rewriteRefreshTimerRef.current) {
@@ -670,6 +690,8 @@ export default function WorkspacePage() {
     setStyleSettings(nextStyleSettings);
     setWorkspaceDirty(false);
     setWorkspaceNotice('');
+    setBlockAnalyses({});
+    setAnalysisError('');
     setRewriteCardsLocked(false);
     setRewriteAllCompleted(false);
     setRewriteCards((cards) => cards.map((card) => ({
@@ -862,6 +884,51 @@ export default function WorkspacePage() {
         return;
       }
       setWorkspaceNotice(error.message || '.docx parsing needs the local upload API.');
+    }
+  }
+
+  async function analyzeActiveBlock() {
+    const documentId = selectedDocument?.id;
+    const blockId = activeEditorBlock?.blockId;
+    if (!documentId || !blockId) {
+      setAnalysisError('Select a text block to analyze.');
+      return;
+    }
+    if (documentId.startsWith('demo-')) {
+      setAnalysisError('Save this document to the backend before using AI analysis.');
+      return;
+    }
+    if (!selectedAnalysisFilters.length) {
+      setAnalysisError('Select at least one analysis filter.');
+      return;
+    }
+    if (analysisBusy) return;
+
+    const requestKey = currentAnalysisKey;
+    setAnalysisBusy(true);
+    setAnalysisError('');
+    setWorkspaceNotice('');
+    setWorkspaceOwlError(false);
+    setWorkspaceOwlLoading(true);
+
+    try {
+      if (workspaceDirty) {
+        const saved = await saveWorkspaceDocument();
+        if (!saved) return;
+      }
+
+      const response = await analyzeDocumentBlock(documentId, blockId, selectedAnalysisFilters);
+      setBlockAnalyses((current) => ({
+        ...current,
+        [requestKey]: response.analysis,
+      }));
+      setWorkspaceNotice(response.cached ? 'Loaded saved block analysis.' : 'Block analysis complete.');
+    } catch (error) {
+      setAnalysisError(error.message || 'AI analysis is temporarily unavailable.');
+      triggerWorkspaceError();
+    } finally {
+      setAnalysisBusy(false);
+      setWorkspaceOwlLoading(false);
     }
   }
 
@@ -1394,45 +1461,19 @@ export default function WorkspacePage() {
   }
 
   function renderAnalysisStats() {
-    const blocks = selectedDocument?.blocks ?? [];
-    const documentText = blocks.map((block) => block?.text_content ?? '').join(' ').trim();
-    const words = documentText ? documentText.split(/\s+/) : [];
-    const totalBlocks = blocks.length;
-    const activeSignals = Object.entries(analysisSignals).filter(([, enabled]) => enabled).length;
-    const completion = Math.round(Number(selectedDocument?.completed_rate ?? 0) * 100);
-    const avgSentenceLength = totalBlocks ? (words.length / Math.max(totalBlocks, 1)).toFixed(1) : '0.0';
-    const passivePercent = Math.min(48, Math.max(12, 12 + totalBlocks * 5));
-    const nominalPercent = Math.min(52, Math.max(18, 14 + Math.round(words.length / 12)));
-    const cohesionScore = Math.min(0.99, Math.max(0.31, 0.41 + completion / 220)).toFixed(2);
-    const toneFit = Math.min(96, Math.max(34, completion || 34));
-    const compression = Math.min(90, Math.max(22, 22 + totalBlocks * 9));
-    const rewritePriority = Math.min(92, Math.max(28, 28 + activeSignals * 14 + Math.max(0, 3 - totalBlocks) * 4));
-    const signalCounts = {
-      passive: Math.max(1, Math.round(totalBlocks * 1.5) || 1),
-      nominalization: Math.max(2, Math.round(words.length / 7) || 2),
-      hedging: Math.max(1, Math.round(totalBlocks / 2) || 1),
-      transitions: Math.max(1, totalBlocks - 1 || 1),
-    };
+    const analysis = currentBlockAnalysis;
+    const metrics = analysis?.deterministic;
+    const ai = analysis?.ai;
+    const signalCounts = Object.fromEntries(Object.keys(ANALYSIS_SIGNAL_LABELS).map((key) => [
+      key,
+      ai?.issues?.filter((issue) => issue.type === key).length ?? null,
+    ]));
 
     return (
       <>
-        <div className="analysis-stat-grid">
-          <div className="analysis-stat-card">
-            <strong>{avgSentenceLength}</strong>
-            <span>Avg. sentence length</span>
-          </div>
-          <div className="analysis-stat-card">
-            <strong>{passivePercent}%</strong>
-            <span>Passive voice</span>
-          </div>
-          <div className="analysis-stat-card">
-            <strong>{nominalPercent}%</strong>
-            <span>Nominal density</span>
-          </div>
-          <div className="analysis-stat-card">
-            <strong>{cohesionScore}</strong>
-            <span>Cohesion score</span>
-          </div>
+        <div className="analysis-selected-block">
+          <span>Selected block</span>
+          <p>{activeEditorBlock?.text || 'Click a text block in the editor.'}</p>
         </div>
 
         <div className="analysis-filter-list">
@@ -1449,34 +1490,89 @@ export default function WorkspacePage() {
                 }}
               />
               <span>{label}</span>
-              <span className="analysis-filter-count">{signalCounts[key]}</span>
+              <span className="analysis-filter-count">{signalCounts[key] ?? '—'}</span>
             </label>
           ))}
         </div>
 
-        <dl className="analysis-stats">
-          <div>
-            <dt>Academic tone fit</dt>
-            <dd>{toneFit}%</dd>
+        <button
+          type="button"
+          className="analysis-run-button"
+          onClick={analyzeActiveBlock}
+          disabled={analysisBusy || !activeEditorBlock?.blockId || !selectedAnalysisFilters.length}
+        >
+          {analysisBusy ? 'Analyzing block...' : analysis ? 'Analyze again' : 'Analyze selected block'}
+        </button>
+
+        {analysisError ? <p className="analysis-error" role="alert">{analysisError}</p> : null}
+
+        {analysis ? (
+          <>
+            <div className="analysis-result-heading">
+              <strong>{ai.summary}</strong>
+              <span>{ai.purpose} · {analysis.model}</span>
+            </div>
+
+            <div className="analysis-stat-grid">
+              <div className="analysis-stat-card">
+                <strong>{metrics.wordCount}</strong>
+                <span>Words</span>
+              </div>
+              <div className="analysis-stat-card">
+                <strong>{metrics.averageSentenceLength}</strong>
+                <span>Avg. sentence length</span>
+              </div>
+              <div className="analysis-stat-card">
+                <strong>{metrics.passiveConstructionCount}</strong>
+                <span>Passive indicators</span>
+              </div>
+              <div className="analysis-stat-card">
+                <strong>{metrics.nominalizationCount}</strong>
+                <span>Nominalizations</span>
+              </div>
+            </div>
+
+            <dl className="analysis-stats">
+              {Object.entries(ai.scores).map(([label, score], index) => (
+                <div className="analysis-score-row" key={label}>
+                  <div>
+                    <dt>{label}</dt>
+                    <dd>{score}%</dd>
+                  </div>
+                  <div className="analysis-bar-track">
+                    <div
+                      className={`analysis-bar-fill${index === 0 ? ' analysis-bar-fill--green' : ''}`}
+                      style={{ width: `${score}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </dl>
+
+            <div className="analysis-issue-list">
+              <h3>Coaching notes</h3>
+              {ai.issues.length ? ai.issues.map((issue, index) => (
+                <article key={`${issue.type}-${index}`} className={`analysis-issue analysis-issue--${issue.severity}`}>
+                  <div><strong>{ANALYSIS_SIGNAL_LABELS[issue.type]}</strong><span>{issue.severity}</span></div>
+                  <q>{issue.evidence}</q>
+                  <p>{issue.explanation}</p>
+                  <small>{issue.suggestion}</small>
+                </article>
+              )) : <p>No selected issues were found in this block.</p>}
+            </div>
+
+            <div className="analysis-learning-goals">
+              <h3>Practice goals</h3>
+              <ul>
+                {ai.learningGoals.map((goal) => <li key={goal}>{goal}</li>)}
+              </ul>
+            </div>
+          </>
+        ) : (
+          <div className="analysis-empty-result">
+            Analysis uses this block and its immediate neighbors. The full paper is not sent.
           </div>
-          <div className="analysis-bar-track">
-            <div className="analysis-bar-fill analysis-bar-fill--green" style={{ width: `${toneFit}%` }} />
-          </div>
-          <div>
-            <dt>Context compression</dt>
-            <dd>{compression}%</dd>
-          </div>
-          <div className="analysis-bar-track">
-            <div className="analysis-bar-fill" style={{ width: `${compression}%` }} />
-          </div>
-          <div>
-            <dt>Rewrite priority</dt>
-            <dd>{rewritePriority}%</dd>
-          </div>
-          <div className="analysis-bar-track">
-            <div className="analysis-bar-fill analysis-bar-fill--amber" style={{ width: `${rewritePriority}%` }} />
-          </div>
-        </dl>
+        )}
       </>
     );
   }
@@ -1535,7 +1631,7 @@ export default function WorkspacePage() {
           {mobileOptionsTab === 'analyzing' ? (
             <section className="workspace-mode-card workspace-mode-card--interactive">
               <h2>Analyzing</h2>
-              <p>Local writing signals and style-fit grades stay editable here.</p>
+              <p>Select a block, choose writing signals, and request focused AI coaching.</p>
               {renderAnalysisStats()}
             </section>
           ) : null}
@@ -1549,7 +1645,7 @@ export default function WorkspacePage() {
       return (
         <section className="workspace-mode-card workspace-mode-card--interactive">
           <h2>Analyzing</h2>
-          <p>Local writing signals and style-fit grades stay editable here.</p>
+          <p>Select a block, choose writing signals, and request focused AI coaching.</p>
           {renderAnalysisStats()}
         </section>
       );

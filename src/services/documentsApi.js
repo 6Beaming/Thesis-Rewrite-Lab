@@ -41,3 +41,10 @@ export function updateDocumentBlockStatus(documentId, blockId, status) {
     body: JSON.stringify({ status }),
   });
 }
+
+export function analyzeDocumentBlock(documentId, blockId, filters) {
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/analyze`, {
+    method: 'POST',
+    body: JSON.stringify({ filters }),
+  });
+}

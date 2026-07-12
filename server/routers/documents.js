@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import path from 'path';
 import { createRequire } from 'module';
 import mammoth from 'mammoth';
@@ -16,6 +17,21 @@ import {
   updateDocumentBlockStatus,
 } from '../models/documents.js';
 import { getVersion, listVersions, revertDocumentToVersion } from '../models/versions.js';
+import {
+  findCachedBlockAnalysis,
+  formatBlockAnalysis,
+  getOwnedBlockContext,
+  saveBlockAnalysis,
+} from '../models/analyses.js';
+import {
+  ANALYSIS_FILTERS,
+  BLOCK_ANALYSIS_PROMPT_VERSION,
+  analysisFilterSignature,
+  computeDeterministicMetrics,
+  generateBlockAnalysis,
+  hashBlockText,
+  normalizeAnalysisFilters,
+} from '../ai/blockAnalysis.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -24,6 +40,12 @@ const {
 } = require('../../scripts/lib/clustering.cjs');
 
 const router = Router();
+const analysisRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+});
 
 function titleFromFilename(filename) {
   return path.basename(filename, path.extname(filename)).replace(/[_-]+/g, ' ') || 'Untitled document';
@@ -342,6 +364,67 @@ router.patch('/:id/blocks/:blockId', async (req, res) => {
     return;
   }
   res.json({ nextProcessingBlock: next });
+});
+
+router.post('/:id/blocks/:blockId/analyze', analysisRateLimiter, async (req, res) => {
+  const requestedFilters = req.body?.filters;
+  if (
+    !Array.isArray(requestedFilters)
+    || requestedFilters.some((filter) => !ANALYSIS_FILTERS.includes(filter))
+  ) {
+    res.status(400).json({ error: 'Analysis filters are invalid.' });
+    return;
+  }
+
+  const filters = normalizeAnalysisFilters(requestedFilters);
+  if (!filters.length) {
+    res.status(400).json({ error: 'Select at least one analysis filter.' });
+    return;
+  }
+
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const context = await getOwnedBlockContext({
+    documentId: req.params.id,
+    blockId: req.params.blockId,
+    userId: user.id,
+  });
+  if (!context) {
+    res.status(404).json({ error: 'Document block not found' });
+    return;
+  }
+
+  const sourceTextHash = hashBlockText(context.text_content);
+  const filterSignature = analysisFilterSignature(filters);
+  const model = process.env.OPENAI_ANALYSIS_MODEL || 'gpt-5.4-mini';
+  const cached = await findCachedBlockAnalysis({
+    documentId: context.document_id,
+    blockId: context.id,
+    sourceTextHash,
+    filterSignature,
+    model,
+    promptVersion: BLOCK_ANALYSIS_PROMPT_VERSION,
+  });
+  if (cached) {
+    res.json({ analysis: formatBlockAnalysis(cached), cached: true });
+    return;
+  }
+
+  const deterministicMetrics = computeDeterministicMetrics(context.text_content);
+  const generated = await generateBlockAnalysis({ context, filters });
+  const saved = await saveBlockAnalysis({
+    documentId: context.document_id,
+    blockId: context.id,
+    sourceTextHash,
+    filterSignature,
+    filters,
+    deterministicMetrics,
+    result: generated.result,
+    usage: generated.usage,
+    model: generated.model,
+    promptVersion: BLOCK_ANALYSIS_PROMPT_VERSION,
+  });
+
+  res.status(201).json({ analysis: formatBlockAnalysis(saved), cached: false });
 });
 
 router.post('/:id/blocks/:blockId/skip', async (req, res) => {

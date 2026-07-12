@@ -65,6 +65,61 @@ create unique index if not exists document_blocks_one_processing
 create index if not exists document_blocks_document_order
   on document_blocks (document_id, block_index);
 
+create table if not exists block_analyses (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid not null references documents(id) on delete cascade,
+  block_id uuid not null,
+  source_text_hash text not null,
+  filter_signature text not null,
+  filters jsonb not null,
+  deterministic_metrics jsonb not null,
+  result_json jsonb not null,
+  usage_json jsonb,
+  model text not null,
+  prompt_version text not null,
+  created_at timestamptz not null default now()
+);
+
+-- Older local schemas briefly attached analyses directly to replaceable block
+-- rows. Keep analyses at the document level so ordinary saves do not erase them.
+alter table block_analyses add column if not exists document_id uuid;
+
+update block_analyses ba
+set document_id = db.document_id
+from document_blocks db
+where ba.document_id is null
+  and db.id = ba.block_id;
+
+delete from block_analyses where document_id is null;
+
+alter table block_analyses alter column document_id set not null;
+alter table block_analyses drop constraint if exists block_analyses_block_id_fkey;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'block_analyses_document_id_fkey'
+  ) then
+    alter table block_analyses
+      add constraint block_analyses_document_id_fkey
+      foreign key (document_id) references documents(id) on delete cascade;
+  end if;
+end
+$$;
+
+create unique index if not exists block_analyses_cache_key
+  on block_analyses (
+    document_id,
+    block_id,
+    source_text_hash,
+    filter_signature,
+    model,
+    prompt_version
+  );
+
+create index if not exists block_analyses_block_created
+  on block_analyses (document_id, block_id, created_at desc);
+
 create table if not exists document_versions (
   id uuid primary key default gen_random_uuid(),
   document_id uuid not null references documents(id) on delete cascade,
