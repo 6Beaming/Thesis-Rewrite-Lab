@@ -135,26 +135,35 @@ function clusterSentences(sentences, options) {
 // Creates character-balanced blocks without breaking a sentence or crossing an
 // original newline/Markdown heading boundary. A single sentence may exceed
 // maxChars because preserving the sentence is safer than cutting it mid-thought.
-function clustering(text, options = {}) {
+function clusteringWithMetadata(text, options = {}) {
   const normalizedOptions = normalizeOptions(options);
   const blocks = [];
 
-  for (const section of structuralSections(text, normalizedOptions.paragraphBreak)) {
+  structuralSections(text, normalizedOptions.paragraphBreak).forEach((section, paragraphIndex) => {
     if (section.standalone) {
-      blocks.push(section.text);
-      continue;
+      blocks.push({ text: section.text, paragraphIndex, blockIndexInParagraph: 0 });
+      return;
     }
 
     const sentences = segmentSentences(section.text, normalizedOptions.locale);
+    let paragraphBlocks;
     if (normalizedOptions.partitionMode === 'semantic') {
       const { semanticClusterSentences } = require('./semanticClustering.cjs');
-      blocks.push(...semanticClusterSentences(sentences, normalizedOptions));
+      paragraphBlocks = semanticClusterSentences(sentences, normalizedOptions);
     } else {
-      blocks.push(...clusterSentences(sentences, normalizedOptions));
+      paragraphBlocks = clusterSentences(sentences, normalizedOptions);
     }
-  }
+
+    paragraphBlocks.forEach((blockText, blockIndexInParagraph) => {
+      blocks.push({ text: blockText, paragraphIndex, blockIndexInParagraph });
+    });
+  });
 
   return blocks;
+}
+
+function clustering(text, options = {}) {
+  return clusteringWithMetadata(text, options).map((block) => block.text);
 }
 
 function characterBalancedRanges(text, options = {}) {
@@ -177,5 +186,6 @@ module.exports = {
   DEFAULT_CLUSTER_OPTIONS,
   characterBalancedRanges,
   clustering,
+  clusteringWithMetadata,
   segmentSentences,
 };

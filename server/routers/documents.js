@@ -20,7 +20,7 @@ import { getVersion, listVersions, revertDocumentToVersion } from '../models/ver
 const require = createRequire(import.meta.url);
 const {
   characterBalancedRanges,
-  clustering,
+  clusteringWithMetadata,
 } = require('../../scripts/lib/clustering.cjs');
 
 const router = Router();
@@ -117,6 +117,7 @@ function formattedBlocksFromHtml(html, partitionMode) {
   let activeMarks = [];
   let currentContent = [];
   let currentAttrs = {};
+  let paragraphIndex = 0;
 
   function finishBlock({ resetAttrs = false } = {}) {
     const content = trimContent(currentContent);
@@ -128,9 +129,10 @@ function formattedBlocksFromHtml(html, partitionMode) {
       blocks.push({
         text: range.text,
         content: sliceFormattedContent(content, range.start, range.end),
-        attrs: { ...currentAttrs },
+        attrs: { ...currentAttrs, paragraphIndex },
       });
     }
+    if (text) paragraphIndex += 1;
     currentContent = [];
     if (resetAttrs) currentAttrs = {};
   }
@@ -200,15 +202,30 @@ async function extractBlocks(file, partitionMode) {
     if (formattedBlocks.length) return formattedBlocks;
 
     const textResult = await mammoth.extractRawText({ buffer: file.buffer });
-    return clustering(textResult.value, { paragraphBreak: 'blank-line', partitionMode });
+    return clusteringWithMetadata(textResult.value, {
+      paragraphBreak: 'blank-line',
+      partitionMode,
+    }).map((block) => ({
+      text: block.text,
+      attrs: { paragraphIndex: block.paragraphIndex },
+    }));
   }
 
   if (lowerName.endsWith('.md')) {
-    return clustering(file.buffer.toString('utf8'), { paragraphBreak: 'blank-line', partitionMode });
+    return clusteringWithMetadata(file.buffer.toString('utf8'), {
+      paragraphBreak: 'blank-line',
+      partitionMode,
+    }).map((block) => ({
+      text: block.text,
+      attrs: { paragraphIndex: block.paragraphIndex },
+    }));
   }
 
   if (lowerName.endsWith('.txt')) {
-    return clustering(file.buffer.toString('utf8'), { partitionMode });
+    return clusteringWithMetadata(file.buffer.toString('utf8'), { partitionMode }).map((block) => ({
+      text: block.text,
+      attrs: { paragraphIndex: block.paragraphIndex },
+    }));
   }
 
   const error = new Error('Only .txt, .md, and .docx uploads are supported.');

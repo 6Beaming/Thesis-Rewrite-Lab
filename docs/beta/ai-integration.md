@@ -128,6 +128,28 @@ statuses in PostgreSQL. AI endpoints should identify a block by its UUID and
 load its text from the database. They should not trust block text submitted by
 the browser.
 
+### Paragraphs and AI blocks are separate
+
+An original document paragraph is a structural editor node. An AI block is a
+tracked text segment used for analysis, rewriting, practice, and progress. A
+long paragraph may contain multiple AI blocks, but an AI boundary must not add a
+paragraph break:
+
+```text
+TipTap paragraph
+  -> inline blockSegment A
+  -> separating space
+  -> inline blockSegment B
+```
+
+Each `blockSegment` retains its own UUID, status, character length, and visual
+boundary. The containing TipTap paragraph retains the original line break,
+indentation, alignment, and paragraph-level formatting. `paragraphIndex` links
+database blocks that came from the same original paragraph.
+
+This distinction prevents semantic or character partitioning from changing the
+paper's visible paragraph structure.
+
 Semantic clustering operates after safe sentence segmentation. winkNLP
 lemmatizes meaningful words, removes stop words, builds local bags of words, and
 uses cosine similarity to find low-similarity topic transitions near the target
@@ -350,7 +372,8 @@ Keep this inventory updated when files are added, renamed, or removed.
 | `scripts/lib/semanticClustering.test.cjs` | Implemented | Tests lemmatization, stop-word removal, topic-change scoring, and semantic boundary selection. |
 | `server/routers/documents.js` | Implemented preprocessing | Uses clustering for live `.txt`, `.md`, and `.docx` uploads while preserving supported formatting. |
 | `scripts/process-upload.cjs` | Implemented preprocessing | Uses the same clustering behavior in the CLI importer. |
-| `server/models/blocks.js` | Supporting | Creates stable block IDs, stores block text/status, and advances processing. |
+| `server/models/blocks.js` | Supporting | Creates stable block IDs, groups inline block segments into original TipTap paragraphs, stores status, and advances processing. |
+| `server/models/blocks.test.js` | Implemented | Verifies that multiple AI blocks remain inside one original paragraph. |
 | `server/models/documents.js` | Supporting | Persists uploaded documents, blocks, saves, and progress. |
 | `scripts/db/schema.sql` | Supporting; AI extension planned | Defines current document/block tables; future AI tables will be added here or through migrations. |
 
@@ -359,9 +382,9 @@ Keep this inventory updated when files are added, renamed, or removed.
 | File | Status | AI responsibility |
 | --- | --- | --- |
 | `src/pages/WorkspacePage.jsx` | Placeholder UI | Owns analyzing, rewriting, and practicing state; currently simulates AI responses and errors. |
-| `src/components/DocumentEditor.jsx` | Supporting | Exposes the selected block and applies accepted replacement text/status changes. |
+| `src/components/DocumentEditor.jsx` | Supporting | Renders inline `blockSegment` nodes, exposes the selected AI block, and applies accepted replacement text/status changes without creating paragraph breaks. |
 | `src/services/documentsApi.js` | Supporting | Saves documents and updates block statuses; AI API functions are not present yet. |
-| `src/styles/workspace.css` | Active UI | Styles analysis statistics, rewrite cards, practice cards, errors, loading states, and responsive AI panels. |
+| `src/styles/workspace.css` | Active UI | Styles lightweight editor block highlights and statuses, analysis statistics, rewrite cards, practice cards, errors, loading states, and responsive AI panels. |
 | `src/components/OwlContainer.jsx` | Supporting UI | Displays the assistant character used during workflow feedback. |
 | `src/pages/libraries/animations/createOwlAnimator.jsx` | Supporting UI | Provides thinking, success, error, interaction, and magic animation behavior. |
 | `src/pages/libraries/animations/useOwlAnimator.jsx` | Supporting UI | Connects React components to the owl animator lifecycle. |
@@ -432,4 +455,10 @@ different names.
 - Recorded that current analyzing, rewriting, and practice behavior is placeholder-only.
 - Documented deterministic sentence-aware, character-balanced preprocessing.
 - Added winkNLP semantic partitioning as the default upload mode.
+- Added numbered editor-margin markers and outlines so persisted block boundaries
+  remain visible in the frontend.
+- Separated structural TipTap paragraphs from inline AI blocks so partitioning
+  no longer inserts line breaks inside an original paragraph.
+- Simplified inline block styling to unobtrusive status highlights without
+  badges, outlines, padding, rounded boxes, or underlines.
 - Added the initial target architecture, file inventory, and implementation checklist.

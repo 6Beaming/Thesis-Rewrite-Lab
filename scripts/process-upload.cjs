@@ -6,7 +6,7 @@ const mammoth = require('mammoth');
 const { randomUUID } = require('crypto');
 const {
   characterBalancedRanges,
-  clustering,
+  clusteringWithMetadata,
 } = require('./lib/clustering.cjs');
 
 // Temporary CLI importer for local testing until the upload API covers every fixture workflow.
@@ -103,6 +103,7 @@ function formattedBlocksFromHtml(html, partitionMode) {
   let activeMarks = [];
   let currentContent = [];
   let currentAttrs = {};
+  let paragraphIndex = 0;
 
   function finishBlock({ resetAttrs = false } = {}) {
     const content = trimContent(currentContent);
@@ -114,9 +115,10 @@ function formattedBlocksFromHtml(html, partitionMode) {
       blocks.push({
         text: range.text,
         content: sliceFormattedContent(content, range.start, range.end),
-        attrs: { ...currentAttrs },
+        attrs: { ...currentAttrs, paragraphIndex },
       });
     }
+    if (text) paragraphIndex += 1;
     currentContent = [];
     if (resetAttrs) currentAttrs = {};
   }
@@ -182,13 +184,28 @@ async function extractBlocks(filePath, buffer, partitionMode) {
     if (formattedBlocks.length) return formattedBlocks;
 
     const textResult = await mammoth.extractRawText({ buffer });
-    return clustering(textResult.value, { paragraphBreak: 'blank-line', partitionMode });
+    return clusteringWithMetadata(textResult.value, {
+      paragraphBreak: 'blank-line',
+      partitionMode,
+    }).map((block) => ({
+      text: block.text,
+      attrs: { paragraphIndex: block.paragraphIndex },
+    }));
   }
   if (extension === '.md') {
-    return clustering(buffer.toString('utf8'), { paragraphBreak: 'blank-line', partitionMode });
+    return clusteringWithMetadata(buffer.toString('utf8'), {
+      paragraphBreak: 'blank-line',
+      partitionMode,
+    }).map((block) => ({
+      text: block.text,
+      attrs: { paragraphIndex: block.paragraphIndex },
+    }));
   }
   if (extension === '.txt') {
-    return clustering(buffer.toString('utf8'), { partitionMode });
+    return clusteringWithMetadata(buffer.toString('utf8'), { partitionMode }).map((block) => ({
+      text: block.text,
+      attrs: { paragraphIndex: block.paragraphIndex },
+    }));
   }
   throw new Error('Only .txt, .md, and .docx uploads are supported.');
 }
@@ -207,6 +224,9 @@ function createBlock(blockInput, index) {
     fontFamily: 'Times New Roman',
     fontSize: '12pt',
     ...(typeof blockInput === 'string' ? {} : blockInput.attrs ?? {}),
+    paragraphIndex: typeof blockInput === 'string'
+      ? index
+      : (Number.isInteger(blockInput.attrs?.paragraphIndex) ? blockInput.attrs.paragraphIndex : index),
     blockId: id,
     status,
     length: text.length,
@@ -218,10 +238,43 @@ function createBlock(blockInput, index) {
     status,
     attrs,
     node: {
-      type: 'paragraph',
+      type: 'blockSegment',
       attrs,
       content,
     },
+  };
+}
+
+function contentJsonFromBlocks(blocks) {
+  const paragraphs = [];
+  for (const block of blocks) {
+    let paragraph = paragraphs.at(-1);
+    if (!paragraph || paragraph.paragraphIndex !== block.attrs.paragraphIndex) {
+      paragraph = {
+        paragraphIndex: block.attrs.paragraphIndex,
+        attrs: {
+          lineHeight: block.attrs.lineHeight,
+          textIndent: block.attrs.textIndent,
+          textAlign: block.attrs.textAlign,
+          fontFamily: block.attrs.fontFamily,
+          fontSize: block.attrs.fontSize,
+        },
+        content: [],
+      };
+      paragraphs.push(paragraph);
+    }
+
+    if (paragraph.content.length) paragraph.content.push({ type: 'text', text: ' ' });
+    paragraph.content.push(block.node);
+  }
+
+  return {
+    type: 'doc',
+    content: paragraphs.map((paragraph) => ({
+      type: 'paragraph',
+      attrs: paragraph.attrs,
+      content: paragraph.content,
+    })),
   };
 }
 
@@ -252,7 +305,7 @@ async function main() {
   const extension = path.extname(filePath).toLowerCase();
   const title = process.argv[4] || path.basename(filePath, extension).replace(/[_-]+/g, ' ');
   const blocks = extractedBlocks.map(createBlock);
-  const contentJson = { type: 'doc', content: blocks.map((block) => block.node) };
+  const contentJson = contentJsonFromBlocks(blocks);
   const totalChars = blocks.reduce((sum, block) => sum + block.text.length, 0);
   const client = await pool.connect();
 

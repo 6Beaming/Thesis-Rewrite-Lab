@@ -19,7 +19,7 @@ import A4EditorPage from './A4EditorPage.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 
 const A4_PAGE_HEIGHT_PX = 1123;
-const TRACKED_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
+const LEGACY_TRACKED_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 
 function generateBlockId(prefix) {
   const randomId = globalThis.crypto?.randomUUID?.();
@@ -28,7 +28,10 @@ function generateBlockId(prefix) {
 }
 
 function isTrackedTextBlockNode(node) {
-  return TRACKED_TEXT_BLOCK_TYPES.has(node?.type?.name);
+  if (node?.type?.name === 'blockSegment') return true;
+  if (!LEGACY_TRACKED_BLOCK_TYPES.has(node?.type?.name)) return false;
+  if (node.attrs?.blockId) return true;
+  return !node.content?.content?.some((child) => child.type?.name === 'blockSegment');
 }
 
 function normalizeBlockStatus(status) {
@@ -47,14 +50,23 @@ function buildTrackedBlockStyleAttrs(attrs = {}) {
   };
 }
 
-function renderTrackedBlock(tag, HTMLAttributes) {
-  const style = [
+function trackedBlockStyle(HTMLAttributes) {
+  return [
     `line-height: ${HTMLAttributes.lineHeight}`,
     `text-indent: ${HTMLAttributes.textIndent}`,
     `text-align: ${HTMLAttributes.textAlign}`,
     `font-family: ${HTMLAttributes.fontFamily}`,
     `font-size: ${HTMLAttributes.fontSize}`,
   ].join('; ');
+}
+
+function isStyleableTextNode(node) {
+  return node?.type?.name === 'blockSegment'
+    || LEGACY_TRACKED_BLOCK_TYPES.has(node?.type?.name);
+}
+
+function renderTrackedBlock(tag, HTMLAttributes) {
+  const style = trackedBlockStyle(HTMLAttributes);
 
   return [
     tag,
@@ -64,6 +76,26 @@ function renderTrackedBlock(tag, HTMLAttributes) {
       'data-block-id': HTMLAttributes.blockId,
       'data-status': HTMLAttributes.status,
       style,
+    },
+    0,
+  ];
+}
+
+function renderAcademicContainer(tag, HTMLAttributes) {
+  const {
+    blockId: _blockId,
+    status: _status,
+    length: _length,
+    paragraphIndex: _paragraphIndex,
+    ...containerAttributes
+  } = HTMLAttributes;
+
+  return [
+    tag,
+    {
+      ...containerAttributes,
+      class: 'document-paragraph',
+      style: trackedBlockStyle(HTMLAttributes),
     },
     0,
   ];
@@ -83,7 +115,9 @@ const AcademicParagraph = Paragraph.extend({
     };
   },
   renderHTML({ HTMLAttributes }) {
-    return renderTrackedBlock('p', HTMLAttributes);
+    return HTMLAttributes.blockId
+      ? renderTrackedBlock('p', HTMLAttributes)
+      : renderAcademicContainer('p', HTMLAttributes);
   },
 });
 
@@ -102,7 +136,39 @@ const AcademicHeading = Heading.extend({
   },
   renderHTML({ node, HTMLAttributes }) {
     const level = this.options.levels.includes(node.attrs.level) ? node.attrs.level : this.options.levels[0];
-    return renderTrackedBlock(`h${level}`, HTMLAttributes);
+    return HTMLAttributes.blockId
+      ? renderTrackedBlock(`h${level}`, HTMLAttributes)
+      : renderAcademicContainer(`h${level}`, HTMLAttributes);
+  },
+});
+
+const BlockSegment = Node.create({
+  name: 'blockSegment',
+  group: 'inline',
+  inline: true,
+  content: 'text*',
+  defining: true,
+  selectable: false,
+  addAttributes() {
+    return {
+      blockId: { default: null },
+      status: { default: 'unprocessed' },
+      paragraphIndex: { default: null },
+      lineHeight: { default: '2.0' },
+      textIndent: { default: '0.5in' },
+      textAlign: { default: 'left' },
+      fontFamily: { default: 'Times New Roman' },
+      fontSize: { default: '12pt' },
+      length: { default: 0 },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'span[data-ai-block]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    const rendered = renderTrackedBlock('span', HTMLAttributes);
+    rendered[1]['data-ai-block'] = 'true';
+    return rendered;
   },
 });
 
@@ -121,21 +187,53 @@ const PageBreak = Node.create({
 function fallbackContent(document) {
   if (document?.content_json) return document.content_json;
   if (document?.blocks?.length) {
-    return {
-      type: 'doc',
-      content: document.blocks.map((block) => block.tiptap_node ?? {
-        type: 'paragraph',
+    const paragraphs = [];
+    for (const [index, block] of document.blocks.entries()) {
+      const node = block.tiptap_node ?? {
+        type: 'blockSegment',
         attrs: {
           blockId: block.id,
           status: block.status,
+          paragraphIndex: block.attrs?.paragraphIndex ?? index,
           lineHeight: '2.0',
           textIndent: '0.5in',
           textAlign: 'left',
           fontFamily: 'Times New Roman',
           fontSize: '12pt',
+          length: block.text_content?.length ?? 0,
         },
         content: [{ type: 'text', text: block.text_content }],
-      }),
+      };
+
+      if (node.type !== 'blockSegment') {
+        paragraphs.push(node);
+        continue;
+      }
+
+      const paragraphIndex = node.attrs?.paragraphIndex ?? index;
+      let paragraph = paragraphs.at(-1);
+      if (!paragraph || paragraph.attrs?.paragraphIndex !== paragraphIndex) {
+        paragraph = {
+          type: 'paragraph',
+          attrs: {
+            paragraphIndex,
+            lineHeight: node.attrs?.lineHeight ?? '2.0',
+            textIndent: node.attrs?.textIndent ?? '0.5in',
+            textAlign: node.attrs?.textAlign ?? 'left',
+            fontFamily: node.attrs?.fontFamily ?? 'Times New Roman',
+            fontSize: node.attrs?.fontSize ?? '12pt',
+          },
+          content: [],
+        };
+        paragraphs.push(paragraph);
+      }
+      if (paragraph.content.length) paragraph.content.push({ type: 'text', text: ' ' });
+      paragraph.content.push(node);
+    }
+
+    return {
+      type: 'doc',
+      content: paragraphs,
     };
   }
   return {
@@ -455,6 +553,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       }),
       AcademicParagraph,
       AcademicHeading,
+      BlockSegment,
       PageBreak,
       BulletList.configure({ keepMarks: true }),
       OrderedList.configure({ keepMarks: true }),
@@ -520,7 +619,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     editor.commands.command(({ state, tr, dispatch }) => {
       let changed = false;
       state.doc.descendants((node, pos) => {
-        if (!isTrackedTextBlockNode(node)) return;
+        if (!isStyleableTextNode(node)) return;
 
         const nextAttrs = { ...node.attrs, ...attrs };
         const didChange = Object.entries(attrs).some(([key, value]) => node.attrs[key] !== value);

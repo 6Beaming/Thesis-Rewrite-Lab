@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { clustering, segmentSentences } = require('./clustering.cjs');
+const { clustering, clusteringWithMetadata, segmentSentences } = require('./clustering.cjs');
 
 test('recognizes sentence punctuation without splitting common abbreviations or decimals', () => {
   assert.deepEqual(
@@ -72,4 +72,18 @@ test('keeps an oversized sentence intact', () => {
 
 test('returns no blocks for empty input', () => {
   assert.deepEqual(clustering(' \r\n '), []);
+});
+
+test('records which semantic blocks belong to the same original paragraph', () => {
+  const sentence = (label) => `${label} ${'word '.repeat(18).trim()}.`;
+  const text = `${sentence('One')} ${sentence('Two')} ${sentence('Three')}\n\nSeparate paragraph.`;
+  const blocks = clusteringWithMetadata(text, {
+    paragraphBreak: 'blank-line',
+    targetChars: 120,
+    minChars: 70,
+    maxChars: 150,
+  });
+
+  assert.ok(blocks.filter((block) => block.paragraphIndex === 0).length > 1);
+  assert.equal(blocks.at(-1).paragraphIndex, 1);
 });

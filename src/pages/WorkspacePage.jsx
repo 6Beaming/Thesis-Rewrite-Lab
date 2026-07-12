@@ -134,7 +134,9 @@ function textFromDemoNode(node) {
 }
 
 function isEditableDemoBlock(node) {
-  return node?.type === 'paragraph' || node?.type === 'heading';
+  if (node?.type === 'blockSegment') return true;
+  if (node?.type !== 'paragraph' && node?.type !== 'heading') return false;
+  return !node.content?.some((child) => child?.type === 'blockSegment');
 }
 
 function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {

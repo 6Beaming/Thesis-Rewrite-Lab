@@ -10,7 +10,7 @@ const DEFAULT_BLOCK_ATTRS = {
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const BLOCK_NODE_TYPES = new Set(['paragraph', 'heading']);
+const LEGACY_BLOCK_NODE_TYPES = new Set(['paragraph', 'heading']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 
 function styleAttrsFromSettings(styleSettings = {}) {
@@ -44,7 +44,7 @@ function normalizeBlockInput(input) {
   if (typeof input === 'string') {
     return {
       text: input,
-      attrs: {},
+      attrs: { paragraphIndex: null },
       content: input ? [{ type: 'text', text: input }] : [],
     };
   }
@@ -70,6 +70,9 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
     const attrs = {
       ...mergedAttrs,
       ...normalized.attrs,
+      paragraphIndex: Number.isInteger(normalized.attrs.paragraphIndex)
+        ? normalized.attrs.paragraphIndex
+        : index,
       blockId: id,
       status,
       length: normalized.text.length,
@@ -83,7 +86,7 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
       charLength: normalized.text.length,
       attrs,
       tiptapNode: {
-        type: 'paragraph',
+        type: 'blockSegment',
         attrs,
         content: normalized.content,
       },
@@ -92,9 +95,39 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
 }
 
 export function createContentJson(blocks) {
+  const paragraphs = [];
+
+  for (const block of blocks) {
+    const paragraphIndex = block.attrs.paragraphIndex;
+    let paragraph = paragraphs.at(-1);
+    if (!paragraph || paragraph.paragraphIndex !== paragraphIndex) {
+      paragraph = {
+        paragraphIndex,
+        attrs: {
+          lineHeight: block.attrs.lineHeight,
+          textIndent: block.attrs.textIndent,
+          textAlign: block.attrs.textAlign,
+          fontFamily: block.attrs.fontFamily,
+          fontSize: block.attrs.fontSize,
+        },
+        content: [],
+      };
+      paragraphs.push(paragraph);
+    }
+
+    if (paragraph.content.length) {
+      paragraph.content.push({ type: 'text', text: ' ' });
+    }
+    paragraph.content.push(block.tiptapNode);
+  }
+
   return {
     type: 'doc',
-    content: blocks.map((block) => block.tiptapNode),
+    content: paragraphs.map((paragraph) => ({
+      type: 'paragraph',
+      attrs: paragraph.attrs,
+      content: paragraph.content,
+    })),
   };
 }
 
@@ -323,13 +356,10 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
   const content = Array.isArray(contentJson?.content) ? contentJson.content : [];
   const styleAttrs = { ...DEFAULT_BLOCK_ATTRS, ...styleAttrsFromSettings(styleSettings) };
   const blockEntries = [];
-  const entryByIndex = new Map();
 
-  content.forEach((node, index) => {
-    if (!BLOCK_NODE_TYPES.has(node?.type)) return;
-
+  function normalizeTrackedNode(node, paragraphIndex) {
     const textContent = textFromNode(node).trim();
-    if (!textContent) return;
+    if (!textContent) return node;
 
     const existingAttrs = node.attrs ?? {};
     const blockId = validBlockId(existingAttrs.blockId) ? existingAttrs.blockId : randomUUID();
@@ -338,26 +368,52 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     const attrs = {
       ...styleAttrs,
       ...existingAttrs,
+      paragraphIndex: Number.isInteger(existingAttrs.paragraphIndex)
+        ? existingAttrs.paragraphIndex
+        : paragraphIndex,
       blockId,
       status,
       length: textContent.length,
     };
-    const entry = {
+    const tiptapNode = {
+      ...node,
+      type: node.type === 'blockSegment' ? 'blockSegment' : node.type,
+      attrs,
+    };
+
+    blockEntries.push({
       id: blockId,
       index: blockEntries.length,
-      contentIndex: index,
       textContent,
       status,
       charLength: textContent.length,
       attrs,
-      tiptapNode: {
-        ...node,
-        attrs,
-      },
-    };
+      tiptapNode,
+    });
+    return tiptapNode;
+  }
 
-    blockEntries.push(entry);
-    entryByIndex.set(index, entry);
+  const normalizedNodes = content.map((node, paragraphIndex) => {
+    if (!LEGACY_BLOCK_NODE_TYPES.has(node?.type)) return node;
+
+    const nodeContent = Array.isArray(node.content) ? node.content : [];
+    const hasInlineBlocks = nodeContent.some((child) => child?.type === 'blockSegment');
+    if (!hasInlineBlocks) {
+      return normalizeTrackedNode(node, paragraphIndex);
+    }
+
+    return {
+      ...node,
+      attrs: {
+        ...styleAttrs,
+        ...(node.attrs ?? {}),
+      },
+      content: nodeContent.map((child) => (
+        child?.type === 'blockSegment'
+          ? normalizeTrackedNode(child, paragraphIndex)
+          : child
+      )),
+    };
   });
 
   let processingSeen = false;
@@ -384,7 +440,7 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
   const normalizedContent = {
     ...contentJson,
     type: contentJson?.type ?? 'doc',
-    content: content.map((node, index) => entryByIndex.get(index)?.tiptapNode ?? node),
+    content: normalizedNodes,
   };
 
   await client.query('delete from document_blocks where document_id = $1', [documentId]);
