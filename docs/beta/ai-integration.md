@@ -569,6 +569,9 @@ a persisted document.
   colors while keeping selection status temporary and visually singular.
 - Layered the end-of-block action widget above the selected-block outline so the
   border cannot cross through its controls.
+- Kept the desktop owl below the AI panels and removed pointer handling from its
+  decorative overlay so rewrite explanation and acceptance buttons remain fully
+  clickable; mobile owl dragging remains interactive.
 - Implemented selected-block analysis through the OpenAI Responses API.
 - Added local deterministic metrics for sentence length and writing signals.
 - Added strict filter validation and Zod Structured Output parsing.

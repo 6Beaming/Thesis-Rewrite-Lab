@@ -846,7 +846,7 @@
 .workspace-blackboard-content {
   position: absolute;
   inset: 34px 28px auto;
-  z-index: 2;
+  z-index: 3;
   display: grid;
   gap: 16px;
 }
@@ -1324,6 +1324,7 @@
   bottom: 0;
   width: 50%;
   transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .workspace-blackboard-owl .owl-container {
