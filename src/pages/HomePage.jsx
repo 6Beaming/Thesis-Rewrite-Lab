@@ -157,7 +157,7 @@ function pickHistoryDocument(documents, currentDocument) {
 }
 
 // Temporary local fallback for offline UI testing while PostgreSQL is unavailable.
-// The backend upload path still uses scripts/lib/initialClustering.cjs for real imports.
+// The backend upload path uses scripts/lib/clustering.cjs for real imports.
 function localInitialClustering(text) {
   return String(text ?? '')
     .replace(/\r\n/g, '\n')

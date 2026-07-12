@@ -4,7 +4,10 @@ const path = require('path');
 const pg = require('pg');
 const mammoth = require('mammoth');
 const { randomUUID } = require('crypto');
-const { initialClustering } = require('./lib/initialClustering.cjs');
+const {
+  characterBalancedRanges,
+  clustering,
+} = require('./lib/clustering.cjs');
 
 // Temporary CLI importer for local testing until the upload API covers every fixture workflow.
 const DEFAULT_DATABASE_URL = 'postgresql://thesis_rewriter:thesis_rewriter_dev@localhost:5432/thesis_rewriter';
@@ -73,6 +76,28 @@ function textFromContent(content) {
   return content.map((node) => node.text ?? '').join('');
 }
 
+function sliceFormattedContent(content, start, end) {
+  const result = [];
+  let offset = 0;
+
+  for (const node of content) {
+    const text = node.text ?? '';
+    const nodeEnd = offset + text.length;
+    const sliceStart = Math.max(start, offset);
+    const sliceEnd = Math.min(end, nodeEnd);
+
+    if (sliceStart < sliceEnd) {
+      result.push({
+        ...node,
+        text: text.slice(sliceStart - offset, sliceEnd - offset),
+      });
+    }
+    offset = nodeEnd;
+  }
+
+  return trimContent(result);
+}
+
 function formattedBlocksFromHtml(html) {
   const blocks = [];
   let activeMarks = [];
@@ -82,19 +107,20 @@ function formattedBlocksFromHtml(html) {
   function finishBlock({ resetAttrs = false } = {}) {
     const content = trimContent(currentContent);
     const text = textFromContent(content);
-    if (text) blocks.push({ text, content, attrs: currentAttrs });
+    for (const range of characterBalancedRanges(text, { paragraphBreak: 'blank-line' })) {
+      blocks.push({
+        text: range.text,
+        content: sliceFormattedContent(content, range.start, range.end),
+        attrs: { ...currentAttrs },
+      });
+    }
     currentContent = [];
     if (resetAttrs) currentAttrs = {};
   }
 
   function appendFormattedText(rawText) {
     const decoded = decodeHtmlEntities(rawText).replace(/\s+/g, ' ');
-    const pieces = decoded.split(/(\.)/);
-    for (const piece of pieces) {
-      if (!piece) continue;
-      appendText(currentContent, piece, activeMarks);
-      if (piece === '.') finishBlock();
-    }
+    appendText(currentContent, decoded, activeMarks);
   }
 
   const tokenPattern = /<[^>]+>|[^<]+/g;
@@ -153,10 +179,13 @@ async function extractBlocks(filePath, buffer) {
     if (formattedBlocks.length) return formattedBlocks;
 
     const textResult = await mammoth.extractRawText({ buffer });
-    return initialClustering(textResult.value);
+    return clustering(textResult.value, { paragraphBreak: 'blank-line' });
   }
-  if (extension === '.txt' || extension === '.md') {
-    return initialClustering(buffer.toString('utf8'));
+  if (extension === '.md') {
+    return clustering(buffer.toString('utf8'), { paragraphBreak: 'blank-line' });
+  }
+  if (extension === '.txt') {
+    return clustering(buffer.toString('utf8'));
   }
   throw new Error('Only .txt, .md, and .docx uploads are supported.');
 }

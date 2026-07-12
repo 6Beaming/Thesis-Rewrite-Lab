@@ -16,7 +16,7 @@ const outputDir = path.join(process.cwd(), 'local', 'test-fixtures');
 
 const markdownFixture = `# Assignment 2: article 2
 
-This is a placeholder academic paragraph for upload testing. It should become one processing block first. It includes several sentences so initialClustering can split it.
+This is a placeholder academic paragraph for upload testing. It should become one processing block first. It includes several sentences so clustering can split it.
 
 The second paragraph discusses cognitive behavioral therapy in plain language. It is intentionally verbose enough to behave like a real paper body. The editor should allow arbitrary inline edits.
 
@@ -115,7 +115,7 @@ function makeDocx() {
         new TextRun({ text: 'This is a generated DOCX fixture for local upload testing. ', size: 24, font: 'Times New Roman' }),
         new TextRun({ text: 'It includes bold formatting, ', bold: true, size: 24, font: 'Times New Roman' }),
         new TextRun({ text: 'italic emphasis, ', italics: true, size: 24, font: 'Times New Roman' }),
-        new TextRun({ text: 'and enough sentence boundaries for initialClustering.', size: 24, font: 'Times New Roman' }),
+        new TextRun({ text: 'and enough sentence boundaries for clustering.', size: 24, font: 'Times New Roman' }),
       ],
       spacing: { line: 480, after: 240 },
     }),

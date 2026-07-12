@@ -24,7 +24,7 @@ Inside `WorkspacePage`, the signed-in experience switches between the homepage s
 | Auth | Auth.js for Express + Google OAuth 2.0 | Scaffolded; requires PostgreSQL and valid OAuth config |
 | Backend API | Express.js | Partially connected |
 | Database | PostgreSQL | Auth schema and product schema migrate together; product persistence is session-aware but still partially feature-incomplete |
-| Upload parsing | Multer + Mammoth + `initialClustering` | Partially scaffolded |
+| Upload parsing | Multer + Mammoth + `clustering` | Partially scaffolded |
 | Realtime | Socket.io placeholder location | Not started |
 
 ## Directory Layout

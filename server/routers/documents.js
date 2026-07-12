@@ -18,7 +18,10 @@ import {
 import { getVersion, listVersions, revertDocumentToVersion } from '../models/versions.js';
 
 const require = createRequire(import.meta.url);
-const { initialClustering } = require('../../scripts/lib/initialClustering.cjs');
+const {
+  characterBalancedRanges,
+  clustering,
+} = require('../../scripts/lib/clustering.cjs');
 
 const router = Router();
 
@@ -87,6 +90,28 @@ function textFromContent(content) {
   return content.map((node) => node.text ?? '').join('');
 }
 
+function sliceFormattedContent(content, start, end) {
+  const result = [];
+  let offset = 0;
+
+  for (const node of content) {
+    const text = node.text ?? '';
+    const nodeEnd = offset + text.length;
+    const sliceStart = Math.max(start, offset);
+    const sliceEnd = Math.min(end, nodeEnd);
+
+    if (sliceStart < sliceEnd) {
+      result.push({
+        ...node,
+        text: text.slice(sliceStart - offset, sliceEnd - offset),
+      });
+    }
+    offset = nodeEnd;
+  }
+
+  return trimContent(result);
+}
+
 function formattedBlocksFromHtml(html) {
   const blocks = [];
   let activeMarks = [];
@@ -96,8 +121,12 @@ function formattedBlocksFromHtml(html) {
   function finishBlock({ resetAttrs = false } = {}) {
     const content = trimContent(currentContent);
     const text = textFromContent(content);
-    if (text) {
-      blocks.push({ text, content, attrs: currentAttrs });
+    for (const range of characterBalancedRanges(text, { paragraphBreak: 'blank-line' })) {
+      blocks.push({
+        text: range.text,
+        content: sliceFormattedContent(content, range.start, range.end),
+        attrs: { ...currentAttrs },
+      });
     }
     currentContent = [];
     if (resetAttrs) currentAttrs = {};
@@ -105,14 +134,7 @@ function formattedBlocksFromHtml(html) {
 
   function appendFormattedText(rawText) {
     const decoded = decodeHtmlEntities(rawText).replace(/\s+/g, ' ');
-    const pieces = decoded.split(/(\.)/);
-    for (const piece of pieces) {
-      if (!piece) continue;
-      appendText(currentContent, piece, activeMarks);
-      if (piece === '.') {
-        finishBlock();
-      }
-    }
+    appendText(currentContent, decoded, activeMarks);
   }
 
   const tokenPattern = /<[^>]+>|[^<]+/g;
@@ -175,11 +197,15 @@ async function extractBlocks(file) {
     if (formattedBlocks.length) return formattedBlocks;
 
     const textResult = await mammoth.extractRawText({ buffer: file.buffer });
-    return initialClustering(textResult.value);
+    return clustering(textResult.value, { paragraphBreak: 'blank-line' });
   }
 
-  if (lowerName.endsWith('.txt') || lowerName.endsWith('.md')) {
-    return initialClustering(file.buffer.toString('utf8'));
+  if (lowerName.endsWith('.md')) {
+    return clustering(file.buffer.toString('utf8'), { paragraphBreak: 'blank-line' });
+  }
+
+  if (lowerName.endsWith('.txt')) {
+    return clustering(file.buffer.toString('utf8'));
   }
 
   const error = new Error('Only .txt, .md, and .docx uploads are supported.');
