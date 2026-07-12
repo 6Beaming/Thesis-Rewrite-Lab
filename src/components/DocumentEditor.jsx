@@ -1,4 +1,4 @@
-import { Node } from '@tiptap/core';
+import { Extension, Node } from '@tiptap/core';
 import Blockquote from '@tiptap/extension-blockquote';
 import BulletList from '@tiptap/extension-bullet-list';
 import Color from '@tiptap/extension-color';
@@ -12,6 +12,8 @@ import TextAlign from '@tiptap/extension-text-align';
 import { FontSize, TextStyle } from '@tiptap/extension-text-style';
 import Underline from '@tiptap/extension-underline';
 import { isHistoryTransaction } from 'prosemirror-history';
+import { Plugin, PluginKey } from '@tiptap/pm/state';
+import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
@@ -330,20 +332,127 @@ function selectedParagraphInfo(editor) {
   return { blockId: null, status: 'unprocessed' };
 }
 
-function syncSelectedBlockIndicator(editor, blockId) {
-  const editorRoot = editor?.view?.dom;
-  if (!editorRoot) return;
+function selectedBlockDecorationRange(state) {
+  const { $from } = state.selection;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const node = $from.node(depth);
+    if (!isTrackedTextBlockNode(node)) continue;
 
-  editorRoot.querySelectorAll('.doc-block[data-selected="true"]').forEach((block) => {
-    block.removeAttribute('data-selected');
-  });
+    const from = $from.before(depth);
+    return { from, to: from + node.nodeSize };
+  }
+  return null;
+}
 
-  if (!blockId) return;
-  const selectedBlock = editorRoot.querySelector(
+function syncSelectedBlockFrame(editor, blockId, pageElement) {
+  if (!pageElement) return;
+
+  let frame = pageElement.querySelector(':scope > .selected-block-frame');
+  if (!blockId || !editor?.view?.dom) {
+    if (frame) frame.hidden = true;
+    return;
+  }
+
+  const selectedBlock = editor.view.dom.querySelector(
     `.doc-block[data-block-id="${CSS.escape(blockId)}"]`,
   );
-  selectedBlock?.setAttribute('data-selected', 'true');
+  if (!selectedBlock) {
+    if (frame) frame.hidden = true;
+    return;
+  }
+
+  if (!frame) {
+    frame = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    frame.setAttribute('class', 'selected-block-frame');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.setAttribute('preserveAspectRatio', 'none');
+    const outline = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    outline.classList.add('selected-block-frame__outline');
+    frame.append(outline);
+    pageElement.append(frame);
+  }
+
+  const lineRects = Array.from(selectedBlock.getClientRects())
+    .filter((rect) => rect.width > 0 && rect.height > 0)
+    .sort((a, b) => a.top - b.top || a.left - b.left);
+  if (!lineRects.length) {
+    frame.hidden = true;
+    return;
+  }
+
+  const pageRect = pageElement.getBoundingClientRect();
+  const frameGap = 4;
+  const left = Math.min(...lineRects.map((rect) => rect.left)) - frameGap;
+  const top = Math.min(...lineRects.map((rect) => rect.top)) - frameGap;
+  const right = Math.max(...lineRects.map((rect) => rect.right)) + frameGap;
+  const bottom = Math.max(...lineRects.map((rect) => rect.bottom)) + frameGap;
+  const width = right - left;
+  const height = bottom - top;
+  const expandedRects = lineRects.map((rect) => ({
+    left: rect.left - frameGap - left,
+    top: rect.top - frameGap - top,
+    right: rect.right + frameGap - left,
+    bottom: rect.bottom + frameGap - top,
+  }));
+  const points = [
+    [expandedRects[0].left, expandedRects[0].top],
+    [expandedRects[0].right, expandedRects[0].top],
+  ];
+
+  for (let index = 0; index < expandedRects.length; index += 1) {
+    const rect = expandedRects[index];
+    const next = expandedRects[index + 1];
+    points.push([rect.right, rect.bottom]);
+    if (next) points.push([next.right, rect.bottom], [next.right, next.top]);
+  }
+  points.push([expandedRects.at(-1).left, expandedRects.at(-1).bottom]);
+  for (let index = expandedRects.length - 1; index > 0; index -= 1) {
+    const rect = expandedRects[index];
+    const previous = expandedRects[index - 1];
+    points.push([rect.left, rect.top], [previous.left, rect.top], [previous.left, previous.bottom]);
+  }
+
+  const previousBlockId = frame.dataset.blockId;
+
+  frame.hidden = false;
+  frame.dataset.blockId = blockId;
+  frame.dataset.status = selectedBlock.getAttribute('data-status') || 'unprocessed';
+  frame.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  frame.querySelector('.selected-block-frame__outline').setAttribute(
+    'points',
+    points.map(([x, y]) => `${x},${y}`).join(' '),
+  );
+  frame.style.left = `${left - pageRect.left}px`;
+  frame.style.top = `${top - pageRect.top}px`;
+  frame.style.width = `${width}px`;
+  frame.style.height = `${height}px`;
+
+  if (previousBlockId !== blockId) {
+    frame.classList.remove('is-entering');
+    void frame.offsetWidth;
+    frame.classList.add('is-entering');
+  }
 }
+
+const BlockSelectionDecoration = Extension.create({
+  name: 'blockSelectionDecoration',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('blockSelectionDecoration'),
+        props: {
+          decorations(state) {
+            const range = selectedBlockDecorationRange(state);
+            if (!range) return DecorationSet.empty;
+            return DecorationSet.create(state.doc, [
+              Decoration.node(range.from, range.to, { class: 'doc-block--selected' }),
+            ]);
+          },
+        },
+      }),
+    ];
+  },
+});
 
 function collectTrackedBlocks(state) {
   const blocks = [];
@@ -569,6 +678,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       AcademicParagraph,
       AcademicHeading,
       BlockSegment,
+      BlockSelectionDecoration,
       PageBreak,
       BulletList.configure({ keepMarks: true }),
       OrderedList.configure({ keepMarks: true }),
@@ -598,7 +708,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       );
       suppressEditedStatusResetRef.current = false;
       const info = selectedParagraphInfo(activeEditor);
-      syncSelectedBlockIndicator(activeEditor, info.blockId);
+      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
       onChange?.({
         ...createEditorSnapshot(activeEditor),
         contentJson: normalizedJson,
@@ -610,7 +720,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     },
     onSelectionUpdate({ editor: activeEditor }) {
       const info = selectedParagraphInfo(activeEditor);
-      syncSelectedBlockIndicator(activeEditor, info.blockId);
+      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
       onActiveBlockChange?.(info);
       setActiveBlockStatus(info.status);
     },
@@ -619,10 +729,27 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   useEffect(() => {
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
     const info = selectedParagraphInfo(editor);
-    syncSelectedBlockIndicator(editor, info.blockId);
+    syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
     onActiveBlockChange?.(info);
     setActiveBlockStatus(info.status);
   }, [editor, document?.id, onActiveBlockChange]);
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed || !pageRef.current) return undefined;
+
+    const refreshFrame = () => {
+      const info = selectedParagraphInfo(editor);
+      syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
+    };
+    const observer = new ResizeObserver(refreshFrame);
+    observer.observe(editor.view.dom);
+    window.addEventListener('resize', refreshFrame);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', refreshFrame);
+    };
+  }, [editor, document?.id]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;

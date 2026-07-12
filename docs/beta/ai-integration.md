@@ -461,6 +461,15 @@ different names.
   no longer inserts line breaks inside an original paragraph.
 - Simplified inline block styling to unobtrusive status highlights without
   badges, outlines, padding, rounded boxes, or underlines.
-- Added hover feedback and a stronger transient highlight for the block that
-  contains the editor selection, without persisting UI-only selection state.
+- Added an immediate status-colored border and stronger highlight only for the
+  selected block; hover and in-block pulse animations are disabled, and the
+  UI-only selection state is not persisted.
+- Reinforced inline-block click detection and replaced the selection outline
+  with a rounded border and soft status-colored glow.
+- Replaced DOM attribute selection tracking with a ProseMirror node decoration,
+  making the selected border reliable and limiting animation to the moment the
+  editor selection enters a block rather than mouse hover.
+- Moved the selected border to one positioned frame based on the block's full
+  bounding rectangle, preventing multiline blocks from drawing one border per
+  wrapped line.
 - Added the initial target architecture, file inventory, and implementation checklist.
