@@ -50,7 +50,7 @@ The intended complete product workflow remains:
 
 ```text
 Analyze selected block
-    -> generate three tone-based rewrites
+    -> generate a rewrite from any of the three tone cards
     -> let the user write a practice revision
     -> return teaching feedback
     -> apply or reject a suggestion
@@ -378,17 +378,18 @@ Generation endpoint:
 POST /api/documents/:documentId/blocks/:blockId/rewrites
 ```
 
-Request body for all three tones:
+Request body for one tone:
 
 ```json
 {
-  "tone": null,
+  "tone": "formal-academic",
   "force": false
 }
 ```
 
-Passing one supported tone regenerates only that card. `force: true` bypasses
-the exact cache match for that tone.
+`tone` is required and must be one of the three supported identifiers. Each card
+has its own **Generate** or **Regenerate** action; there is no bulk-generation
+request. `force: true` bypasses the exact cache match for that tone.
 
 Implemented tones:
 
@@ -429,6 +430,13 @@ AI option selected
 The frontend saves unsaved source text before generation, rejects stale results
 when the active block changes during a request, shows explanations and warnings,
 and disables options where the model reports that meaning was not preserved.
+
+Block selection is temporary: the selected block is displayed as `processing`
+for AI work, but its stored TipTap/PostgreSQL status is unchanged until the user
+clicks **Skip**, **Complete**, or **Use this rewrite**. Moving to another block
+restores the previous block's original display status. Rewriting targets the
+selected block, and **Use this rewrite** persists `processed` while replacing
+its text.
 
 ## Planned Practice Feedback
 
@@ -551,6 +559,11 @@ a persisted document.
   warnings, exact caching, per-tone regeneration, and acceptance timestamps.
 - Connected desktop and mobile rewrite cards to generation, safe application,
   editor replacement, block completion, and next-block advancement.
+- Made block selection temporarily display as processing, added adjacent Skip
+  and Complete actions, and made AI rewriting target the selected block.
+- Removed the duplicate selected-block preview and Skip control from the
+  rewriting panel, and removed bulk generation so rewrites are requested from
+  one tone card at a time.
 - Implemented selected-block analysis through the OpenAI Responses API.
 - Added local deterministic metrics for sentence length and writing signals.
 - Added strict filter validation and Zod Structured Output parsing.

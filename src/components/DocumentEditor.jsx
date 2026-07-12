@@ -324,9 +324,12 @@ function selectedParagraphInfo(editor) {
   for (let depth = $from.depth; depth > 0; depth -= 1) {
     const node = $from.node(depth);
     if (isTrackedTextBlockNode(node)) {
+      const originalStatus = normalizeBlockStatus(node.attrs.status);
       return {
         blockId: node.attrs.blockId ?? null,
-        status: normalizeBlockStatus(node.attrs.status),
+        status: 'processing',
+        originalStatus,
+        text: node.textContent ?? '',
       };
     }
   }
@@ -345,12 +348,13 @@ function selectedBlockDecorationRange(state) {
   return null;
 }
 
-function syncSelectedBlockFrame(editor, blockId, pageElement) {
+function syncSelectedBlockFrame(editor, blockId, pageElement, actionsElement = null) {
   if (!pageElement) return;
 
   let frame = pageElement.querySelector(':scope > .selected-block-frame');
   if (!blockId || !editor?.view?.dom) {
     if (frame) frame.hidden = true;
+    if (actionsElement) actionsElement.hidden = true;
     return;
   }
 
@@ -359,6 +363,7 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
   );
   if (!selectedBlock) {
     if (frame) frame.hidden = true;
+    if (actionsElement) actionsElement.hidden = true;
     return;
   }
 
@@ -378,6 +383,7 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
     .sort((a, b) => a.top - b.top || a.left - b.left);
   if (!lineRects.length) {
     frame.hidden = true;
+    if (actionsElement) actionsElement.hidden = true;
     return;
   }
 
@@ -417,7 +423,7 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
 
   frame.hidden = false;
   frame.dataset.blockId = blockId;
-  frame.dataset.status = selectedBlock.getAttribute('data-status') || 'unprocessed';
+  frame.dataset.status = 'processing';
   frame.setAttribute('viewBox', `0 0 ${width} ${height}`);
   frame.querySelector('.selected-block-frame__outline').setAttribute(
     'points',
@@ -427,6 +433,20 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
   frame.style.top = `${top - pageRect.top}px`;
   frame.style.width = `${width}px`;
   frame.style.height = `${height}px`;
+
+  if (actionsElement) {
+    const actionGap = 8;
+    actionsElement.hidden = false;
+    const actionWidth = actionsElement.offsetWidth || 220;
+    const pageWidth = pageElement.clientWidth || pageRect.width;
+    let actionLeft = right - pageRect.left + actionGap;
+    if (actionLeft + actionWidth > pageWidth - actionGap) {
+      actionLeft = Math.max(actionGap, left - pageRect.left - actionWidth - actionGap);
+    }
+    actionsElement.dataset.blockId = blockId;
+    actionsElement.style.left = `${actionLeft}px`;
+    actionsElement.style.top = `${Math.max(actionGap, top - pageRect.top)}px`;
+  }
 
   if (previousBlockId !== blockId) {
     frame.classList.remove('is-entering');
@@ -767,10 +787,10 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   const styleSignature = useMemo(() => JSON.stringify(normalizedStyle), [normalizedStyle]);
   const paperScrollRef = useRef(null);
   const pageRef = useRef(null);
+  const blockActionsRef = useRef(null);
   const paragraphTextSnapshotRef = useRef(new Map());
   const suppressEditedStatusResetRef = useRef(false);
   const blockPartitionTimerRef = useRef(null);
-  const [activeBlockStatus, setActiveBlockStatus] = useState('unprocessed');
   const [pageCount, setPageCount] = useState(1);
   const processingBlockId = useMemo(() => {
     if (document?.current_processing_block_id) return document.current_processing_block_id;
@@ -822,14 +842,13 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       );
       suppressEditedStatusResetRef.current = false;
       const info = selectedParagraphInfo(activeEditor);
-      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
+      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current, blockActionsRef.current);
       onChange?.({
         ...createEditorSnapshot(activeEditor),
         contentJson: normalizedJson,
         activeBlock: info,
       });
       onActiveBlockChange?.(info);
-      setActiveBlockStatus(info.status);
       paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
 
       if (
@@ -846,18 +865,16 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     },
     onSelectionUpdate({ editor: activeEditor }) {
       const info = selectedParagraphInfo(activeEditor);
-      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
+      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current, blockActionsRef.current);
       onActiveBlockChange?.(info);
-      setActiveBlockStatus(info.status);
     },
   }, [document?.id]);
 
   useEffect(() => {
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
     const info = selectedParagraphInfo(editor);
-    syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
+    syncSelectedBlockFrame(editor, info.blockId, pageRef.current, blockActionsRef.current);
     onActiveBlockChange?.(info);
-    setActiveBlockStatus(info.status);
   }, [editor, document?.id, onActiveBlockChange]);
 
   useEffect(() => () => {
@@ -869,7 +886,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
 
     const refreshFrame = () => {
       const info = selectedParagraphInfo(editor);
-      syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
+      syncSelectedBlockFrame(editor, info.blockId, pageRef.current, blockActionsRef.current);
     };
     const observer = new ResizeObserver(refreshFrame);
     observer.observe(editor.view.dom);
@@ -992,10 +1009,9 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         ? paragraphs.find((paragraph) => (
           paragraph.blockId === targetBlockId
           && !paragraph.isEmpty
-          && ['processing', 'unprocessed'].includes(paragraph.status)
         ))
         : null)
-        ?? ((selected && !selected.isEmpty && ['processing', 'unprocessed'].includes(selected.status))
+        ?? ((selected && !selected.isEmpty)
         ? selected
         : paragraphs.find((paragraph) => !paragraph.isEmpty && paragraph.status === 'processing')
           ?? paragraphs.find((paragraph) => !paragraph.isEmpty && paragraph.status === 'unprocessed'));
@@ -1068,7 +1084,6 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     }
 
     const snapshot = createEditorSnapshot(editor);
-    setActiveBlockStatus(nextLocalProcessingId ? 'processing' : status);
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
     if (applied && updatedBlockId) {
       onBlockStatusChange?.({
@@ -1087,15 +1102,14 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   }), [editor, onBlockStatusChange]);
 
   function setSelectedBlockStatus(status) {
-    applyCurrentBlockStatus({ status });
+    const blockId = selectedParagraphInfo(editor).blockId;
+    applyCurrentBlockStatus({ status, targetBlockId: blockId });
   }
 
   return (
     <div className="document-editor">
       <EditorToolbar
         editor={editor}
-        activeBlockStatus={activeBlockStatus}
-        onBlockStatusChange={setSelectedBlockStatus}
         onSave={onSave}
         saveDisabled={saveDisabled}
         saving={saving}
@@ -1108,6 +1122,16 @@ const DocumentEditor = forwardRef(function DocumentEditor({
           style={pageStyle}
         >
           <EditorContent editor={editor} />
+          <div
+            ref={blockActionsRef}
+            className="selected-block-actions"
+            hidden
+            onMouseDown={(event) => event.preventDefault()}
+          >
+            <span>Processing</span>
+            <button type="button" onClick={() => setSelectedBlockStatus('skipped')}>Skip</button>
+            <button type="button" onClick={() => setSelectedBlockStatus('processed')}>Complete</button>
+          </div>
         </A4EditorPage>
       </div>
     </div>

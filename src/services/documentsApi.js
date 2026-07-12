@@ -49,7 +49,7 @@ export function analyzeDocumentBlock(documentId, blockId, filters) {
   });
 }
 
-export function generateDocumentBlockRewrites(documentId, blockId, { tone = null, force = false } = {}) {
+export function generateDocumentBlockRewrites(documentId, blockId, { tone, force = false }) {
   return requestJson(`/documents/${documentId}/blocks/${blockId}/rewrites`, {
     method: 'POST',
     body: JSON.stringify({ tone, force }),

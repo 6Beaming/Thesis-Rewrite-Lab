@@ -720,6 +720,56 @@
   display: none;
 }
 
+.selected-block-actions {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid rgba(200, 123, 22, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 252, 239, 0.96);
+  box-shadow: 0 8px 20px rgba(70, 42, 8, 0.16);
+}
+
+.selected-block-actions[hidden] {
+  display: none;
+}
+
+.selected-block-actions button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 9px;
+  background: #f1e5c9;
+  color: #604219;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.selected-block-actions span {
+  align-self: center;
+  padding: 0 3px;
+  color: #9a5d0d;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.selected-block-actions button:last-child {
+  background: #d8f1e5;
+  color: #17664f;
+}
+
+.selected-block-actions button:hover,
+.selected-block-actions button:focus-visible {
+  transform: translateY(-1px);
+  filter: brightness(0.98);
+}
+
 .selected-block-frame[data-status='processing'] {
   --selected-frame-border: #c87b16;
   --selected-frame-glow: rgba(200, 123, 22, 0.24);
@@ -1044,40 +1094,11 @@
   gap: 12px;
 }
 
-.rewrite-title-actions,
 .rewrite-card-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.rewrite-generate-all {
-  min-height: 34px;
-  border: 0;
-  border-radius: 9px;
-  padding: 0 12px;
-  background: rgba(230, 255, 237, 0.94);
-  color: #17663a;
-  font: inherit;
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-
-.rewrite-generate-all:disabled {
-  cursor: wait;
-  opacity: 0.58;
-}
-
-.rewrite-source-preview {
-  max-height: 92px;
-  margin: 10px 0 0;
-  padding: 10px 12px;
-  overflow-y: auto;
-  border-left: 3px solid rgba(209, 255, 220, 0.72);
-  background: rgba(7, 27, 18, 0.18);
-  font-size: 0.82rem;
-  line-height: 1.45;
 }
 
 .rewrite-panel-error,
@@ -1210,8 +1231,7 @@
 }
 
 .rewrite-card button,
-.practice-card button,
-.rewrite-disable-current {
+.practice-card button {
   min-height: 32px;
   border: 0;
   border-radius: 9px;
@@ -1228,18 +1248,9 @@
 }
 
 .rewrite-card button:disabled,
-.practice-card button:disabled,
-.rewrite-disable-current:disabled,
-.rewrite-generate-all:disabled {
+.practice-card button:disabled {
   cursor: wait;
   opacity: 0.58;
-}
-
-.rewrite-disable-current {
-  min-height: 34px;
-  padding: 0 12px;
-  background: rgba(255, 226, 223, 0.94) !important;
-  color: #a93a2e !important;
 }
 
 @keyframes card-soft-enter {
@@ -1488,19 +1499,13 @@
   flex-direction: column;
 }
 
-.workspace-mobile-assistant-panel .rewrite-card-header button,
-.workspace-mobile-assistant-panel .rewrite-disable-current {
+.workspace-mobile-assistant-panel .rewrite-card-header button {
   align-self: center;
 }
 
 .workspace-mobile-assistant-panel .rewrite-card button,
-.workspace-mobile-assistant-panel .practice-card button,
-.workspace-mobile-assistant-panel .rewrite-disable-current {
+.workspace-mobile-assistant-panel .practice-card button {
   min-height: 36px;
-}
-
-.workspace-mobile-assistant-panel .rewrite-disable-current {
-  margin: 12px auto 0;
 }
 
   .workspace-mobile-options-panel {
@@ -2691,7 +2696,6 @@
 .rewrite-card,
 .practice-card,
 .practice-card button,
-.rewrite-disable-current,
 .editor-toolbar-button,
 .toolbar-swatch {
   transition:
@@ -2724,7 +2728,6 @@
 .rewrite-card:hover,
 .practice-card:hover,
 .practice-card button:hover:not(:disabled),
-.rewrite-disable-current:hover:not(:disabled),
 .editor-toolbar-button:hover:not(:disabled),
 .toolbar-swatch:hover {
   transform: translateY(-1px) scale(1.018);

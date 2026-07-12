@@ -599,8 +599,8 @@ export default function WorkspacePage() {
       : ''
   ), [activeEditorBlock?.blockId, activeEditorBlock?.text, selectedAnalysisFilters]);
   const currentBlockAnalysis = currentAnalysisKey ? blockAnalyses[currentAnalysisKey] ?? null : null;
-  const currentRewriteBlockId = workspaceDraft?.currentProcessingBlockId
-    ?? activeEditorBlock?.blockId
+  const currentRewriteBlockId = activeEditorBlock?.blockId
+    ?? workspaceDraft?.currentProcessingBlockId
     ?? null;
   const currentRewriteBlock = workspaceDraft?.blocks?.find((block) => block.id === currentRewriteBlockId)
     ?? null;
@@ -812,7 +812,10 @@ export default function WorkspacePage() {
   const handleActiveEditorBlockChange = useCallback((info) => {
     const nextInfo = info ?? { blockId: null, status: 'unprocessed' };
     setActiveEditorBlock((current) => (
-      current?.blockId === nextInfo.blockId && current?.status === nextInfo.status
+      current?.blockId === nextInfo.blockId
+      && current?.status === nextInfo.status
+      && current?.originalStatus === nextInfo.originalStatus
+      && current?.text === nextInfo.text
         ? current
         : nextInfo
     ));
@@ -1127,7 +1130,7 @@ export default function WorkspacePage() {
     }, 5600);
   }
 
-  async function generateRewrites({ tone = null, force = false } = {}) {
+  async function generateRewrites({ tone, force = false }) {
     const documentId = selectedDocument?.id;
     const blockId = currentRewriteBlockId;
     if (!documentId || !blockId) {
@@ -1171,7 +1174,7 @@ export default function WorkspacePage() {
           applyWithExplanation: false,
         };
       }));
-      setWorkspaceNotice(response.cached ? 'Loaded saved rewrite options.' : 'Rewrite options are ready.');
+      setWorkspaceNotice(response.cached ? 'Loaded the saved rewrite.' : 'Rewrite is ready.');
     } catch (error) {
       setRewriteError(error.message || 'AI rewriting is temporarily unavailable.');
       triggerWorkspaceError();
@@ -1250,13 +1253,13 @@ export default function WorkspacePage() {
     resetRewriteCardsForNextBlock(nextNotice);
   }
 
-  function applyStatusToCurrentProcessingBlock(nextStatus, replacementText = null) {
+  function applyStatusToSelectedBlock(nextStatus, replacementText = null) {
     if (!selectedDocument) return null;
 
     const nextSnapshot = documentEditorRef.current?.applyCurrentBlockStatus({
       status: nextStatus,
       replacementText,
-      targetBlockId: workspaceDraft?.currentProcessingBlockId ?? activeEditorBlock?.blockId ?? null,
+      targetBlockId: activeEditorBlock?.blockId ?? workspaceDraft?.currentProcessingBlockId ?? null,
     });
     if (nextSnapshot?.contentJson) {
       const normalized = normalizeWorkspaceContent(
@@ -1368,7 +1371,7 @@ export default function WorkspacePage() {
 
   function applyRewriteCard(card) {
     if (!card.response) return;
-    const document = applyStatusToCurrentProcessingBlock('processed', card.response);
+    const document = applyStatusToSelectedBlock('processed', card.response);
     if (document) {
       lockOrCompleteRewriteCards(document, `${card.title} applied. Cards refreshed for the next block.`);
     }
@@ -1378,14 +1381,6 @@ export default function WorkspacePage() {
     setRewriteCards((cards) => cards.map((card) => (
       card.id === cardId ? { ...card, applyWithExplanation: !card.applyWithExplanation } : card
     )));
-  }
-
-  function disableCurrentRewriteBlock() {
-    if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy) return;
-    const document = applyStatusToCurrentProcessingBlock('skipped');
-    if (document) {
-      lockOrCompleteRewriteCards(document, 'Current block skipped. Cards refreshed for the next block.');
-    }
   }
 
   async function tryPracticeResponse(event) {
@@ -1461,7 +1456,7 @@ export default function WorkspacePage() {
             ) : null}
           </>
         ) : (
-          <p className="rewrite-card-empty">Generate this tone, or generate all three options together.</p>
+          <p className="rewrite-card-empty">Generate this tone to create a rewrite for the selected block.</p>
         )}
       </article>
     );
@@ -1537,23 +1532,7 @@ export default function WorkspacePage() {
                   </button>
                 </div>
                 {rewriteError ? <p className="rewrite-panel-error" role="alert">{rewriteError}</p> : null}
-                <button
-                  type="button"
-                  className="rewrite-generate-all"
-                  onClick={() => generateRewrites()}
-                  disabled={rewriteBusy || rewriteCardsLocked || !currentRewriteBlockId}
-                >
-                  {rewriteBusy ? 'Generating...' : 'Generate all three tones'}
-                </button>
                 {currentRewriteCard ? renderRewriteCard(currentRewriteCard) : null}
-                <button
-                  type="button"
-                  className="rewrite-disable-current"
-                  onClick={disableCurrentRewriteBlock}
-                  disabled={rewriteCardsLocked || rewriteBusy}
-                >
-                  Disable Current Block
-                </button>
               </>
             )}
           </div>
@@ -1800,30 +1779,7 @@ export default function WorkspacePage() {
         <section className="workspace-mode-card workspace-mode-card--interactive">
           <div className="workspace-mode-card-title-row">
             <h2>Rewriting</h2>
-            {!rewriteAllCompleted ? (
-              <div className="rewrite-title-actions">
-                <button
-                  type="button"
-                  className="rewrite-generate-all"
-                  onClick={() => generateRewrites()}
-                  disabled={rewriteCardsLocked || rewriteBusy || !currentRewriteBlockId}
-                >
-                  {rewriteBusy ? 'Generating...' : 'Generate all three tones'}
-                </button>
-                <button
-                  type="button"
-                  className="rewrite-disable-current"
-                  onClick={disableCurrentRewriteBlock}
-                  disabled={rewriteCardsLocked || rewriteBusy}
-                >
-                  Disable Current Block
-                </button>
-              </div>
-            ) : null}
           </div>
-          {currentRewriteBlock?.text ? (
-            <p className="rewrite-source-preview"><strong>Selected block:</strong> {currentRewriteBlock.text}</p>
-          ) : null}
           {rewriteError ? <p className="rewrite-panel-error" role="alert">{rewriteError}</p> : null}
           <div className="rewrite-card-list">
             {rewriteAllCompleted ? renderRewriteCompleteCard() : rewriteCards.map((card) => renderRewriteCard(card))}

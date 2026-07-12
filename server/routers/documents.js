@@ -34,7 +34,6 @@ import {
 } from '../ai/blockAnalysis.js';
 import {
   BLOCK_REWRITE_PROMPT_VERSION,
-  REWRITE_TONES,
   generateBlockRewrites,
   normalizeRewriteTone,
 } from '../ai/blockRewrites.js';
@@ -440,11 +439,10 @@ router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
 });
 
 router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => {
-  const requestedTone = req.body?.tone ?? null;
-  const tone = requestedTone === null ? null : normalizeRewriteTone(requestedTone);
+  const tone = normalizeRewriteTone(req.body?.tone);
   const force = req.body?.force ?? false;
 
-  if ((requestedTone !== null && !tone) || typeof force !== 'boolean') {
+  if (!tone || typeof force !== 'boolean') {
     res.status(400).json({ error: 'Rewrite request is invalid.' });
     return;
   }
@@ -460,7 +458,7 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => 
     return;
   }
 
-  const tones = tone ? [tone] : REWRITE_TONES;
+  const tones = [tone];
   const sourceTextHash = hashBlockText(context.text_content);
   const model = process.env.OPENAI_REWRITE_MODEL || 'gpt-5.4-mini';
 
