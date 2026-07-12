@@ -348,13 +348,12 @@ function selectedBlockDecorationRange(state) {
   return null;
 }
 
-function syncSelectedBlockFrame(editor, blockId, pageElement, actionsElement = null) {
+function syncSelectedBlockFrame(editor, blockId, pageElement) {
   if (!pageElement) return;
 
   let frame = pageElement.querySelector(':scope > .selected-block-frame');
   if (!blockId || !editor?.view?.dom) {
     if (frame) frame.hidden = true;
-    if (actionsElement) actionsElement.hidden = true;
     return;
   }
 
@@ -363,7 +362,6 @@ function syncSelectedBlockFrame(editor, blockId, pageElement, actionsElement = n
   );
   if (!selectedBlock) {
     if (frame) frame.hidden = true;
-    if (actionsElement) actionsElement.hidden = true;
     return;
   }
 
@@ -383,7 +381,6 @@ function syncSelectedBlockFrame(editor, blockId, pageElement, actionsElement = n
     .sort((a, b) => a.top - b.top || a.left - b.left);
   if (!lineRects.length) {
     frame.hidden = true;
-    if (actionsElement) actionsElement.hidden = true;
     return;
   }
 
@@ -434,25 +431,57 @@ function syncSelectedBlockFrame(editor, blockId, pageElement, actionsElement = n
   frame.style.width = `${width}px`;
   frame.style.height = `${height}px`;
 
-  if (actionsElement) {
-    const actionGap = 8;
-    actionsElement.hidden = false;
-    const actionWidth = actionsElement.offsetWidth || 220;
-    const pageWidth = pageElement.clientWidth || pageRect.width;
-    let actionLeft = right - pageRect.left + actionGap;
-    if (actionLeft + actionWidth > pageWidth - actionGap) {
-      actionLeft = Math.max(actionGap, left - pageRect.left - actionWidth - actionGap);
-    }
-    actionsElement.dataset.blockId = blockId;
-    actionsElement.style.left = `${actionLeft}px`;
-    actionsElement.style.top = `${Math.max(actionGap, top - pageRect.top)}px`;
-  }
-
   if (previousBlockId !== blockId) {
     frame.classList.remove('is-entering');
     void frame.offsetWidth;
     frame.classList.add('is-entering');
   }
+}
+
+function selectedBlockActionButton({ action, label, className = '', disabled = false }) {
+  const button = window.document.createElement('button');
+  button.type = 'button';
+  button.className = className;
+  button.dataset.selectedBlockAction = action;
+  button.disabled = disabled;
+  button.setAttribute('aria-label', label);
+  button.addEventListener('mousedown', (event) => event.preventDefault());
+  return button;
+}
+
+function createSelectedBlockActions(hasNextBlock) {
+  const actions = window.document.createElement('span');
+  actions.className = 'selected-block-actions';
+  actions.contentEditable = 'false';
+  actions.setAttribute('role', 'group');
+  actions.setAttribute('aria-label', 'Selected block actions');
+
+  const skipButton = selectedBlockActionButton({ action: 'skip', label: 'Skip selected block' });
+  skipButton.textContent = 'Skip';
+
+  const completeButton = selectedBlockActionButton({
+    action: 'complete',
+    label: 'Complete selected block',
+    className: 'selected-block-action--complete',
+  });
+  completeButton.textContent = 'Complete';
+
+  const nextButton = selectedBlockActionButton({
+    action: 'next',
+    label: 'Go to next block',
+    className: 'selected-block-action--next',
+    disabled: !hasNextBlock,
+  });
+  const arrow = window.document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  arrow.setAttribute('viewBox', '0 0 24 24');
+  arrow.setAttribute('aria-hidden', 'true');
+  const shaft = window.document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  shaft.setAttribute('d', 'M4 12h15M13 6l6 6-6 6');
+  arrow.append(shaft);
+  nextButton.append(arrow);
+
+  actions.append(skipButton, completeButton, nextButton);
+  return actions;
 }
 
 const BlockSelectionDecoration = Extension.create({
@@ -465,8 +494,21 @@ const BlockSelectionDecoration = Extension.create({
           decorations(state) {
             const range = selectedBlockDecorationRange(state);
             if (!range) return DecorationSet.empty;
+            const blocks = collectTrackedBlocks(state).filter((block) => !block.isEmpty);
+            const selected = selectedParagraphFromState(state);
+            const selectedIndex = blocks.findIndex((block) => block.blockId === selected?.blockId);
+            const hasNextBlock = selectedIndex >= 0 && selectedIndex < blocks.length - 1;
             return DecorationSet.create(state.doc, [
               Decoration.node(range.from, range.to, { class: 'doc-block--selected' }),
+              Decoration.widget(
+                range.to - 1,
+                () => createSelectedBlockActions(hasNextBlock),
+                {
+                  key: `selected-block-actions-${selected?.blockId ?? 'none'}-${hasNextBlock}`,
+                  side: 1,
+                  stopEvent: (event) => Boolean(event.target.closest?.('[data-selected-block-action]')),
+                },
+              ),
             ]);
           },
         },
@@ -787,7 +829,6 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   const styleSignature = useMemo(() => JSON.stringify(normalizedStyle), [normalizedStyle]);
   const paperScrollRef = useRef(null);
   const pageRef = useRef(null);
-  const blockActionsRef = useRef(null);
   const paragraphTextSnapshotRef = useRef(new Map());
   const suppressEditedStatusResetRef = useRef(false);
   const blockPartitionTimerRef = useRef(null);
@@ -842,7 +883,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       );
       suppressEditedStatusResetRef.current = false;
       const info = selectedParagraphInfo(activeEditor);
-      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current, blockActionsRef.current);
+      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
       onChange?.({
         ...createEditorSnapshot(activeEditor),
         contentJson: normalizedJson,
@@ -865,7 +906,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     },
     onSelectionUpdate({ editor: activeEditor }) {
       const info = selectedParagraphInfo(activeEditor);
-      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current, blockActionsRef.current);
+      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
       onActiveBlockChange?.(info);
     },
   }, [document?.id]);
@@ -873,7 +914,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   useEffect(() => {
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
     const info = selectedParagraphInfo(editor);
-    syncSelectedBlockFrame(editor, info.blockId, pageRef.current, blockActionsRef.current);
+    syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
     onActiveBlockChange?.(info);
   }, [editor, document?.id, onActiveBlockChange]);
 
@@ -886,7 +927,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
 
     const refreshFrame = () => {
       const info = selectedParagraphInfo(editor);
-      syncSelectedBlockFrame(editor, info.blockId, pageRef.current, blockActionsRef.current);
+      syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
     };
     const observer = new ResizeObserver(refreshFrame);
     observer.observe(editor.view.dom);
@@ -897,6 +938,23 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       window.removeEventListener('resize', refreshFrame);
     };
   }, [editor, document?.id]);
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return undefined;
+
+    const handleSelectedBlockAction = (event) => {
+      const button = event.target.closest?.('[data-selected-block-action]');
+      if (!button || button.disabled) return;
+
+      const action = button.dataset.selectedBlockAction;
+      if (action === 'skip') setSelectedBlockStatus('skipped');
+      if (action === 'complete') setSelectedBlockStatus('processed');
+      if (action === 'next') selectNextBlock();
+    };
+
+    editor.view.dom.addEventListener('click', handleSelectedBlockAction);
+    return () => editor.view.dom.removeEventListener('click', handleSelectedBlockAction);
+  }, [editor, onBlockStatusChange]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
@@ -1106,6 +1164,18 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     applyCurrentBlockStatus({ status, targetBlockId: blockId });
   }
 
+  function selectNextBlock() {
+    if (!editor || editor.isDestroyed) return;
+
+    const blocks = collectTrackedBlocks(editor.state).filter((block) => !block.isEmpty);
+    const selectedBlockId = selectedParagraphInfo(editor).blockId;
+    const selectedIndex = blocks.findIndex((block) => block.blockId === selectedBlockId);
+    const nextBlock = selectedIndex >= 0 ? blocks[selectedIndex + 1] : blocks[0];
+    if (!nextBlock) return;
+
+    editor.chain().focus().setTextSelection(nextBlock.pos + 1).scrollIntoView().run();
+  }
+
   return (
     <div className="document-editor">
       <EditorToolbar
@@ -1122,16 +1192,6 @@ const DocumentEditor = forwardRef(function DocumentEditor({
           style={pageStyle}
         >
           <EditorContent editor={editor} />
-          <div
-            ref={blockActionsRef}
-            className="selected-block-actions"
-            hidden
-            onMouseDown={(event) => event.preventDefault()}
-          >
-            <span>Processing</span>
-            <button type="button" onClick={() => setSelectedBlockStatus('skipped')}>Skip</button>
-            <button type="button" onClick={() => setSelectedBlockStatus('processed')}>Complete</button>
-          </div>
         </A4EditorPage>
       </div>
     </div>

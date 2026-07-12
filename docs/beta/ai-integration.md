@@ -564,6 +564,11 @@ a persisted document.
 - Removed the duplicate selected-block preview and Skip control from the
   rewriting panel, and removed bulk generation so rewrites are requested from
   one tone card at a time.
+- Moved selected-block actions into an end-of-block ProseMirror widget, removed
+  the Processing label, added next-block navigation, and strengthened status
+  colors while keeping selection status temporary and visually singular.
+- Layered the end-of-block action widget above the selected-block outline so the
+  border cannot cross through its controls.
 - Implemented selected-block analysis through the OpenAI Responses API.
 - Added local deterministic metrics for sentence length and writing signals.
 - Added strict filter validation and Zod Structured Output parsing.

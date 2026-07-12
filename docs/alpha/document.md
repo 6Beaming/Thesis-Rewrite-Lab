@@ -307,8 +307,15 @@ Rewrite replacement flows differently:
 Manual status actions use the same editor imperative API.
 
 Selecting a block does not mutate its stored status. `DocumentEditor` displays
-the selected block as temporarily processing and positions **Skip** and
-**Complete** buttons beside it.
+the selected block as temporarily processing and inserts **Skip**, **Complete**,
+and **Next block** controls at the end of its text. The controls are a ProseMirror
+widget, so they wrap after the words instead of floating over them.
+
+**Next block** changes only the TipTap selection. The block being left immediately
+returns to its stored `originalStatus`; the newly selected block receives the one
+temporary processing highlight. While a different block is selected, the stored
+processing pointer keeps its data status but uses the unprocessed presentation,
+preventing two blocks from appearing to be actively processing.
 
 Clicking either button reaches:
 
