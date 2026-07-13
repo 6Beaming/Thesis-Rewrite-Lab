@@ -1,105 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import ConfirmModal from '../components/ConfirmModal.jsx';
+import DocumentCard from '../components/DocumentCard.jsx';
 import EmptyState from '../components/EmptyState.jsx';
-import { getDocument } from '../services/documentsApi.js';
-import { getVersion, listVersions, revertVersion } from '../services/versionsApi.js';
+import { useRealtime } from '../components/RealtimeProvider.jsx';
+import { getVersion, revertVersion } from '../services/versionsApi.js';
 
 const MAX_DIFF_TOKENS = 1200;
-
-function isDemoDocument(document) {
-  return Boolean(document?.id?.startsWith('demo-'));
-}
-
-function paragraphNode(text) {
-  return {
-    type: 'paragraph',
-    content: [{ type: 'text', text }],
-  };
-}
-
-function snapshotFromText(document, text) {
-  return {
-    document: {
-      id: document.id,
-      title: document.title,
-      academic_style: document.academic_style,
-      content_json: {
-        type: 'doc',
-        content: String(text)
-          .split(/\n+/)
-          .filter(Boolean)
-          .map(paragraphNode),
-      },
-    },
-    blocks: String(text)
-      .split(/\n+/)
-      .filter(Boolean)
-      .map((blockText, index) => ({
-        id: `${document.id}-demo-block-${index + 1}`,
-        text_content: blockText,
-      })),
-  };
-}
-
-function demoCurrentText(document) {
-  return [
-    document?.snippet || document?.title || 'Demo document',
-    document?.secondarySnippet || 'This local demo text lets version history work before PostgreSQL is connected.',
-    `Current ${document?.academic_style || 'APA'} draft includes revised evidence, clearer transitions, and a stronger concluding sentence.`,
-  ].join('\n');
-}
-
-function demoVersionText(document, variant) {
-  const title = document?.title || 'Demo document';
-  if (variant === 'outline') {
-    return [
-      `${title} started as a short outline with a broad topic sentence.`,
-      'The early draft listed sources but did not connect them to the main claim.',
-      'The conclusion was still a placeholder.',
-    ].join('\n');
-  }
-
-  return [
-    `${title} included a clearer topic sentence and one example from the reading.`,
-    'The middle paragraph still needed a transition and more precise academic wording.',
-    'The conclusion summarized the claim but did not explain its significance.',
-  ].join('\n');
-}
-
-function buildDemoVersions(document) {
-  const now = Date.now();
-  return [
-    {
-      id: `${document.id}-demo-version-2`,
-      document_id: document.id,
-      version_number: 2,
-      label: 'Local demo revision',
-      academic_style_snapshot: document.academic_style || 'APA',
-      text_preview: demoVersionText(document, 'revision').slice(0, 180),
-      snapshot_json: snapshotFromText(document, demoVersionText(document, 'revision')),
-      created_at: new Date(now - 45 * 60 * 1000).toISOString(),
-    },
-    {
-      id: `${document.id}-demo-version-1`,
-      document_id: document.id,
-      version_number: 1,
-      label: 'Local demo outline',
-      academic_style_snapshot: document.academic_style || 'APA',
-      text_preview: demoVersionText(document, 'outline').slice(0, 180),
-      snapshot_json: snapshotFromText(document, demoVersionText(document, 'outline')),
-      created_at: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
-    },
-  ];
-}
-
-function demoDocumentWithContent(document) {
-  const text = demoCurrentText(document);
-  return {
-    ...document,
-    content_json: snapshotFromText(document, text).document.content_json,
-    blocks: snapshotFromText(document, text).blocks,
-  };
-}
 
 function textFromTiptap(node) {
   if (!node) return '';
@@ -204,109 +110,101 @@ function diffText(previousText, nextText) {
   return segments;
 }
 
-export default function HomepageVersionControl({ document, onNotice, onDocumentReverted }) {
-  const [versions, setVersions] = useState([]);
+export default function HomepageVersionControl({
+  documents = [],
+  onNotice,
+  onDocumentReverted,
+}) {
+  const {
+    state: realtimeState,
+    applyDocument,
+    applyVersion,
+    refreshDocument,
+    refreshVersions,
+  } = useRealtime();
+  const [selectedDocumentId, setSelectedDocumentId] = useState(null);
   const [selectedVersion, setSelectedVersion] = useState(null);
   const [pendingRevert, setPendingRevert] = useState(null);
-  const [documentDetail, setDocumentDetail] = useState(document);
-  const activeDocument = documentDetail ?? document;
+  const [documentDetail, setDocumentDetail] = useState(null);
+  const selectedDocument = documents.find((document) => document.id === selectedDocumentId) ?? null;
+  const versions = realtimeState.versionsByDocument[selectedDocumentId] ?? [];
+  const activeDocument = documentDetail ?? selectedDocument;
   const diffSegments = useMemo(() => {
     if (!selectedVersion) return [];
     return diffText(snapshotText(selectedVersion), currentDocumentText(activeDocument));
   }, [activeDocument, selectedVersion]);
 
   useEffect(() => {
-    if (!document?.id) {
-      setVersions([]);
-      setDocumentDetail(document ?? null);
+    if (!documents.length) {
+      setSelectedDocumentId(null);
+      setDocumentDetail(null);
+      setSelectedVersion(null);
       return undefined;
     }
 
-    if (isDemoDocument(document)) {
-      setVersions(buildDemoVersions(document));
-      setDocumentDetail(demoDocumentWithContent(document));
+    if (selectedDocumentId && !documents.some((document) => document.id === selectedDocumentId)) {
+      setSelectedDocumentId(null);
+    }
+    return undefined;
+  }, [documents, selectedDocumentId]);
+
+  useEffect(() => {
+    if (!selectedDocument?.id) {
+      setDocumentDetail(null);
       setSelectedVersion(null);
       return undefined;
     }
 
     let alive = true;
+    setSelectedVersion(null);
     Promise.all([
-      listVersions(document.id),
-      getDocument(document.id),
+      refreshVersions(selectedDocument.id),
+      refreshDocument(selectedDocument.id),
     ])
-      .then(([versionsData, documentData]) => {
+      .then(([_versions, currentDocument]) => {
         if (!alive) return;
-        setVersions(versionsData.versions ?? []);
-        setDocumentDetail(documentData.document ?? document);
+        setDocumentDetail(currentDocument ?? selectedDocument);
       })
-      .catch(() => {
+      .catch((error) => {
         if (!alive) return;
-        setDocumentDetail(document);
-        onNotice?.('Version history needs a DB-backed document.');
+        setDocumentDetail(selectedDocument);
+        onNotice?.(error.message || 'Could not load version history.');
       });
 
     return () => {
       alive = false;
     };
-  }, [document?.id, onNotice]);
+  }, [onNotice, refreshDocument, refreshVersions, selectedDocument?.id]);
+
+  useEffect(() => {
+    const realtimeDocument = realtimeState.documentDetails[selectedDocumentId];
+    if (realtimeDocument) setDocumentDetail(realtimeDocument);
+  }, [realtimeState.documentDetails, selectedDocumentId]);
 
   async function handleView(version) {
-    if (isDemoDocument(document)) {
-      setSelectedVersion(version);
-      return;
-    }
-
+    if (!selectedDocument) return;
     try {
-      const data = await getVersion(document.id, version.id);
-      setSelectedVersion(data.version);
+      if (selectedVersion?.id === version.id) {
+        setSelectedVersion(null);
+        return;
+      }
+      const data = await getVersion(selectedDocument.id, version.id);
+      setSelectedVersion({ ...version, ...data.version });
     } catch (error) {
       onNotice?.(error.message || 'Could not load version detail.');
     }
   }
 
   async function handleRevert() {
-    if (!pendingRevert) return;
-
-    if (isDemoDocument(document)) {
-      const revertedText = snapshotText(pendingRevert);
-      const revertedSnapshot = snapshotFromText(document, revertedText);
-      const revertedDocument = {
-        ...document,
-        content_json: revertedSnapshot.document.content_json,
-        blocks: revertedSnapshot.blocks,
-        snippet: revertedText.split('\n')[0] || document.snippet,
-        secondarySnippet: revertedText.split('\n')[1] || document.secondarySnippet,
-        updated_at: new Date().toISOString(),
-        completed_rate: Math.min(1, Number(document.completed_rate ?? 0) + 0.04),
-      };
-      const nextVersion = {
-        id: `${document.id}-demo-version-${Date.now()}`,
-        document_id: document.id,
-        version_number: Math.max(...versions.map((version) => version.version_number), 0) + 1,
-        label: `Reverted to Version ${pendingRevert.version_number}`,
-        academic_style_snapshot: document.academic_style || 'APA',
-        text_preview: revertedText.slice(0, 180),
-        snapshot_json: snapshotFromText(revertedDocument, revertedText),
-        created_at: new Date().toISOString(),
-      };
-
-      setPendingRevert(null);
-      setSelectedVersion(null);
-      setDocumentDetail(revertedDocument);
-      setVersions((current) => [nextVersion, ...current]);
-      onDocumentReverted?.(revertedDocument);
-      onNotice?.('Demo document reverted and local version appended.');
-      return;
-    }
+    if (!pendingRevert || !selectedDocument) return;
 
     try {
-      const data = await revertVersion(document.id, pendingRevert.id);
+      const data = await revertVersion(selectedDocument.id, pendingRevert.id);
       setPendingRevert(null);
       setSelectedVersion(null);
-      setDocumentDetail(data.document ?? document);
-      if (data.version) {
-        setVersions((current) => [data.version, ...current]);
-      }
+      setDocumentDetail(data.document ?? selectedDocument);
+      applyDocument('document:reverted', data.document);
+      if (data.version) applyVersion(selectedDocument.id, data.version);
       onDocumentReverted?.(data.document);
       onNotice?.('Document reverted and new version appended.');
     } catch (error) {
@@ -314,8 +212,15 @@ export default function HomepageVersionControl({ document, onNotice, onDocumentR
     }
   }
 
-  if (!document) {
-    return <EmptyState title="Version History">Open or create a document before viewing versions.</EmptyState>;
+  if (!documents.length) {
+    return <EmptyState title="Version History">Create or upload a document to start tracking versions.</EmptyState>;
+  }
+
+  function handleBackToDocuments() {
+    setSelectedDocumentId(null);
+    setDocumentDetail(null);
+    setSelectedVersion(null);
+    setPendingRevert(null);
   }
 
   return (
@@ -323,56 +228,95 @@ export default function HomepageVersionControl({ document, onNotice, onDocumentR
       <header className="home-subpage-header">
         <div>
           <h1>Version History</h1>
-          <p>{activeDocument.title}</p>
+          <p>Select a document to inspect its saved versions.</p>
         </div>
       </header>
 
-      {!versions.length ? (
-        <EmptyState title="No saved versions yet">DB-backed uploads and edits will append versions here.</EmptyState>
-      ) : (
-        <div className="version-list">
-          {versions.map((version) => (
-            <article className="version-item" key={version.id}>
-              <div>
-                <strong>Version {version.version_number}</strong>
-                <p>{version.text_preview}</p>
-                <time>{new Date(version.created_at).toLocaleString()}</time>
-              </div>
-              <div className="version-actions">
-                <button type="button" onClick={() => handleView(version)}>View Difference</button>
-                <button type="button" className="danger" onClick={() => setPendingRevert(version)}>Revert</button>
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-
-      {selectedVersion ? (
-        <section className="version-diff">
-          <article>
-            <h2>Difference</h2>
-            <div className="version-diff-summary" aria-hidden="true">
-              <span className="diff-added">Added in current</span>
-              <span className="diff-removed">Removed from version</span>
-            </div>
-            <div className="version-diff-text">
-              {diffSegments.map((segment, index) => {
-                if (segment.type === 'added') {
-                  return <ins key={`${segment.type}-${index}`}>{segment.text}</ins>;
-                }
-                if (segment.type === 'removed') {
-                  return <del key={`${segment.type}-${index}`}>{segment.text}</del>;
-                }
-                return <span key={`${segment.type}-${index}`}>{segment.text}</span>;
-              })}
-            </div>
-          </article>
-          <article>
-            <h2>Version {selectedVersion.version_number}</h2>
-            <pre>{snapshotText(selectedVersion) || 'No text snapshot is available for this version.'}</pre>
-          </article>
+      {!selectedDocument ? (
+        <section className="version-document-picker" aria-label="Documents with version history">
+          <div className="documents-heading">
+            <h2>Your documents</h2>
+            <p>{documents.length} documents</p>
+          </div>
+          <div className="documents-grid">
+            {documents.map((document) => (
+              <DocumentCard
+                key={document.id}
+                document={document}
+                onOpen={() => setSelectedDocumentId(document.id)}
+                showMenu={false}
+              />
+            ))}
+          </div>
         </section>
-      ) : null}
+      ) : (
+        <section className="version-document-history" aria-live="polite">
+          <div className="version-document-heading">
+            <div>
+              <button type="button" className="version-back-button" onClick={handleBackToDocuments}>
+                Back to documents
+              </button>
+              <h2>{activeDocument?.title ?? selectedDocument.title}</h2>
+            </div>
+            <p>{versions.length} saved versions</p>
+          </div>
+
+          {!versions.length ? (
+            <EmptyState title="No saved versions yet">Saving this document will append versions here.</EmptyState>
+          ) : (
+            <div className="version-list">
+              {versions.map((version) => (
+                <div className="version-entry" key={version.id}>
+                  <article className={`version-item${selectedVersion?.id === version.id ? ' is-selected' : ''}`}>
+                    <div>
+                      <strong>Version {version.version_number}</strong>
+                      <p>{version.text_preview}</p>
+                      <time>{new Date(version.created_at).toLocaleString()}</time>
+                    </div>
+                    <div className="version-actions">
+                      <button
+                        type="button"
+                        onClick={() => handleView(version)}
+                        aria-expanded={selectedVersion?.id === version.id}
+                      >
+                        {selectedVersion?.id === version.id ? 'Hide Difference' : 'View Difference'}
+                      </button>
+                      <button type="button" className="danger" onClick={() => setPendingRevert(version)}>Revert</button>
+                    </div>
+                  </article>
+
+                  {selectedVersion?.id === version.id ? (
+                    <section className="version-diff" aria-label={`Current version compared with Version ${version.version_number}`}>
+                      <article>
+                        <h2>Current Version</h2>
+                        <div className="version-diff-summary" aria-hidden="true">
+                          <span className="diff-added">Added in current</span>
+                          <span className="diff-removed">Removed from version</span>
+                        </div>
+                        <div className="version-diff-text">
+                          {diffSegments.map((segment, index) => {
+                            if (segment.type === 'added') {
+                              return <ins key={`${segment.type}-${index}`}>{segment.text}</ins>;
+                            }
+                            if (segment.type === 'removed') {
+                              return <del key={`${segment.type}-${index}`}>{segment.text}</del>;
+                            }
+                            return <span key={`${segment.type}-${index}`}>{segment.text}</span>;
+                          })}
+                        </div>
+                      </article>
+                      <article>
+                        <h2>Version {version.version_number}</h2>
+                        <pre>{snapshotText(selectedVersion) || 'No text snapshot is available for this version.'}</pre>
+                      </article>
+                    </section>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {pendingRevert ? (
         <ConfirmModal

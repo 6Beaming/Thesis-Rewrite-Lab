@@ -46,6 +46,7 @@ function normalizeBlockInput(input) {
       text: input,
       attrs: {},
       content: input ? [{ type: 'text', text: input }] : [],
+      nodeType: 'paragraph',
     };
   }
 
@@ -58,6 +59,7 @@ function normalizeBlockInput(input) {
     text,
     attrs: input?.attrs ?? {},
     content,
+    nodeType: input?.sourceType === 'heading' ? 'heading' : 'paragraph',
   };
 }
 
@@ -83,7 +85,7 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
       charLength: normalized.text.length,
       attrs,
       tiptapNode: {
-        type: 'paragraph',
+        type: normalized.nodeType,
         attrs,
         content: normalized.content,
       },
@@ -161,29 +163,40 @@ export async function recalculateDocumentProgress(client, documentId) {
     [documentId, totalChars, completedChars, completedRate]
   );
 
+  const owner = await client.query('select user_id from documents where id = $1', [documentId]);
+  if (owner.rows[0]) {
+    await recalculateUserProgress(client, owner.rows[0].user_id);
+  }
+
+  return { totalChars, completedChars, completedRate };
+}
+
+export async function recalculateUserProgress(client, userId) {
+  const result = await client.query(
+    `
+      select
+        coalesce(sum(total_chars), 0)::int as total_chars,
+        coalesce(sum(completed_chars), 0)::int as completed_chars
+      from documents
+      where user_id = $1
+        and trashed = false
+    `,
+    [userId]
+  );
+  const totalChars = Number(result.rows[0]?.total_chars ?? 0);
+  const completedChars = Number(result.rows[0]?.completed_chars ?? 0);
+  const completedRate = totalChars > 0 ? completedChars / totalChars : 0;
+
   await client.query(
     `
       update user_stats
-      set total_chars = stats.total_chars,
-          completed_chars = stats.completed_chars,
-          completed_rate = case
-            when stats.total_chars > 0 then stats.completed_chars::numeric / stats.total_chars
-            else 0
-          end,
+      set total_chars = $2,
+          completed_chars = $3,
+          completed_rate = $4,
           updated_at = now()
-      from (
-        select
-          user_id,
-          coalesce(sum(total_chars), 0)::int as total_chars,
-          coalesce(sum(completed_chars), 0)::int as completed_chars
-        from documents
-        where trashed = false
-        group by user_id
-      ) stats
-      where user_stats.user_id = stats.user_id
-        and stats.user_id = (select user_id from documents where id = $1)
+      where user_id = $1
     `,
-    [documentId]
+    [userId, totalChars, completedChars, completedRate]
   );
 
   return { totalChars, completedChars, completedRate };
@@ -249,6 +262,20 @@ export async function chooseNextProcessingBlock(client, documentId, fromBlockId 
 }
 
 export async function updateBlockStatus(client, { documentId, blockId, status }) {
+  const target = await client.query(
+    `
+      select id
+      from document_blocks
+      where document_id = $1
+        and id = $2
+      for update
+    `,
+    [documentId, blockId]
+  );
+  if (!target.rows[0]) {
+    return { found: false, next: null };
+  }
+
   if (status === 'processing') {
     await client.query(
       `
@@ -291,7 +318,7 @@ export async function updateBlockStatus(client, { documentId, blockId, status })
   }
 
   await recalculateDocumentProgress(client, documentId);
-  return next;
+  return { found: true, next };
 }
 
 export async function replaceBlocksFromSnapshot(client, documentId, blocks) {

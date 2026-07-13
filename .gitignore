@@ -13,3 +13,14 @@ docs/session transcripts/frontend-with-codex.jsonl
 docs/session transcripts/frontend-with-codex-part1.jsonl
 docs/session transcripts/frontend-with-codex-part2.jsonl
 docs/session transcripts/frontend-with-codex-part2-part2.jsonl
+
+# Local-only verification sources, artifacts, and test database settings.
+/test/
+**/*.test.js
+**/*.test.cjs
+.env.test
+*.test.db
+*.test.sqlite
+*.test.sqlite3
+coverage/
+test-results/

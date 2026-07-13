@@ -380,7 +380,7 @@
 .workspace-paper-header {
   min-height: 74px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 18px;
   padding: 12px 22px;
@@ -403,11 +403,39 @@
   cursor: pointer;
 }
 
-.workspace-back-button,
 .confirm-actions .primary {
   background: linear-gradient(135deg, #009579, #007a64) !important;
   color: white !important;
   box-shadow: 0 10px 20px rgba(0, 122, 100, 0.18);
+}
+
+.workspace-back-button {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  min-width: 42px;
+  min-height: 42px !important;
+  padding: 0 !important;
+  border: 1px solid rgba(22, 45, 36, 0.16) !important;
+  background: white !important;
+  color: #284237 !important;
+  box-shadow: 0 8px 18px rgba(18, 44, 29, 0.1);
+}
+
+.workspace-back-button svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.workspace-back-button:hover:not(:disabled),
+.workspace-back-button:focus-visible {
+  border-color: #b42318 !important;
+  background: #c9382c !important;
+  color: white !important;
 }
 
 .workspace-title-input {
@@ -438,8 +466,7 @@
   font-size: clamp(1.1rem, 2vw, 1.5rem);
 }
 
-.workspace-paper-header span,
-.workspace-paper-header small {
+.workspace-paper-header span {
   color: #607166;
 }
 
@@ -903,6 +930,7 @@
   border-color: rgba(255, 119, 102, 0.72);
   background: rgba(255, 119, 102, 0.16);
   cursor: default;
+  animation: rewrite-card-error 460ms ease both;
 }
 
 .rewrite-card.is-locked {
@@ -975,6 +1003,21 @@
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes rewrite-card-error {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20%,
+  60% {
+    transform: translateX(-7px);
+  }
+  40%,
+  80% {
+    transform: translateX(7px);
   }
 }
 
@@ -1055,18 +1098,14 @@
   }
 
   .workspace-paper-header {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 10px;
     padding: 10px 12px;
   }
 
   .workspace-paper-header-main {
-    grid-column: 2;
+    grid-column: 1;
     min-width: 0;
-  }
-
-  .workspace-paper-header small {
-    display: none;
   }
 
   .workspace-title-input {
@@ -1076,15 +1115,15 @@
   }
 
   .workspace-back-button {
-    grid-column: 1;
-    padding: 0 14px;
+    grid-column: 3;
+    grid-row: 1;
   }
 
   .workspace-mobile-options-button {
     display: grid !important;
     place-content: center;
     gap: 5px;
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 1;
     width: 48px;
     height: 48px;
@@ -1344,6 +1383,7 @@
 .home-user-badge,
 .home-pro,
 .home-new-doc,
+.version-back-button,
 .home-upload,
 .home-search,
 .home-sidebar-item,
@@ -1528,7 +1568,14 @@
 }
 
 .home-sidebar-item.is-active {
-  background: var(--home-green-soft);
+  background: #005a49;
+  color: white;
+}
+
+.home-sidebar-item:hover,
+.home-sidebar-item:focus-visible {
+  background: #005a49;
+  color: white;
 }
 
 .home-sidebar-toggle {
@@ -1799,6 +1846,11 @@
   transform: translate(-50%, 0);
 }
 
+.document-card.is-selected {
+  border-color: rgba(0, 122, 100, 0.72);
+  box-shadow: 0 0 0 3px rgba(0, 122, 100, 0.15), 0 18px 46px rgba(16, 44, 28, 0.1);
+}
+
 .document-menu {
   position: absolute;
   top: 24px;
@@ -1866,14 +1918,23 @@
 
 .document-content h3 {
   margin-top: 18px;
-  font-size: 1.08rem;
+  font-size: 1.32rem;
   line-height: 1.35;
+  font-weight: 800;
+  letter-spacing: -0.015em;
 }
 
 .document-content p {
   margin: 13px 0 0;
   color: var(--home-text);
   line-height: 1.38;
+}
+
+.document-content .document-preview {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .document-content time {
@@ -1985,7 +2046,79 @@
   padding: 12px 16px;
 }
 
+.home-api-notice {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(120, 70, 20, 0.2);
+  border-radius: 0.75rem;
+  background: #fff4dc;
+  color: #653d16;
+}
+
 .version-list {
+  display: grid;
+  gap: 14px;
+}
+
+.version-document-picker {
+  margin-bottom: 30px;
+}
+
+.version-document-picker .documents-heading {
+  margin-bottom: 16px;
+}
+
+.version-document-picker .documents-heading p,
+.version-document-heading p {
+  margin: 0;
+  color: var(--home-muted);
+}
+
+.version-document-history {
+  border-top: 1px solid rgba(11, 28, 46, 0.1);
+  padding-top: 28px;
+}
+
+.version-document-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 16px;
+}
+
+.version-document-heading span {
+  color: #007a64;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.version-document-heading h2 {
+  margin: 5px 0 0;
+  font-size: clamp(1.25rem, 2vw, 1.65rem);
+}
+
+.version-back-button {
+  min-height: 48px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: linear-gradient(135deg, #009579, var(--home-green));
+  color: white;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  margin: 0 0 12px;
+  padding: 0 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  box-shadow: 0 12px 24px rgba(0, 122, 100, 0.22);
+}
+
+.version-entry {
   display: grid;
   gap: 14px;
 }
@@ -1999,6 +2132,11 @@
   border-radius: 16px;
   background: var(--home-card);
   padding: 20px;
+}
+
+.version-item.is-selected {
+  border-color: rgba(0, 122, 100, 0.56);
+  box-shadow: 0 10px 26px rgba(0, 122, 100, 0.09);
 }
 
 .version-item p {
@@ -2021,7 +2159,7 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 18px;
-  margin-top: 22px;
+  margin: 0;
 }
 
 .version-diff article {
@@ -2056,7 +2194,8 @@
 }
 
 .version-diff-text {
-  max-height: 480px;
+  height: min(64vh, 680px);
+  min-height: 360px;
   overflow: auto;
   padding: 16px;
   color: #11231b;
@@ -2086,7 +2225,8 @@
 }
 
 .version-diff pre {
-  max-height: 480px;
+  height: min(64vh, 680px);
+  min-height: 360px;
   overflow: auto;
   margin: 0;
   padding: 16px;
@@ -2407,6 +2547,7 @@
 .home-user-badge:hover,
 .home-pro:hover,
 .home-new-doc:hover:not(:disabled),
+.version-back-button:hover:not(:disabled),
 .home-upload:hover:not(:disabled),
 .home-sidebar-item:hover,
 .sort-dropdown-trigger:hover,

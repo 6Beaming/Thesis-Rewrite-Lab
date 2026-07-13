@@ -4,7 +4,7 @@ import { replaceBlocksFromSnapshot, recalculateDocumentProgress } from './blocks
 export async function appendDocumentVersion(client, documentId, label) {
   const documentResult = await client.query(
     `
-      select id, title, academic_style, style_settings, content_json,
+      select id, title, academic_style, style_settings, content_json, revision,
              completed_chars, total_chars, completed_rate, current_processing_block_id
       from documents
       where id = $1
@@ -104,6 +104,8 @@ export async function revertDocumentToVersion(documentId, versionId, userId) {
         where dv.document_id = $1
           and dv.id = $2
           and d.user_id = $3
+          and d.trashed = false
+        for update of d
       `,
       [documentId, versionId, userId]
     );
@@ -123,7 +125,8 @@ export async function revertDocumentToVersion(documentId, versionId, userId) {
             academic_style = $3,
             style_settings = $4::jsonb,
             content_json = $5::jsonb,
-            current_processing_block_id = $6
+            current_processing_block_id = $6,
+            revision = revision + 1
         where id = $1
       `,
       [
@@ -136,6 +139,39 @@ export async function revertDocumentToVersion(documentId, versionId, userId) {
       ]
     );
     await recalculateDocumentProgress(client, documentId);
-    return appendDocumentVersion(client, documentId, `Reverted to Version ${version.version_number}`);
+    const appendedVersion = await appendDocumentVersion(
+      client,
+      documentId,
+      `Reverted to Version ${version.version_number}`
+    );
+    const documentResult = await client.query(
+      `
+        select id, title, academic_style, style_settings, content_json,
+               completed_chars, total_chars, completed_rate,
+               current_processing_block_id, revision, trashed, trashed_at,
+               created_at, updated_at
+        from documents
+        where id = $1 and user_id = $2
+      `,
+      [documentId, userId]
+    );
+    const blocksResult = await client.query(
+      `
+        select id, block_index, text_content, status, char_length, attrs, tiptap_node,
+               created_at, updated_at
+        from document_blocks
+        where document_id = $1
+        order by block_index
+      `,
+      [documentId]
+    );
+
+    return {
+      version: appendedVersion,
+      document: {
+        ...documentResult.rows[0],
+        blocks: blocksResult.rows,
+      },
+    };
   });
 }

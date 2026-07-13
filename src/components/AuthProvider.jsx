@@ -51,6 +51,16 @@ export function AuthProvider({ children }) {
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    function handleExpiredSession() {
+      setSession(null);
+      setError('Your session expired. Sign in with Google again.');
+    }
+
+    window.addEventListener('app:auth-expired', handleExpiredSession);
+    return () => window.removeEventListener('app:auth-expired', handleExpiredSession);
+  }, []);
+
   async function runAuthAction(action) {
     setError('');
     setIsSubmitting(true);

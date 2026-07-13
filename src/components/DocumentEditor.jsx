@@ -140,34 +140,7 @@ function fallbackContent(document) {
   }
   return {
     type: 'doc',
-    content: [
-      {
-        type: 'paragraph',
-        attrs: {
-          blockId: 'demo-processing',
-          status: 'processing',
-          lineHeight: '2.0',
-          textIndent: '0.5in',
-          textAlign: 'left',
-          fontFamily: 'Times New Roman',
-          fontSize: '12pt',
-        },
-        content: [{ type: 'text', text: 'Assignment 2: article 2. This editable paper area is ready for local testing.' }],
-      },
-      {
-        type: 'paragraph',
-        attrs: {
-          blockId: 'demo-unprocessed',
-          status: 'unprocessed',
-          lineHeight: '2.0',
-          textIndent: '0.5in',
-          textAlign: 'left',
-          fontFamily: 'Times New Roman',
-          fontSize: '12pt',
-        },
-        content: [{ type: 'text', text: 'Use the toolbar to change inline styling. The color blocks show processing status.' }],
-      },
-    ],
+    content: [],
   };
 }
 
@@ -423,7 +396,6 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   document,
   styleSettings,
   onChange,
-  onBlockStatusChange,
   onActiveBlockChange,
   onSave,
   saveDisabled = false,
@@ -435,7 +407,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   const pageRef = useRef(null);
   const paragraphTextSnapshotRef = useRef(new Map());
   const suppressEditedStatusResetRef = useRef(false);
-  const [activeBlockStatus, setActiveBlockStatus] = useState('unprocessed');
+  const suppressProgrammaticUpdateRef = useRef(false);
   const [pageCount, setPageCount] = useState(1);
   const processingBlockId = useMemo(() => {
     if (document?.current_processing_block_id) return document.current_processing_block_id;
@@ -475,6 +447,11 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       },
     },
     onUpdate({ editor: activeEditor, transaction }) {
+      if (suppressProgrammaticUpdateRef.current) {
+        suppressProgrammaticUpdateRef.current = false;
+        paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
+        return;
+      }
       const skipEditedStatusReset = suppressEditedStatusResetRef.current || isHistoryTransaction(transaction);
       const normalizedJson = reconcileEditorBlocks(
         activeEditor,
@@ -490,13 +467,11 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         activeBlock: info,
       });
       onActiveBlockChange?.(info);
-      setActiveBlockStatus(info.status);
       paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
     },
     onSelectionUpdate({ editor: activeEditor }) {
       const info = selectedParagraphInfo(activeEditor);
       onActiveBlockChange?.(info);
-      setActiveBlockStatus(info.status);
     },
   }, [document?.id]);
 
@@ -504,7 +479,6 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
     const info = selectedParagraphInfo(editor);
     onActiveBlockChange?.(info);
-    setActiveBlockStatus(info.status);
   }, [editor, document?.id, onActiveBlockChange]);
 
   useEffect(() => {
@@ -532,6 +506,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
 
       if (changed) {
         tr.setMeta('addToHistory', false);
+        suppressProgrammaticUpdateRef.current = true;
         dispatch?.(tr);
       }
       return true;
@@ -606,7 +581,6 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   function applyCurrentBlockStatus({ status, replacementText = null, targetBlockId = null } = {}) {
     if (!editor || editor.isDestroyed) return;
 
-    let updatedBlockId = selectedParagraphInfo(editor).blockId;
     let nextLocalProcessingId = null;
     let applied = false;
 
@@ -626,8 +600,6 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         : paragraphs.find((paragraph) => !paragraph.isEmpty && paragraph.status === 'processing')
           ?? paragraphs.find((paragraph) => !paragraph.isEmpty && paragraph.status === 'unprocessed'));
       if (!target) return false;
-
-      updatedBlockId = target.blockId;
 
       if (status === 'processing') {
         paragraphs.forEach((paragraph) => {
@@ -694,34 +666,19 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     }
 
     const snapshot = createEditorSnapshot(editor);
-    setActiveBlockStatus(nextLocalProcessingId ? 'processing' : status);
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
-    if (applied && updatedBlockId) {
-      onBlockStatusChange?.({
-        blockId: updatedBlockId,
-        status,
-        nextProcessingBlockId: nextLocalProcessingId,
-        ...snapshot,
-      });
-    }
     return applied ? snapshot : null;
   }
 
   useImperativeHandle(ref, () => ({
     applyCurrentBlockStatus,
     getSnapshot: () => createEditorSnapshot(editor),
-  }), [editor, onBlockStatusChange]);
-
-  function setSelectedBlockStatus(status) {
-    applyCurrentBlockStatus({ status });
-  }
+  }), [editor]);
 
   return (
     <div className="document-editor">
       <EditorToolbar
         editor={editor}
-        activeBlockStatus={activeBlockStatus}
-        onBlockStatusChange={setSelectedBlockStatus}
         onSave={onSave}
         saveDisabled={saveDisabled}
         saving={saving}

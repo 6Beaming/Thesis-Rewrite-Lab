@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router';
+import { useLocation, useNavigate, useParams } from 'react-router';
 import blackboardUrl from '../assets/blackboard.png';
 import AcademicStylePanel, {
   DEFAULT_CUSTOM_STYLE,
   TEMPLATE_STYLE_SETTINGS,
 } from '../components/AcademicStylePanel.jsx';
 import DocumentEditor from '../components/DocumentEditor.jsx';
+import DocumentRewriter, {
+  createRewriteCards,
+  regenerateResponse,
+} from '../components/DocumentRewriter.jsx';
+import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
 import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
 import OwlContainer from '../components/OwlContainer.jsx';
@@ -15,16 +20,12 @@ import {
   getDocument,
   listDocuments,
   saveDocument,
-  updateDocumentBlockStatus,
   uploadDocument,
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
 
 const PLACEHOLDER_DELAY_MS = 5000;
-const REGEN_COOLDOWN_MS = 10000;
-const DEMO_STORE_KEY = 'project-thesis-rewriter:demo-store:v1';
-const LAST_WORKSPACE_DOCUMENT_KEY = 'project-thesis-rewriter:last-workspace-document:v1';
-const DEMO_BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
+const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 const ANALYSIS_SIGNAL_LABELS = {
   passive: 'Passive constructions',
   nominalization: 'Nominalization clusters',
@@ -52,98 +53,38 @@ function UploadDocIcon() {
   );
 }
 
-function workspaceHistoryFallback(selectedDocument) {
-  const now = Date.now();
-  const storedDocuments = readDemoStore()?.documents ?? [];
-  return [
-    ...storedDocuments,
-    {
-      id: 'demo-history-literature-review',
-      title: 'Literature review draft',
-      academic_style: 'MLA',
-      updated_at: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: 'demo-history-methods-notes',
-      title: 'Methods notes',
-      academic_style: 'Chicago',
-      updated_at: new Date(now - 26 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: 'demo-history-article-summary',
-      title: 'Article summary practice',
-      academic_style: 'APA',
-      updated_at: new Date(now - 4 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    selectedDocument,
-  ].filter((document, index, documents) => (
-    document?.id && documents.findIndex((item) => item?.id === document.id) === index
-  ));
-}
-
 function sleep(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
 }
 
-function readDemoStore() {
-  if (typeof window === 'undefined') return null;
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(DEMO_STORE_KEY) || 'null');
-    if (!parsed || !Array.isArray(parsed.documents)) return null;
-    return {
-      documents: parsed.documents,
-      trashDocuments: Array.isArray(parsed.trashDocuments) ? parsed.trashDocuments : [],
-      hiddenDocumentIds: Array.isArray(parsed.hiddenDocumentIds) ? parsed.hiddenDocumentIds : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeDemoStore(store) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(DEMO_STORE_KEY, JSON.stringify(store));
-}
-
-function readLastWorkspaceDocument() {
-  if (typeof window === 'undefined') return null;
-  try {
-    return JSON.parse(window.sessionStorage.getItem(LAST_WORKSPACE_DOCUMENT_KEY) || 'null');
-  } catch {
-    return null;
-  }
-}
-
-function rememberWorkspaceDocument(document) {
-  if (typeof window === 'undefined' || !document?.id) return;
-  window.sessionStorage.setItem(LAST_WORKSPACE_DOCUMENT_KEY, JSON.stringify({
-    id: document.id,
-    title: document.title,
-    academic_style: document.academic_style,
-    style_settings: document.style_settings,
-  }));
-}
-
-function textFromDemoNode(node) {
+function textFromNode(node) {
   if (!node) return '';
   if (node.type === 'text') return node.text ?? '';
   if (!Array.isArray(node.content)) return '';
-  return node.content.map(textFromDemoNode).join('');
+  return node.content.map(textFromNode).join('');
 }
 
-function isEditableDemoBlock(node) {
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m6 6 12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+function isEditableBlock(node) {
   return node?.type === 'paragraph' || node?.type === 'heading';
 }
 
 function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
   const text = block.text ?? block.text_content ?? '';
-  const status = DEMO_BLOCK_STATUSES.has(block.status ?? block.attrs?.status)
+  const status = BLOCK_STATUSES.has(block.status ?? block.attrs?.status)
     ? (block.status ?? block.attrs?.status)
     : 'unprocessed';
   const id = block.id ?? block.blockId ?? block.attrs?.blockId ?? `${documentId}-block-${index + 1}`;
-  const attrs = demoAttrs(
+  const attrs = blockAttrs(
     id,
     status,
     text.length,
@@ -179,11 +120,11 @@ function extractRuntimeBlocksFromContent(document, contentJson, styleSettings = 
 
   function walk(node) {
     if (!node || typeof node !== 'object') return;
-    if (isEditableDemoBlock(node)) {
-      const text = textFromDemoNode(node);
+    if (isEditableBlock(node)) {
+      const text = textFromNode(node);
       const id = node.attrs?.blockId ?? `${document.id}-block-${entries.length + 1}`;
-      const status = DEMO_BLOCK_STATUSES.has(node.attrs?.status) ? node.attrs.status : 'unprocessed';
-      const attrs = demoAttrs(id, status, text.length, node.attrs ?? {}, styleSettings);
+      const status = BLOCK_STATUSES.has(node.attrs?.status) ? node.attrs.status : 'unprocessed';
+      const attrs = blockAttrs(id, status, text.length, node.attrs ?? {}, styleSettings);
       entries.push({
         id,
         blockId: id,
@@ -243,7 +184,7 @@ function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = 
       }
     }
 
-    const attrs = demoAttrs(block.id, status, block.text.length, block.attrs, styleSettings);
+    const attrs = blockAttrs(block.id, status, block.text.length, block.attrs, styleSettings);
     return {
       ...block,
       block_index: index,
@@ -261,12 +202,11 @@ function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = 
     contentJson,
     blocks: nextBlocks,
     currentProcessingBlockId: processingBlockId ?? null,
-    revision: Date.now(),
   };
 }
 
 function draftFromDocument(document, styleSettings = {}) {
-  const contentJson = document?.content_json ?? fallbackWorkspaceContent(document, styleSettings);
+  const contentJson = document?.content_json ?? { type: 'doc', content: [] };
   const sourceBlocks = Array.isArray(document?.blocks) && document.blocks.length
     ? document.blocks
     : extractRuntimeBlocksFromContent(document ?? { id: 'workspace-document' }, contentJson, styleSettings);
@@ -280,7 +220,7 @@ function draftFromDocument(document, styleSettings = {}) {
   );
 }
 
-function demoAttrs(blockId, status, length, existingAttrs = {}, styleSettings = {}) {
+function blockAttrs(blockId, status, length, existingAttrs = {}, styleSettings = {}) {
   return {
     lineHeight: styleSettings.spacing || styleSettings.lineHeight || existingAttrs.lineHeight || '2.0',
     textIndent: styleSettings.indentation || styleSettings.textIndent || existingAttrs.textIndent || '0.5in',
@@ -320,7 +260,7 @@ function documentFromWorkspaceDraft(document, draft, styleName, styleSettings) {
   };
 }
 
-function demoDocumentFromContent(document, contentJson, styleName, styleSettings, blockSnapshots = null, preferredProcessingBlockId = null) {
+function documentFromContent(document, contentJson, styleName, styleSettings, blockSnapshots = null, preferredProcessingBlockId = null) {
   const draft = normalizeWorkspaceDraft(
     document,
     contentJson,
@@ -348,122 +288,22 @@ function normalizeWorkspaceContent(document, contentJson, styleName, styleSettin
   };
 }
 
-function upsertDemoDocumentInStore(document) {
-  const store = readDemoStore() ?? {
-    documents: [],
-    trashDocuments: [],
-    hiddenDocumentIds: [],
-  };
-  const nextDocuments = [
-    document,
-    ...store.documents.filter((item) => item.id !== document.id),
-  ];
-  writeDemoStore({
-    ...store,
-    documents: nextDocuments,
-  });
-}
-
-function fallbackWorkspaceContent(document, styleSettings = {}) {
-  const documentId = document?.id || 'workspace-document';
-  const title = document?.title || 'Untitled document';
-  const paragraphs = [
-    `${title}. This local workspace draft is ready for editing.`,
-    'Use the rewriting cards to test applying a replacement sentence, then press Save to keep the changes.',
-  ];
-
-  return {
-    type: 'doc',
-    content: paragraphs.map((text, index) => ({
-      type: 'paragraph',
-      attrs: demoAttrs(
-        `${documentId}-block-${index + 1}`,
-        index === 0 ? 'processing' : 'unprocessed',
-        text.length,
-        {},
-        styleSettings,
-      ),
-      content: [{ type: 'text', text }],
-    })),
-  };
-}
-
-function contentFromPlainText(document, text, styleSettings = {}) {
-  const documentId = document?.id || 'workspace-document';
-  const sentences = String(text || '')
-    .split(/(?<=\.)\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const paragraphs = sentences.length ? sentences : ['Start writing your document.'];
-
-  return {
-    type: 'doc',
-    content: paragraphs.map((paragraph, index) => ({
-      type: 'paragraph',
-      attrs: demoAttrs(
-        `${documentId}-block-${index + 1}`,
-        index === 0 ? 'processing' : 'unprocessed',
-        paragraph.length,
-        {},
-        styleSettings,
-      ),
-      content: [{ type: 'text', text: paragraph }],
-    })),
-  };
-}
-
-function createWorkspaceUploadDocument({ title, text, filename }, styleName = 'APA', styleSettings = TEMPLATE_STYLE_SETTINGS.APA) {
-  const id = `demo-upload-${Date.now()}`;
-  const baseDocument = {
-    id,
-    title: title || filename?.replace(/\.[^.]+$/, '') || 'Uploaded document',
-    academic_style: styleName,
-    style_settings: styleSettings,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  return demoDocumentFromContent(
-    baseDocument,
-    contentFromPlainText(baseDocument, text, styleSettings),
-    styleName,
-    styleSettings,
-  );
-}
-
 function hydrateWorkspaceDocument(document) {
   if (!document) return null;
-
-  const storeDocument = readDemoStore()?.documents?.find((item) => item.id === document.id);
-  const source = storeDocument ?? document;
-  if (source.content_json || source.blocks?.length) {
-    return source;
-  }
-
-  const nextStyleName = source.academic_style || 'APA';
-  const nextStyleSettings = {
-    ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
-    ...(source.style_settings ?? {}),
-  };
-
-  return demoDocumentFromContent(
-    {
-      ...source,
-      title: source.title || 'Untitled document',
-      academic_style: nextStyleName,
-      style_settings: nextStyleSettings,
-    },
-    fallbackWorkspaceContent(source, nextStyleSettings),
-    nextStyleName,
-    nextStyleSettings,
-  );
+  return document;
 }
 
 export default function WorkspacePage() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { documentId } = useParams();
+  const {
+    state: realtimeState,
+    applyDocument,
+    subscribeDocument,
+  } = useRealtime();
   const [view, setView] = useState(() => (
-    location.pathname === '/worksapce' ? 'workspace' : 'home'
+    documentId ? 'workspace' : 'home'
   ));
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [workspaceNotice, setWorkspaceNotice] = useState('');
@@ -481,15 +321,10 @@ export default function WorkspacePage() {
   const [styleSettings, setStyleSettings] = useState(TEMPLATE_STYLE_SETTINGS.APA);
   const [editorContent, setEditorContent] = useState(null);
   const [activeEditorBlock, setActiveEditorBlock] = useState({ blockId: null, status: 'unprocessed' });
-  const [rewriteCards, setRewriteCards] = useState([
-    { id: 1, title: 'Rewriting Card 1', response: '', error: '', skipped: false, applyWithExplanation: false },
-    { id: 2, title: 'Rewriting Card 2', response: '', error: '', skipped: false, applyWithExplanation: false },
-    { id: 3, title: 'Rewriting Card 3', response: '', error: '', skipped: false, applyWithExplanation: false },
-  ]);
+  const [rewriteCards, setRewriteCards] = useState(createRewriteCards);
   const [rewriteCardsLocked, setRewriteCardsLocked] = useState(false);
   const [rewriteAllCompleted, setRewriteAllCompleted] = useState(false);
   const [rewriteBusy, setRewriteBusy] = useState(false);
-  const [rewriteCooldownUntil, setRewriteCooldownUntil] = useState(0);
   const [practiceInput, setPracticeInput] = useState('');
   const [practiceResponse, setPracticeResponse] = useState('');
   const [practiceBusy, setPracticeBusy] = useState(false);
@@ -511,11 +346,12 @@ export default function WorkspacePage() {
   const mobileWorkspaceOwlAnimatorRef = useRef(null);
   const documentEditorRef = useRef(null);
   const mobileDragEndedAtRef = useRef(0);
-  const rewriteRefreshTimerRef = useRef(null);
   const wandHoverTimerRef = useRef(null);
   const workspaceUploadInputRef = useRef(null);
   const mobileOptionsPanelRef = useRef(null);
   const mobileOptionsButtonRef = useRef(null);
+  const pendingDocumentMutationsRef = useRef(new Set());
+  const localDocumentRevisionsRef = useRef(new Map());
   const blackboardStyle = getBlackboardCssVars();
   const {
     windowRef: mobileOwlRef,
@@ -532,45 +368,69 @@ export default function WorkspacePage() {
   const styleSettingsSignature = useMemo(() => JSON.stringify(styleSettings ?? {}), [styleSettings]);
 
   useEffect(() => () => {
-    if (rewriteRefreshTimerRef.current) {
-      clearTimeout(rewriteRefreshTimerRef.current);
-    }
     if (wandHoverTimerRef.current) {
       clearTimeout(wandHoverTimerRef.current);
     }
   }, []);
 
   useEffect(() => {
-    if (location.pathname !== '/worksapce') {
+    if (!documentId) {
       setView('home');
+      setSelectedDocument(null);
       return undefined;
     }
 
     setView('workspace');
-    if (selectedDocument) return undefined;
-
-    const rememberedDocument = readLastWorkspaceDocument();
-    if (rememberedDocument) {
-      openWorkspace(rememberedDocument, { updateRoute: false });
-      return undefined;
-    }
-
     let alive = true;
-    listDocuments({ sort: 'most_recent' })
-      .then((data) => {
+    setWorkspaceNotice('Loading document...');
+    getDocument(documentId)
+      .then(({ document }) => {
         if (!alive) return;
-        const document = data.documents?.[0] ?? workspaceHistoryFallback(null)[0];
+        applyDocument('document:updated', document, { force: true });
         openWorkspace(document, { updateRoute: false });
       })
-      .catch(() => {
+      .catch((error) => {
         if (!alive) return;
-        openWorkspace(workspaceHistoryFallback(null)[0], { updateRoute: false });
+        setSelectedDocument(null);
+        setWorkspaceNotice(error.message || 'Could not load the document.');
       });
 
     return () => {
       alive = false;
     };
-  }, [location.pathname]);
+  }, [applyDocument, documentId]);
+
+  useEffect(() => {
+    if (view !== 'workspace' || !documentId) return undefined;
+    return subscribeDocument(documentId);
+  }, [documentId, subscribeDocument, view]);
+
+  useEffect(() => {
+    if (!documentId || selectedDocument?.id !== documentId) return;
+    if (
+      realtimeState.trashDocuments.some((document) => document.id === documentId)
+      || realtimeState.deletedDocumentIds.some((document) => document.id === documentId)
+    ) {
+      setWorkspaceDirty(false);
+      setWorkspaceNotice('This document was removed from the workspace in another session.');
+      setView('home');
+      navigate('/');
+      return;
+    }
+
+    const remoteDocument = realtimeState.documentDetails[documentId];
+    if (
+      remoteDocument
+      && Number(remoteDocument.revision) > Number(selectedDocument.revision ?? 0)
+      && Number(remoteDocument.revision) > (localDocumentRevisionsRef.current.get(documentId) ?? 0)
+      && !pendingDocumentMutationsRef.current.has(documentId)
+    ) {
+      // A keyed editor remount loads this canonical document as initial state, so
+      // Tiptap does not emit an onUpdate/save cycle for a remote replacement.
+      openWorkspace(remoteDocument, { updateRoute: false });
+      setWorkspaceNotice('Updated from another session.');
+    }
+  }, [documentId, navigate, realtimeState.deletedDocumentIds, realtimeState.documentDetails, realtimeState.trashDocuments, selectedDocument?.id, selectedDocument?.revision, view]);
 
   useEffect(() => {
     if (!mobileOptionsOpen) return undefined;
@@ -592,37 +452,6 @@ export default function WorkspacePage() {
   }, [mobileOptionsOpen]);
 
   useEffect(() => {
-    if (view !== 'workspace' || !selectedDocument?.id || selectedDocument.id.startsWith('demo-')) {
-      return undefined;
-    }
-
-    let alive = true;
-    getDocument(selectedDocument.id)
-      .then(({ document }) => {
-        if (!alive) return;
-        const nextStyleName = document.academic_style || 'APA';
-        const nextStyleSettings = {
-          ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
-          ...(document.style_settings ?? {}),
-        };
-        const nextDraft = draftFromDocument(document, nextStyleSettings);
-        setWorkspaceDraft(nextDraft);
-        setSelectedDocument(documentFromWorkspaceDraft(document, nextDraft, nextStyleName, nextStyleSettings));
-        setStyleName(nextStyleName);
-        setStyleSettings(nextStyleSettings);
-        setEditorContent(nextDraft.contentJson);
-        setEditorReloadKey((value) => value + 1);
-      })
-      .catch(() => {
-        if (alive) setWorkspaceNotice('');
-      });
-
-    return () => {
-      alive = false;
-    };
-  }, [view, selectedDocument?.id]);
-
-  useEffect(() => {
     if (view !== 'workspace') {
       return undefined;
     }
@@ -635,9 +464,10 @@ export default function WorkspacePage() {
           document.id !== selectedDocument?.id
         )));
       })
-      .catch(() => {
+      .catch((error) => {
         if (!alive) return;
-        setWorkspaceHistoryDocuments(workspaceHistoryFallback(selectedDocument));
+        setWorkspaceHistoryDocuments([]);
+        setWorkspaceNotice(error.message || 'Could not load recent documents.');
       });
 
     return () => {
@@ -670,18 +500,12 @@ export default function WorkspacePage() {
     setWorkspaceNotice('');
     setRewriteCardsLocked(false);
     setRewriteAllCompleted(false);
-    setRewriteCards((cards) => cards.map((card) => ({
-      ...card,
-      response: '',
-      error: '',
-      skipped: false,
-      applyWithExplanation: false,
-    })));
+    setRewriteCards(createRewriteCards());
     setWorkspaceHistoryExpanded(false);
-    rememberWorkspaceDocument(hydratedDocument);
     setView('workspace');
-    if (updateRoute && location.pathname !== '/worksapce') {
-      navigate('/worksapce');
+    const targetPath = `/workspace/${hydratedDocument.id}`;
+    if (updateRoute && location.pathname !== targetPath) {
+      navigate(targetPath);
     }
   }
 
@@ -743,36 +567,60 @@ export default function WorkspacePage() {
     return documentFromWorkspaceDraft(selectedDocument, fallbackDraft, styleName, styleSettings);
   }
 
+  async function persistWorkspaceDocument(document, versionLabel) {
+    if (!document?.id) throw new Error('No persisted document is open.');
+
+    pendingDocumentMutationsRef.current.add(document.id);
+    try {
+      const result = await saveDocument(document.id, {
+        title: document.title,
+        academicStyle: styleName,
+        styleSettings,
+        contentJson: document.content_json,
+        createVersion: true,
+        versionLabel,
+      });
+      const persistedDocument = result.document ?? document;
+      const persistedStyleName = persistedDocument.academic_style || styleName;
+      const persistedStyleSettings = {
+        ...(TEMPLATE_STYLE_SETTINGS[persistedStyleName] ?? DEFAULT_CUSTOM_STYLE),
+        ...(persistedDocument.style_settings ?? styleSettings),
+      };
+      const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
+      setWorkspaceDraft(persistedDraft);
+      setSelectedDocument(documentFromWorkspaceDraft(
+        persistedDocument,
+        persistedDraft,
+        persistedStyleName,
+        persistedStyleSettings,
+      ));
+      setEditorContent(persistedDraft.contentJson ?? document.content_json);
+      setActiveEditorBlock({
+        blockId: persistedDraft.currentProcessingBlockId ?? null,
+        status: persistedDraft.currentProcessingBlockId ? 'processing' : 'unprocessed',
+      });
+      setStyleName(persistedStyleName);
+      setStyleSettings(persistedStyleSettings);
+      setWorkspaceDirty(false);
+      const revision = Number(persistedDocument.revision);
+      if (Number.isFinite(revision)) {
+        localDocumentRevisionsRef.current.set(persistedDocument.id, revision);
+      }
+      applyDocument('document:updated', persistedDocument);
+      return persistedDocument;
+    } finally {
+      pendingDocumentMutationsRef.current.delete(document.id);
+    }
+  }
+
   async function saveWorkspaceDocument({ leaveAfterSave = false } = {}) {
     const document = normalizedWorkspaceDocument();
     if (!document?.id) return false;
 
     setWorkspaceSaving(true);
     try {
-      if (document.id.startsWith('demo-')) {
-        upsertDemoDocumentInStore(document);
-        setSelectedDocument(document);
-        setEditorContent(document.content_json);
-        setWorkspaceDraft(draftFromDocument(document, styleSettings));
-        setWorkspaceNotice('Saved locally');
-      } else {
-        const result = await saveDocument(document.id, {
-          title: document.title,
-          academicStyle: styleName,
-          styleSettings,
-          contentJson: document.content_json,
-          createVersion: true,
-          versionLabel: 'Manual save',
-        });
-        const persistedDocument = result.document ?? document;
-        const persistedDraft = draftFromDocument(persistedDocument, styleSettings);
-        setWorkspaceDraft(persistedDraft);
-        setSelectedDocument(documentFromWorkspaceDraft(persistedDocument, persistedDraft, styleName, styleSettings));
-        setEditorContent(persistedDraft.contentJson ?? document.content_json);
-        setWorkspaceNotice('Saved');
-      }
-
-      setWorkspaceDirty(false);
+      await persistWorkspaceDocument(document, 'Manual save');
+      setWorkspaceNotice('Saved');
       setShowUnsavedBackPrompt(false);
       if (leaveAfterSave) {
         setView('home');
@@ -780,7 +628,7 @@ export default function WorkspacePage() {
       }
       return true;
     } catch (error) {
-      setWorkspaceNotice(error.message || 'Save is waiting for the local API.');
+      setWorkspaceNotice(error.message || 'Could not save the document.');
       return false;
     } finally {
       setWorkspaceSaving(false);
@@ -798,6 +646,10 @@ export default function WorkspacePage() {
 
   function leaveWorkspaceWithoutSaving() {
     setShowUnsavedBackPrompt(false);
+    setSelectedDocument(null);
+    setWorkspaceDraft(null);
+    setEditorContent(null);
+    setActiveEditorBlock({ blockId: null, status: 'unprocessed' });
     setWorkspaceDirty(false);
     setView('home');
     navigate('/');
@@ -824,13 +676,7 @@ export default function WorkspacePage() {
 
     setRewriteAllCompleted(false);
     setRewriteCardsLocked(false);
-    setRewriteCards((cards) => cards.map((card) => ({
-      ...card,
-      response: '',
-      error: '',
-      skipped: false,
-      applyWithExplanation: false,
-    })));
+    setRewriteCards(createRewriteCards());
     if (notice) setWorkspaceNotice(notice);
   }
 
@@ -844,71 +690,11 @@ export default function WorkspacePage() {
 
     try {
       const result = await uploadDocument(file, styleName);
+      applyDocument('document:created', result.document);
       openWorkspace(result.document);
       setWorkspaceNotice(`${file.name} uploaded as a new document.`);
     } catch (error) {
-      if (/\.(txt|md)$/i.test(file.name)) {
-        const text = await file.text();
-        const document = createWorkspaceUploadDocument({
-          title: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '),
-          text,
-          filename: file.name,
-        }, styleName, styleSettings);
-        upsertDemoDocumentInStore(document);
-        openWorkspace(document);
-        setWorkspaceNotice(`${file.name} opened as a local demo upload.`);
-        return;
-      }
-      setWorkspaceNotice(error.message || '.docx parsing needs the local upload API.');
-    }
-  }
-
-  async function handleEditorBlockStatusChange({ blockId, status }) {
-    const payload = arguments[0] ?? {};
-    const nextDocument = payload.contentJson && selectedDocument
-      ? demoDocumentFromContent(
-        selectedDocument,
-        payload.contentJson,
-        styleName,
-        styleSettings,
-        payload.blocks ?? workspaceDraft?.blocks ?? null,
-        payload.currentProcessingBlockId ?? workspaceDraft?.currentProcessingBlockId ?? null
-      )
-      : null;
-    const nextDraft = payload.contentJson && selectedDocument
-      ? normalizeWorkspaceDraft(
-        selectedDocument,
-        payload.contentJson,
-        payload.blocks ?? workspaceDraft?.blocks ?? [],
-        styleSettings,
-        payload.currentProcessingBlockId ?? workspaceDraft?.currentProcessingBlockId ?? null
-      )
-      : null;
-
-    if (nextDocument && nextDraft) {
-      setWorkspaceDraft(nextDraft);
-      setSelectedDocument(nextDocument);
-      setEditorContent(nextDocument.content_json);
-      refreshRewriteCardsFromDocument(nextDocument);
-    }
-
-    if (!selectedDocument?.id || selectedDocument.id.startsWith('demo-')) {
-      if (status !== 'processing') {
-        setWorkspaceNotice(`Marked block as ${status}.`);
-      } else {
-        setWorkspaceNotice('');
-      }
-      setWorkspaceDirty(true);
-      return;
-    }
-
-    try {
-      await updateDocumentBlockStatus(selectedDocument.id, blockId, status);
-      if (status !== 'processing') {
-        setWorkspaceNotice(`Marked block as ${status}.`);
-      }
-    } catch (error) {
-      setWorkspaceNotice(error.message || 'Block status is waiting for the local API.');
+      setWorkspaceNotice(error.message || 'Could not upload the document.');
     }
   }
 
@@ -1004,66 +790,34 @@ export default function WorkspacePage() {
   }
 
   async function regenerateRewriteCard(cardId) {
-    if (rewriteCardsLocked || rewriteAllCompleted) {
-      return;
-    }
-    const now = Date.now();
-    if (now < rewriteCooldownUntil) {
-      setWorkspaceNotice('Regeneration is cooling down. Please wait a moment.');
-      return;
-    }
-    if (rewriteBusy) {
-      setWorkspaceNotice('A regeneration is already running.');
-      return;
-    }
+    if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy) return;
 
     setRewriteBusy(true);
-    setRewriteCooldownUntil(now + REGEN_COOLDOWN_MS);
     setWorkspaceNotice('');
     setWorkspaceOwlError(false);
     setWorkspaceOwlLoading(true);
-    await sleep(PLACEHOLDER_DELAY_MS);
-
-    if (cardId === 2) {
+    try {
+      const response = regenerateResponse(cardId);
       setRewriteCards((cards) => cards.map((card) => (
-        card.id === cardId ? { ...card, error: 'Network Problems', response: '' } : card
+        card.id === cardId ? { ...card, response, error: '' } : card
       )));
+    } catch (error) {
+      const message = error.message || 'Network Problems';
+      setRewriteCards((cards) => cards.map((card) => (
+        card.id === cardId ? { ...card, error: message, response: '' } : card
+      )));
+      setWorkspaceNotice(`Could not regenerate ${cardId === 2 ? 'Rewriting Card 2' : 'the rewriting card'}: ${message}`);
       triggerWorkspaceError();
+    } finally {
+      setWorkspaceOwlLoading(false);
       setRewriteBusy(false);
-      return;
     }
-
-    setRewriteCards((cards) => cards.map((card) => (
-      card.id === cardId
-        ? { ...card, response: `This is placeholder response of Rewriting Card ${cardId}.`, error: '' }
-        : card
-    )));
-    setWorkspaceOwlLoading(false);
-    setRewriteBusy(false);
-  }
-
-  async function handleRewriteCardClick(card, event) {
-    if (rewriteCardsLocked || rewriteAllCompleted || card.error || card.skipped) return;
-    await runWorkspaceMagic(event.currentTarget);
-    applyRewriteCard(card);
   }
 
   function resetRewriteCardsForNextBlock(nextNotice = 'Cards refreshed for the next processing block.') {
-    if (rewriteRefreshTimerRef.current) {
-      clearTimeout(rewriteRefreshTimerRef.current);
-    }
-
-    rewriteRefreshTimerRef.current = setTimeout(() => {
-      setRewriteCards((cards) => cards.map((card) => ({
-        ...card,
-        response: '',
-        error: '',
-        skipped: false,
-        applyWithExplanation: false,
-      })));
-      setRewriteCardsLocked(false);
-      setWorkspaceNotice(nextNotice);
-    }, 650);
+    setRewriteCards(createRewriteCards());
+    setRewriteCardsLocked(false);
+    setWorkspaceNotice(nextNotice);
   }
 
   function lockOrCompleteRewriteCards(document, nextNotice) {
@@ -1112,7 +866,7 @@ export default function WorkspacePage() {
 
     const rawSourceContent = editorContent
       ?? selectedDocument.content_json
-      ?? fallbackWorkspaceContent(selectedDocument, styleSettings);
+      ?? { type: 'doc', content: [] };
     const normalized = normalizeWorkspaceContent(
       selectedDocument,
       rawSourceContent,
@@ -1126,7 +880,7 @@ export default function WorkspacePage() {
     const nodes = Array.isArray(sourceContent.content) ? sourceContent.content : [];
     const editableIndexes = nodes
       .map((node, index) => ({ node, index }))
-      .filter(({ node }) => isEditableDemoBlock(node) && textFromDemoNode(node).trim());
+      .filter(({ node }) => isEditableBlock(node) && textFromNode(node).trim());
 
     if (!editableIndexes.length) {
       setWorkspaceNotice('No editable block is available.');
@@ -1150,7 +904,7 @@ export default function WorkspacePage() {
     const nextContent = {
       type: sourceContent.type ?? 'doc',
       content: nodes.map((node, index) => {
-        if (!isEditableDemoBlock(node)) return node;
+        if (!isEditableBlock(node)) return node;
         const attrs = { ...(node.attrs ?? {}) };
         let nextNode = node;
 
@@ -1197,26 +951,37 @@ export default function WorkspacePage() {
     return document;
   }
 
-  function applyRewriteCard(card) {
-    const replacement = card.response || `This is placeholder response of Rewriting Card ${card.id}.`;
-    const replacementText = replacement;
-    const document = applyStatusToCurrentProcessingBlock('processed', replacementText);
-    if (document) {
-      lockOrCompleteRewriteCards(document, `${card.title} applied. Cards refreshed for the next block.`);
+  async function applyRewriteCard(card, target) {
+    if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy || card.error) return;
+
+    setRewriteBusy(true);
+    setWorkspaceOwlError(false);
+    try {
+      await runWorkspaceMagic(target);
+      const document = applyStatusToCurrentProcessingBlock('processed', card.response);
+      if (document) {
+        lockOrCompleteRewriteCards(document, `${card.title} applied. Save to keep this draft.`);
+      }
+    } catch (error) {
+      setWorkspaceNotice(error.message || 'Could not apply the AI rewrite.');
+    } finally {
+      setRewriteBusy(false);
     }
   }
 
-  function toggleRewriteExplanation(cardId) {
-    setRewriteCards((cards) => cards.map((card) => (
-      card.id === cardId ? { ...card, applyWithExplanation: !card.applyWithExplanation } : card
-    )));
-  }
-
-  function disableCurrentRewriteBlock() {
+  async function disableCurrentRewriteBlock() {
     if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy) return;
-    const document = applyStatusToCurrentProcessingBlock('skipped');
-    if (document) {
-      lockOrCompleteRewriteCards(document, 'Current block skipped. Cards refreshed for the next block.');
+
+    setRewriteBusy(true);
+    try {
+      const document = applyStatusToCurrentProcessingBlock('skipped');
+      if (document) {
+        lockOrCompleteRewriteCards(document, 'Current block skipped. Save to keep this draft.');
+      }
+    } catch (error) {
+      setWorkspaceNotice(error.message || 'Could not skip the current block.');
+    } finally {
+      setRewriteBusy(false);
     }
   }
 
@@ -1231,45 +996,6 @@ export default function WorkspacePage() {
     setPracticeResponse(`This is placeholder practice response for: ${practiceInput || 'the selected sentence'}.`);
     setWorkspaceOwlLoading(false);
     setPracticeBusy(false);
-  }
-
-  function renderRewriteCard(card) {
-    return (
-      <article
-        key={card.id}
-        className={`rewrite-card${card.error ? ' has-error' : ''}${rewriteCardsLocked ? ' is-locked' : ''}`}
-        data-workspace-wand-target="true"
-        onMouseEnter={holdWorkspaceWand}
-        onPointerEnter={holdWorkspaceWand}
-        onFocus={holdWorkspaceWand}
-        onClick={(event) => handleRewriteCardClick(card, event)}
-        tabIndex={0}
-      >
-        <div className="rewrite-card-header">
-          <strong>{card.title}</strong>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              regenerateRewriteCard(card.id);
-            }}
-            disabled={rewriteBusy || rewriteCardsLocked || rewriteAllCompleted}
-          >
-            Regenerate
-          </button>
-        </div>
-        <p>{card.error || card.response || 'Hover for wand, click to use magic, or regenerate a placeholder response.'}</p>
-      </article>
-    );
-  }
-
-  function renderRewriteCompleteCard() {
-    return (
-      <article className="rewrite-card rewrite-card--complete">
-        <strong>Congratulations</strong>
-        <p>All completed.</p>
-      </article>
-    );
   }
 
   function moveMobileRewrite(step) {
@@ -1320,7 +1046,7 @@ export default function WorkspacePage() {
         {mobilePanelMode === 'rewriting' ? (
           <div className="workspace-mobile-panel-body">
             {rewriteAllCompleted ? (
-              renderRewriteCompleteCard()
+              <DocumentRewriter completed />
             ) : (
               <>
                 <div className="workspace-mobile-card-nav">
@@ -1332,7 +1058,15 @@ export default function WorkspacePage() {
                     <PanelChevron direction="right" />
                   </button>
                 </div>
-                {currentRewriteCard ? renderRewriteCard(currentRewriteCard) : null}
+                {currentRewriteCard ? (
+                  <DocumentRewriter
+                    cards={[currentRewriteCard]}
+                    busy={rewriteBusy}
+                    locked={rewriteCardsLocked}
+                    onApplyResponse={applyRewriteCard}
+                    onRegenerate={regenerateRewriteCard}
+                  />
+                ) : null}
                 <button
                   type="button"
                   className="rewrite-disable-current"
@@ -1569,9 +1303,14 @@ export default function WorkspacePage() {
               </button>
             ) : null}
           </div>
-          <div className="rewrite-card-list">
-            {rewriteAllCompleted ? renderRewriteCompleteCard() : rewriteCards.map((card) => renderRewriteCard(card))}
-          </div>
+          <DocumentRewriter
+            cards={rewriteCards}
+            busy={rewriteBusy}
+            locked={rewriteCardsLocked}
+            completed={rewriteAllCompleted}
+            onApplyResponse={applyRewriteCard}
+            onRegenerate={regenerateRewriteCard}
+          />
         </section>
       );
     }
@@ -1619,11 +1358,16 @@ export default function WorkspacePage() {
   }
 
   if (view === 'workspace') {
-    const documentTitle = selectedDocument?.title ?? 'Assignment 2: article 2';
-    const headerNotice = /document not found/i.test(workspaceNotice) ? '' : workspaceNotice;
-    const recentDocuments = workspaceHistoryDocuments.length
-      ? workspaceHistoryDocuments
-      : workspaceHistoryFallback(selectedDocument);
+    if (!selectedDocument) {
+      return (
+        <main className="document-workspace-page">
+          <p role="status">{workspaceNotice || 'Loading document...'}</p>
+        </main>
+      );
+    }
+
+    const documentTitle = selectedDocument.title || 'Untitled document';
+    const recentDocuments = workspaceHistoryDocuments;
 
     return (
       <main className={`document-workspace-page${workspaceSidebarOpen ? '' : ' is-sidebar-collapsed'}`}>
@@ -1666,7 +1410,6 @@ export default function WorkspacePage() {
 
         <section className="workspace-paper-region" aria-label="Document editor">
           <div className="workspace-paper-header">
-            <button type="button" className="workspace-back-button" onClick={requestWorkspaceBack}>Back</button>
             <div className="workspace-paper-header-main">
               <input
                 className="workspace-title-input"
@@ -1675,9 +1418,6 @@ export default function WorkspacePage() {
                 aria-label="Document title"
               />
             </div>
-            {(headerNotice || workspaceDirty) && (
-              <small>{headerNotice || 'Unsaved changes'}</small>
-            )}
             <button
               ref={mobileOptionsButtonRef}
               type="button"
@@ -1690,6 +1430,15 @@ export default function WorkspacePage() {
               <span />
               <span />
             </button>
+            <button
+              type="button"
+              className="workspace-back-button"
+              onClick={requestWorkspaceBack}
+              aria-label="Leave workspace"
+              title="Leave workspace"
+            >
+              <CloseIcon />
+            </button>
           </div>
           <DocumentEditor
             ref={documentEditorRef}
@@ -1697,7 +1446,6 @@ export default function WorkspacePage() {
             document={selectedDocument}
             styleSettings={styleSettings}
             onChange={handleEditorChange}
-            onBlockStatusChange={handleEditorBlockStatusChange}
             onActiveBlockChange={handleActiveEditorBlockChange}
             onSave={() => saveWorkspaceDocument()}
             saveDisabled={!workspaceDirty}

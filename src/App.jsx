@@ -15,7 +15,7 @@ function App() {
         )}
       />
       <Route
-        path="/worksapce"
+        path="/workspace/:documentId"
         element={(
           <RequireSignIn>
             <WorkspacePage />

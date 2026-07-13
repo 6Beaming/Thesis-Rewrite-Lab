@@ -39,20 +39,13 @@ const fontSizes = ['10pt', '11pt', '12pt', '14pt', '16pt'];
 const lineHeights = ['1.0', '1.15', '1.5', '2.0'];
 const textColors = ['#111827', '#007a64', '#9a3328', '#1d4ed8'];
 const highlightColors = ['#fff2a8', '#ccebdc', '#ffd6d1'];
-const blockStatuses = ['processing', 'unprocessed', 'processed', 'skipped'];
 
 const fontFamilyOptions = fontFamilies.map((font) => ({ value: font, label: font }));
 const fontSizeOptions = fontSizes.map((size) => ({ value: size, label: size }));
 const lineHeightOptions = lineHeights.map((height) => ({ value: height, label: height }));
-const blockStatusOptions = blockStatuses.map((status) => ({
-  value: status,
-  label: status.charAt(0).toUpperCase() + status.slice(1),
-}));
 
 export default function EditorToolbar({
   editor,
-  activeBlockStatus = 'unprocessed',
-  onBlockStatusChange,
   onSave,
   saveDisabled = false,
   saving = false,
@@ -87,6 +80,12 @@ export default function EditorToolbar({
 
   function insertPageBreak() {
     editor.chain().focus().insertContent({ type: 'pageBreak' }).run();
+  }
+
+  function applyHistoryAction(action) {
+    return action === 'undo'
+      ? editor.chain().focus().undo().run()
+      : editor.chain().focus().redo().run();
   }
 
   return (
@@ -181,17 +180,8 @@ export default function EditorToolbar({
         <ToolbarButton label="Outdent" icon={<ToolIcon type="outdent" />} onClick={() => editor.chain().focus().updateAttributes('paragraph', { textIndent: '0in' }).run()} />
         <ToolbarButton label="Indent" icon={<ToolIcon type="indent" />} onClick={() => editor.chain().focus().updateAttributes('paragraph', { textIndent: '0.5in' }).run()} />
         <ToolbarButton label="Page break" icon={<ToolIcon type="break" />} onClick={insertPageBreak} />
-        <DropdownSelect
-          value={activeBlockStatus}
-          options={blockStatusOptions}
-          onChange={(value) => onBlockStatusChange?.(value)}
-          ariaLabel="Block status"
-          wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--status"
-          triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--status"
-          menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--status"
-        />
-        <ToolbarButton label="Undo" icon={<ToolIcon type="undo" />} disabled={!editor.can().undo()} onClick={() => editor.chain().focus().undo().run()} />
-        <ToolbarButton label="Redo" icon={<ToolIcon type="redo" />} disabled={!editor.can().redo()} onClick={() => editor.chain().focus().redo().run()} />
+        <ToolbarButton label="Undo" icon={<ToolIcon type="undo" />} disabled={!editor.can().undo()} onClick={() => applyHistoryAction('undo')} />
+        <ToolbarButton label="Redo" icon={<ToolIcon type="redo" />} disabled={!editor.can().redo()} onClick={() => applyHistoryAction('redo')} />
       </div>
     </section>
   );
