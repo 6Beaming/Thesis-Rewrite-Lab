@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router';
 import DocumentsSection from '../components/DocumentsSection.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import HomeShell from '../components/HomeShell.jsx';
@@ -9,7 +10,6 @@ import { createDocument, moveToTrash, uploadDocument } from '../services/documen
 import { uploadProfilePicture } from '../services/usersApi.js';
 import HomepageAccount from './homepageAccount.jsx';
 import HomepageCredits from './homepageCredits.jsx';
-import HomepageSubscription from './homepageSubscription.jsx';
 import HomepageSupport from './homepageSupport.jsx';
 import HomepageTrash from './homepageTrash.jsx';
 import HomepageVersionControl from './homepageVersionControl.jsx';
@@ -57,6 +57,7 @@ function visibleDocuments(documents, query, sort) {
 
 export default function HomePage({ onOpenWorkspace }) {
   const { user: authUser, signOut } = useAuth();
+  const navigate = useNavigate();
   const {
     state: realtimeState,
     applyDocument,
@@ -231,7 +232,7 @@ export default function HomePage({ onOpenWorkspace }) {
       return <HomepageSupport />;
     }
 
-    return <HomepageSubscription />;
+    return <EmptyState title="Choose a workspace section">Select an option from the sidebar.</EmptyState>;
   }
 
   const hideHeaderActions = ['trash', 'support', 'credits'].includes(activePage);
@@ -252,7 +253,7 @@ export default function HomePage({ onOpenWorkspace }) {
       }}
       onToggleSidebar={() => setSidebarOpen((value) => !value)}
       onAccount={() => setAccountOpen(true)}
-      onSubscription={() => setActivePage('subscription')}
+      onSubscription={() => navigate('/subscription')}
       actionsHidden={hideHeaderActions}
     >
       {notice ? <p className="home-api-notice" role="status">{notice}</p> : null}

@@ -9,7 +9,9 @@ export function errorHandler(error, _req, res, _next) {
   if (status >= 500) {
     console.error('Request failed:', error instanceof Error ? error.name : 'UnknownError');
   }
-  res.status(status).json({
+  const body = {
     error: status >= 500 ? 'Internal server error' : (error.message || 'Request failed'),
-  });
+  };
+  if (status < 500 && error.publicCode) body.code = error.publicCode;
+  res.status(status).json(body);
 }

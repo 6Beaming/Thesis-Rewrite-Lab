@@ -1,9 +1,14 @@
 import { Server } from 'socket.io';
+import { hasProAccess } from '../models/subscriptions.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function userRoom(authUserId) {
   return `user:${authUserId}`;
+}
+
+export function billingRoom(authUserId) {
+  return `billing-user:${authUserId}`;
 }
 
 export function documentRoom(documentId) {
@@ -28,12 +33,14 @@ export function attachRealtimeServer(httpServer, dependencies = {}) {
   const {
     getSession: loadSession,
     resolveProductUser,
+    resolveSubscription,
     ownsDocument,
     origin,
   } = dependencies;
   if (
     typeof loadSession !== 'function'
     || typeof resolveProductUser !== 'function'
+    || typeof resolveSubscription !== 'function'
     || typeof ownsDocument !== 'function'
     || !origin
   ) {
@@ -58,8 +65,10 @@ export function attachRealtimeServer(httpServer, dependencies = {}) {
         return;
       }
       const productUser = await resolveProductUser(session.user);
+      const subscription = await resolveSubscription(productUser.id);
       socket.data.authUserId = session.user.id;
       socket.data.productUserId = productUser.id;
+      socket.data.hasProAccess = hasProAccess(subscription);
       next();
     } catch {
       const error = new Error('Authentication required');
@@ -69,10 +78,15 @@ export function attachRealtimeServer(httpServer, dependencies = {}) {
   });
 
   io.on('connection', (socket) => {
-    socket.join(userRoom(socket.data.authUserId));
+    socket.join(billingRoom(socket.data.authUserId));
+    if (socket.data.hasProAccess) socket.join(userRoom(socket.data.authUserId));
 
     socket.on('document:subscribe', async (payload, callback) => {
       const acknowledge = acknowledgement(callback);
+      if (!socket.data.hasProAccess) {
+        acknowledge({ ok: false, error: 'Pro subscription required', code: 'SUBSCRIPTION_REQUIRED' });
+        return;
+      }
       const documentId = String(payload?.documentId ?? '');
       if (!UUID_PATTERN.test(documentId)) {
         acknowledge({ ok: false, error: 'Invalid document ID' });

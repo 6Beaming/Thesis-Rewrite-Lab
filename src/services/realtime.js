@@ -2,6 +2,7 @@ import { io } from 'socket.io-client';
 
 export const COMMITTED_EVENT_TYPES = [
   'profile:updated',
+  'subscription:updated',
   'progress:updated',
   'document:created',
   'document:updated',

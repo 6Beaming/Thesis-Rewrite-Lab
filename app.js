@@ -17,9 +17,11 @@ import { requireTrustedAuthHost } from './server/middlewares/requireAuth.js';
 import { closeDatabase } from './server/models/db.js';
 import { userOwnsActiveDocument } from './server/models/documents.js';
 import { getOrCreateUserFromSession } from './server/models/users.js';
+import { getSubscriptionForUserId } from './server/models/subscriptions.js';
 import { attachRealtimeServer } from './server/realtime/index.js';
 import { createEventPublisher } from './server/realtime/publisher.js';
 import apiRouter from './server/routers/index.js';
+import { stripeWebhookHandler } from './server/routers/stripe.js';
 import { errorHandler, notFound } from './server/middlewares/errors.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -61,6 +63,14 @@ app.use(
     allowedHeaders: ['Content-Type', 'X-Mutation-Id'],
   }),
 );
+
+// Stripe signs the original bytes. This route must be mounted before the
+// global JSON parser, and is authenticated only by Stripe's signature.
+app.post(
+  '/api/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  stripeWebhookHandler,
+);
 app.use(express.json({ limit: '15mb' }));
 
 // Prevent one client from sending too many sign-in requests.
@@ -99,6 +109,7 @@ const realtime = attachRealtimeServer(server, {
   origin: appOrigin,
   getSession: getAuthSession,
   resolveProductUser: getOrCreateUserFromSession,
+  resolveSubscription: getSubscriptionForUserId,
   ownsDocument: userOwnsActiveDocument,
 });
 app.set('realtime', realtime);

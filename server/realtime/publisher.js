@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { documentRoom, userRoom } from './index.js';
+import { billingRoom, documentRoom, userRoom } from './index.js';
 
 const SAFE_DOCUMENT_FIELDS = new Set([
   'id',
@@ -45,6 +45,17 @@ const SAFE_VERSION_FIELDS = new Set([
   'created_at',
 ]);
 
+const SAFE_SUBSCRIPTION_FIELDS = new Set([
+  'plan',
+  'accessState',
+  'hasProAccess',
+  'stripeStatus',
+  'cancelAtPeriodEnd',
+  'currentPeriodEnd',
+  'recoveryRequired',
+  'price',
+]);
+
 function pick(value, fields) {
   if (!value || typeof value !== 'object') return null;
   return Object.fromEntries(
@@ -64,6 +75,26 @@ export function publicVersion(version) {
   return pick(version, SAFE_VERSION_FIELDS);
 }
 
+export function publicSubscription(subscription) {
+  return pick(subscription, SAFE_SUBSCRIPTION_FIELDS);
+}
+
+async function updateSocketEntitlement(io, authUserId, nextHasProAccess) {
+  const sockets = await io.in(billingRoom(authUserId)).fetchSockets();
+  await Promise.all(sockets.map(async (socket) => {
+    socket.data.hasProAccess = Boolean(nextHasProAccess);
+    if (nextHasProAccess) {
+      await socket.join(userRoom(authUserId));
+      return;
+    }
+    const documentRooms = [...socket.rooms].filter((room) => room.startsWith('document:'));
+    await Promise.all([
+      socket.leave(userRoom(authUserId)),
+      ...documentRooms.map((room) => socket.leave(room)),
+    ]);
+  }));
+}
+
 export function createEventPublisher(io, { now = () => new Date(), nextId = randomUUID } = {}) {
   if (!io?.to) {
     throw new TypeError('A Socket.IO server is required to publish realtime events');
@@ -77,6 +108,7 @@ export function createEventPublisher(io, { now = () => new Date(), nextId = rand
     mutationId = null,
     data,
     documentId = null,
+    rooms = null,
   }) {
     const event = {
       eventId: nextId(),
@@ -87,9 +119,9 @@ export function createEventPublisher(io, { now = () => new Date(), nextId = rand
       mutationId: mutationId || null,
       data,
     };
-    const rooms = [userRoom(authUserId)];
-    if (documentId) rooms.push(documentRoom(documentId));
-    io.to(rooms).emit(type, event);
+    const targetRooms = rooms ?? [userRoom(authUserId)];
+    if (documentId) targetRooms.push(documentRoom(documentId));
+    io.to(targetRooms).emit(type, event);
     return event;
   }
 
@@ -159,6 +191,19 @@ export function createEventPublisher(io, { now = () => new Date(), nextId = rand
         mutationId,
         data: { profile: safeProfile },
       });
+    },
+    publishSubscription({ authUserId, productUserId, subscription }) {
+      const safeSubscription = publicSubscription(subscription);
+      const event = emit({
+        authUserId,
+        type: 'subscription:updated',
+        resourceId: productUserId,
+        data: { subscription: safeSubscription },
+        rooms: [billingRoom(authUserId)],
+      });
+      void updateSocketEntitlement(io, authUserId, safeSubscription?.hasProAccess)
+        .catch(() => {});
+      return event;
     },
   };
 }

@@ -13,12 +13,12 @@ blocks, versions, profile pictures, and progress are stored in PostgreSQL.
 | --- | --- |
 | `app.js` | Express HTTP server, Auth.js mount, API mount, production static serving, and Socket.IO attachment. |
 | `server/auth.js` | Google OAuth configuration and Auth.js PostgreSQL adapter setup. |
-| `server/models/` | PostgreSQL models, migrations, block normalization, document versions, and user statistics. |
-| `server/routers/` | Authenticated REST handlers for profiles, documents, trash, and versions. |
+| `server/models/` | PostgreSQL models, migrations, block normalization, document versions, user statistics, and canonical Stripe subscription state. |
+| `server/routers/` | Authenticated REST handlers for profiles, documents, trash, versions, and Stripe billing. |
 | `server/middlewares/` | Session/origin enforcement, upload handling, and error mapping. |
 | `server/realtime/` | Socket.IO authentication, room authorization, and committed-event publishing. |
-| `src/components/` | Reusable React UI, including the editor, realtime provider, and rewrite-card module. |
-| `src/pages/` | Page orchestration for the home, workspace, account, trash, and version-history views. |
+| `src/components/` | Reusable React UI, including the editor, auth and entitlement guards, realtime provider, and rewrite-card module. |
+| `src/pages/` | Page orchestration for the home, workspace, account, trash, version-history, and subscription views. |
 | `src/services/` | Browser API clients, Socket.IO client helpers, and the server-consumed document resolver library. |
 | `src/openapi.yml` | Current REST contract with an `x-socket-io` extension for realtime events. |
 | `scripts/` | Operational database utilities and repeatable owl-asset generation; generated owl path data is imported by the UI at runtime. |
@@ -37,6 +37,49 @@ blocks, versions, profile pictures, and progress are stored in PostgreSQL.
    with that resource and publishes a sanitized Socket.IO event.
 5. `RealtimeProvider` applies committed resources to each same-user browser
    session without a page reload.
+
+## Subscription And Entitlement
+
+Stripe Checkout is the only payment interface in the beta. `HomepageSubscription`
+at `/subscription` lets an authenticated user select Basic or Pro. Basic is a
+deliberately unavailable beta plan; selecting it explains the restriction and
+leaving signs the user out. Selecting Pro opens a server-created Stripe-hosted
+Checkout session. The reference `$10.00` shown in the interface is promotional
+copy; Stripe charges the configured Price, which is validated by the server.
+
+Google sign-in returns through `/subscription?entry=auth`. The
+`RealtimeProvider` first fetches the canonical subscription state. A Pro user
+is redirected to the workspace; a Basic user remains on the subscription page.
+Direct access to workspace routes is protected twice: `RequirePro` guards the
+React routes and `requirePro` protects all non-billing `/api` routes. A Basic
+user attempting a workspace route is signed out; a payment-failed user is sent
+to `/subscription` to update their billing details.
+
+The source of truth for entitlement is the PostgreSQL `users` row, synchronized
+from Stripe in `server/routers/stripe.js`. The Stripe router is deliberately
+mounted before `requirePro`, so an authenticated Basic user can read status,
+open Checkout, confirm a completed Checkout, or recover payment. Every other
+product API remains Pro-only.
+
+`server/models/migrations/004_stripe_subscriptions.sql` adds persistent
+customer/subscription state and the idempotent webhook receipt table.
+`005_stripe_checkout_attempts.sql` adds the short-lived, idempotent Checkout
+attempt state. `server/models/subscriptions.js` exposes the canonical state and
+the only public browser projection; Stripe IDs, Checkout attempt fields, and
+invoice details are never included in the browser or Socket.IO subscription
+payload.
+
+`app.js` mounts `POST /api/stripe/webhook` with `express.raw()` before the JSON
+parser because Stripe signature verification requires the original request
+bytes. Supported webhook events are reconciled in a database transaction and
+then published as `subscription:updated` to the authenticated user's billing
+room. A refund of a fully paid configured subscription cancels the corresponding
+Stripe subscription immediately and revokes Pro; a scheduled user cancellation
+instead retains Pro until the end of its Stripe billing period.
+
+See [Stripe subscription implementation](stripe.md) for the state schema,
+payment and webhook flow, Stripe Dashboard/CLI setup, realtime behavior, and
+security model.
 
 ## Upload Resolution
 
@@ -113,4 +156,6 @@ the generated text to PostgreSQL outside the existing save contract.
 health, Auth.js entry points, authenticated profile operations, document and
 block CRUD, upload, trash, versions, and version reverts. Socket.IO is
 described by its extension because OpenAPI models HTTP rather than bidirectional
-events.
+events. Stripe's authenticated billing endpoints and the signed webhook are
+documented in [Stripe subscription implementation](stripe.md); their OpenAPI
+contract is intentionally maintained there while the beta billing flow evolves.

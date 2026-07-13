@@ -23,6 +23,13 @@ export async function requestJson(path, options = {}) {
     if (response.status === 401 && typeof window !== 'undefined') {
       window.dispatchEvent(new Event('app:auth-expired'));
     }
+    if (
+      response.status === 403
+      && data?.code === 'SUBSCRIPTION_REQUIRED'
+      && typeof window !== 'undefined'
+    ) {
+      window.dispatchEvent(new CustomEvent('app:subscription-required', { detail: data }));
+    }
     throw error;
   }
 

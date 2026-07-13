@@ -30,7 +30,7 @@ function RequireSignIn({ children }) {
       if (animatorRef.current && buttonRef.current) {
         await animatorRef.current.useMagic(buttonRef.current, { effect: 'button-burst' });
       }
-      await signIn(new URL('/', window.location.origin).href);
+      await signIn(new URL('/subscription?entry=auth', window.location.origin).href);
     } catch {
       setLocalMessage('Google sign in could not be started.');
       setLocalSubmitting(false);

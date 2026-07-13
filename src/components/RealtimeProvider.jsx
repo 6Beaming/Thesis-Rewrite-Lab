@@ -4,6 +4,7 @@ import { getDocument, listDocuments } from '../services/documentsApi.js';
 import { listTrash } from '../services/trashApi.js';
 import { getMe } from '../services/usersApi.js';
 import { listVersions } from '../services/versionsApi.js';
+import { confirmCheckoutSession, getSubscription } from '../services/subscriptionApi.js';
 import {
   connectRealtime,
   disconnectRealtime,
@@ -24,6 +25,8 @@ function emptyState() {
     documentDetails: {},
     versionsByDocument: {},
     deletedDocumentIds: [],
+    subscription: null,
+    subscriptionLoading: false,
     connection: 'disconnected',
     error: '',
   };
@@ -53,6 +56,8 @@ export function RealtimeProvider({ children }) {
   const subscribedDocumentsRef = useRef(new Set());
   const observedVersionDocumentsRef = useRef(new Set());
   const userRef = useRef(user);
+  const subscriptionRef = useRef(null);
+  const refreshSharedRef = useRef(() => Promise.resolve());
 
   const rememberEvent = useCallback((eventId) => {
     if (!eventId || seenEventIdsRef.current.has(eventId)) return false;
@@ -119,9 +124,58 @@ export function RealtimeProvider({ children }) {
     }));
   }, []);
 
+  const applySubscription = useCallback((subscription) => {
+    if (!subscription) return;
+    subscriptionRef.current = subscription;
+    setState((current) => {
+      const hasProAccess = Boolean(subscription.hasProAccess);
+      return {
+        ...current,
+        subscription,
+        subscriptionLoading: false,
+        ...(hasProAccess ? {} : {
+          profile: null,
+          documents: [],
+          trashDocuments: [],
+          documentDetails: {},
+          versionsByDocument: {},
+          deletedDocumentIds: [],
+        }),
+      };
+    });
+  }, []);
+
+  const refreshSubscription = useCallback(async ({ checkoutSessionId = null } = {}) => {
+    if (!userRef.current) return null;
+    setState((current) => ({ ...current, subscriptionLoading: true }));
+    try {
+      const result = checkoutSessionId
+        ? await confirmCheckoutSession(checkoutSessionId)
+        : await getSubscription();
+      const subscription = result?.subscription ?? null;
+      if (!subscription) throw new Error('Subscription status is unavailable.');
+      applySubscription(subscription);
+      return subscription;
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        subscriptionLoading: false,
+        error: error.message || 'Could not check your subscription.',
+      }));
+      throw error;
+    }
+  }, [applySubscription]);
+
   const applyCommittedEvent = useCallback((event) => {
     if (!event?.eventId || !rememberEvent(event.eventId)) return;
     const { type, data = {} } = event;
+    if (type === 'subscription:updated') {
+      applySubscription(data.subscription);
+      if (data.subscription?.hasProAccess) {
+        void refreshSharedRef.current().catch(() => {});
+      }
+      return;
+    }
     if (type === 'profile:updated') {
       applyProfile(data.profile);
       return;
@@ -141,10 +195,10 @@ export function RealtimeProvider({ children }) {
       return;
     }
     if (data.document) applyDocument(type, data.document);
-  }, [applyDocument, applyProfile, applyVersion, rememberEvent]);
+  }, [applyDocument, applyProfile, applySubscription, applyVersion, rememberEvent]);
 
   const refreshShared = useCallback(async () => {
-    if (!userRef.current) return;
+    if (!userRef.current || !subscriptionRef.current?.hasProAccess) return;
     const [profile, documentsData, trashData] = await Promise.all([
       getMe(),
       listDocuments({ sort: 'most_recent' }),
@@ -164,6 +218,10 @@ export function RealtimeProvider({ children }) {
     const statsUpdatedAt = Date.parse(profile.stats?.updated_at ?? '');
     if (Number.isFinite(statsUpdatedAt)) latestStatsTimestampRef.current = statsUpdatedAt;
   }, []);
+
+  useEffect(() => {
+    refreshSharedRef.current = refreshShared;
+  }, [refreshShared]);
 
   const refreshDocument = useCallback(async (documentId) => {
     try {
@@ -194,7 +252,7 @@ export function RealtimeProvider({ children }) {
   }, []);
 
   const subscribeDocument = useCallback((documentId) => {
-    if (!documentId) return () => {};
+    if (!documentId || !subscriptionRef.current?.hasProAccess) return () => {};
     subscribedDocumentsRef.current.add(documentId);
     subscribeToDocument(documentId);
     return () => {
@@ -212,26 +270,38 @@ export function RealtimeProvider({ children }) {
       seenEventIdsRef.current.clear();
       subscribedDocumentsRef.current.clear();
       observedVersionDocumentsRef.current.clear();
+      subscriptionRef.current = null;
       setState(emptyState());
       return undefined;
     }
+
+    subscriptionRef.current = null;
+    setState((current) => ({
+      ...emptyState(),
+      connection: current.connection,
+      subscriptionLoading: true,
+    }));
 
     const client = connectRealtime();
     const removeCommittedListeners = listenForCommittedEvents(client, applyCommittedEvent);
     const handleConnect = async () => {
       setState((current) => ({ ...current, connection: 'connected' }));
       try {
-        await Promise.all([
-          refreshShared(),
-          requestRealtimeSync(),
-          ...[...subscribedDocumentsRef.current].flatMap((documentId) => [
-            subscribeToDocument(documentId),
-            refreshDocument(documentId).catch(() => null),
-          ]),
-          ...[...observedVersionDocumentsRef.current].map((documentId) => (
-            refreshVersions(documentId).catch(() => null)
-          )),
-        ]);
+        const subscription = await refreshSubscription();
+        const syncTasks = [requestRealtimeSync()];
+        if (subscription?.hasProAccess) {
+          syncTasks.push(
+            refreshShared(),
+            ...[...subscribedDocumentsRef.current].flatMap((documentId) => [
+              subscribeToDocument(documentId),
+              refreshDocument(documentId).catch(() => null),
+            ]),
+            ...[...observedVersionDocumentsRef.current].map((documentId) => (
+              refreshVersions(documentId).catch(() => null)
+            )),
+          );
+        }
+        await Promise.all(syncTasks);
       } catch (error) {
         setState((current) => ({
           ...current,
@@ -264,13 +334,24 @@ export function RealtimeProvider({ children }) {
       client.off('connect_error', handleConnectError);
       disconnectRealtime();
     };
-  }, [applyCommittedEvent, refreshDocument, refreshShared, refreshVersions, user]);
+  }, [applyCommittedEvent, refreshDocument, refreshShared, refreshSubscription, refreshVersions, user]);
+
+  useEffect(() => {
+    function handleSubscriptionRequired() {
+      refreshSubscription().catch(() => {});
+    }
+
+    window.addEventListener('app:subscription-required', handleSubscriptionRequired);
+    return () => window.removeEventListener('app:subscription-required', handleSubscriptionRequired);
+  }, [refreshSubscription]);
 
   const value = {
     state,
     applyDocument,
     applyProfile,
     applyVersion,
+    applySubscription,
+    refreshSubscription,
     refreshShared,
     refreshDocument,
     refreshVersions,
