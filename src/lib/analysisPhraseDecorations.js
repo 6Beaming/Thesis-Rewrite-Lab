@@ -1,6 +1,7 @@
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 
 const SEVERITY_RANK = Object.freeze({ low: 1, medium: 2, high: 3 });
+const FINISHED_BLOCK_STATUSES = new Set(['processed', 'skipped']);
 const QUOTE_PAIRS = Object.freeze([
   ['"', '"'],
   ["'", "'"],
@@ -97,6 +98,7 @@ export function buildAnalysisPhraseDecorations(state, highlights) {
 
   state.doc.descendants((node, position) => {
     if (node.type.name !== 'blockSegment' || !node.attrs?.blockId) return;
+    if (FINISHED_BLOCK_STATUSES.has(node.attrs.status)) return;
 
     const highlight = highlightsByBlockId.get(node.attrs.blockId);
     const blockText = node.textContent ?? '';

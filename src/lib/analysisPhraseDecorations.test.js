@@ -14,14 +14,17 @@ const BlockSegment = Node.create({
   inline: true,
   content: 'text*',
   addAttributes() {
-    return { blockId: { default: null } };
+    return {
+      blockId: { default: null },
+      status: { default: 'unprocessed' },
+    };
   },
   renderHTML({ HTMLAttributes }) {
     return ['span', { ...HTMLAttributes, 'data-ai-block': 'true' }, 0];
   },
 });
 
-function createEditor() {
+function createEditor(statuses = {}) {
   return new Editor({
     extensions: [
       StarterKit.configure({ paragraph: false }),
@@ -35,7 +38,7 @@ function createEditor() {
           type: 'paragraph',
           content: [{
             type: 'blockSegment',
-            attrs: { blockId: 'block-1' },
+            attrs: { blockId: 'block-1', status: statuses['block-1'] },
             content: [{ type: 'text', text: 'The vague phrase appears twice: vague phrase.' }],
           }],
         },
@@ -43,7 +46,7 @@ function createEditor() {
           type: 'paragraph',
           content: [{
             type: 'blockSegment',
-            attrs: { blockId: 'block-2' },
+            attrs: { blockId: 'block-2', status: statuses['block-2'] },
             content: [{ type: 'text', text: 'This block is concise.' }],
           }],
         },
@@ -97,6 +100,29 @@ test('does not decorate an edited block whose text no longer matches its analysi
     sourceText: 'An older version of this block.',
     issues: [{ evidence: 'older version', severity: 'medium' }],
   }]);
+
+  assert.equal(decorationSet.find().length, 0);
+
+  editor.destroy();
+});
+
+test('does not decorate skipped or processed blocks', () => {
+  const editor = createEditor({
+    'block-1': 'skipped',
+    'block-2': 'processed',
+  });
+  const decorationSet = buildAnalysisPhraseDecorations(editor.state, [
+    {
+      blockId: 'block-1',
+      sourceText: 'The vague phrase appears twice: vague phrase.',
+      issues: [{ evidence: 'vague phrase', severity: 'high' }],
+    },
+    {
+      blockId: 'block-2',
+      sourceText: 'This block is concise.',
+      issues: [{ evidence: 'is concise', severity: 'low' }],
+    },
+  ]);
 
   assert.equal(decorationSet.find().length, 0);
 
