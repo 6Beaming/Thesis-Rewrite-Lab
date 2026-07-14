@@ -1292,6 +1292,41 @@
   cursor: default;
 }
 
+.practice-card p,
+.practice-card ul,
+.practice-card h3 {
+  margin: 0;
+}
+
+.practice-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.practice-card-heading > strong {
+  font-size: 0.95rem;
+}
+
+.practice-card-heading > span {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+  padding: 4px 10px;
+  font-size: 0.72rem;
+}
+
+.practice-card-heading > span.is-ready {
+  background: rgba(162, 232, 187, 0.24);
+  color: #d9ffe6;
+}
+
+.practice-card-heading > span.needs-revision {
+  background: rgba(255, 210, 75, 0.2);
+  color: #fff1b3;
+}
+
 .practice-card textarea {
   min-height: 92px;
   resize: vertical;
@@ -1303,18 +1338,183 @@
   font: inherit;
 }
 
+.practice-goals {
+  display: grid;
+  gap: 6px;
+  border-left: 3px solid rgba(162, 232, 187, 0.8);
+  padding-left: 10px;
+  font-size: 0.8rem;
+}
+
+.practice-goals ul,
+.practice-feedback-section ul {
+  display: grid;
+  gap: 5px;
+  padding-left: 20px;
+  list-style: disc;
+}
+
+.practice-goals li,
+.practice-feedback-section li {
+  display: list-item;
+}
+
+.practice-error {
+  border-radius: 9px;
+  background: rgba(255, 119, 102, 0.16);
+  color: #ffd8d2;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+}
+
 .practice-card button {
   justify-self: start;
   padding: 0 14px;
   background: #ffd24b;
 }
 
-.practice-card--response span {
-  justify-self: end;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.2);
-  padding: 4px 10px;
-  font-size: 0.74rem;
+.practice-card--response {
+  align-content: start;
+}
+
+.practice-card--response.is-ready {
+  border-color: rgba(162, 232, 187, 0.64);
+  background: rgba(162, 232, 187, 0.12);
+}
+
+.practice-feedback-empty {
+  color: rgba(255, 255, 255, 0.72);
+  font-style: italic;
+}
+
+.practice-feedback-summary {
+  border-left: 3px solid #ffd24b;
+  padding-left: 10px;
+  line-height: 1.5;
+}
+
+.practice-score-table {
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.practice-score-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.practice-score-table th,
+.practice-score-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  text-align: center;
+}
+
+.practice-score-table thead th {
+  color: rgba(255, 255, 255, 0.68);
+  font-weight: 600;
+}
+
+.practice-score-table th:first-child {
+  text-align: left;
+}
+
+.practice-score-table tbody tr:last-child th,
+.practice-score-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.practice-score-table tbody td:nth-child(3) {
+  color: #fff1a8;
+  font-weight: 700;
+}
+
+.practice-score-change.is-improved {
+  color: #a2e8bb;
+}
+
+.practice-score-change.is-lower {
+  color: #ffb3a8;
+}
+
+.practice-score-change.is-same {
+  color: rgba(255, 255, 255, 0.64);
+}
+
+.practice-feedback-section {
+  display: grid;
+  gap: 8px;
+}
+
+.practice-feedback-section h3 {
+  font-size: 0.86rem;
+}
+
+.practice-feedback-section li,
+.practice-feedback-section > p {
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.practice-hint-list {
+  display: grid;
+  gap: 8px;
+}
+
+.practice-hint {
+  display: grid;
+  gap: 6px;
+  border-left: 3px solid rgba(255, 210, 75, 0.8);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.14);
+  padding: 9px 10px;
+}
+
+.practice-hint.priority-high {
+  border-left-color: #ff8f80;
+}
+
+.practice-hint.priority-low {
+  border-left-color: #a2e8bb;
+}
+
+.practice-hint > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.practice-hint > div > span {
+  text-transform: capitalize;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.68rem;
+}
+
+.practice-hint p {
+  font-size: 0.78rem;
+  line-height: 1.42;
+}
+
+.practice-try q {
+  color: #fff1a8;
+  font-weight: 600;
+}
+
+.practice-next-step {
+  display: grid;
+  gap: 5px;
+  border-radius: 10px;
+  background: rgba(255, 210, 75, 0.13);
+  padding: 10px;
+}
+
+.practice-next-step p {
+  font-size: 0.8rem;
+  line-height: 1.45;
 }
 
 .workspace-blackboard-owl {
@@ -3251,4 +3451,9 @@
 .practice-card:focus-visible {
   transform: translateY(-4px) scale(1.055);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.18);
+}
+
+.practice-card--response:hover,
+.practice-card--response:focus-visible {
+  transform: none;
 }

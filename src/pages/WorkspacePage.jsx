@@ -17,14 +17,15 @@ import {
   generateDocumentBlockRewrites,
   getDocument,
   listDocuments,
+  requestDocumentBlockPracticeFeedback,
   saveDocument,
   updateDocumentBlockStatus,
   uploadDocument,
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
 
-const PLACEHOLDER_DELAY_MS = 5000;
 const REGEN_COOLDOWN_MS = 10000;
+const PRACTICE_MAX_CHARS = 4000;
 const DEMO_STORE_KEY = 'project-thesis-rewriter:demo-store:v1';
 const LAST_WORKSPACE_DOCUMENT_KEY = 'project-thesis-rewriter:last-workspace-document:v1';
 const DEMO_BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
@@ -33,6 +34,12 @@ const ANALYSIS_SIGNAL_LABELS = {
   nominalization: 'Nominalization clusters',
   hedging: 'Hedging and certainty',
   transitions: 'Transition gaps',
+};
+const PRACTICE_SCORE_LABELS = {
+  meaningPreservation: 'Meaning kept',
+  clarity: 'Clarity',
+  academicStyle: 'Academic style',
+  grammar: 'Grammar',
 };
 const REWRITE_TONE_CARDS = Object.freeze([
   {
@@ -133,12 +140,6 @@ function workspaceHistoryFallback(selectedDocument) {
   ].filter((document, index, documents) => (
     document?.id && documents.findIndex((item) => item?.id === document.id) === index
   ));
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }
 
 function readDemoStore() {
@@ -544,8 +545,9 @@ export default function WorkspacePage() {
   const [rewriteError, setRewriteError] = useState('');
   const [rewriteCooldownUntil, setRewriteCooldownUntil] = useState(0);
   const [practiceInput, setPracticeInput] = useState('');
-  const [practiceResponse, setPracticeResponse] = useState('');
+  const [practiceFeedback, setPracticeFeedback] = useState(null);
   const [practiceBusy, setPracticeBusy] = useState(false);
+  const [practiceError, setPracticeError] = useState('');
   const [mobileOwlOpen, setMobileOwlOpen] = useState(false);
   const [mobilePanelMode, setMobilePanelMode] = useState('rewriting');
   const [mobileRewriteIndex, setMobileRewriteIndex] = useState(0);
@@ -569,6 +571,7 @@ export default function WorkspacePage() {
   const mobileDragEndedAtRef = useRef(0);
   const rewriteRefreshTimerRef = useRef(null);
   const rewriteContextKeyRef = useRef('');
+  const practiceContextKeyRef = useRef('');
   const wandHoverTimerRef = useRef(null);
   const workspaceUploadInputRef = useRef(null);
   const mobileOptionsPanelRef = useRef(null);
@@ -608,6 +611,11 @@ export default function WorkspacePage() {
     ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}`
     : '';
   rewriteContextKeyRef.current = currentRewriteKey;
+  const currentPracticeKey = selectedDocument?.id && activeEditorBlock?.blockId
+    ? `${selectedDocument.id}|${activeEditorBlock.blockId}|${activeEditorBlock.text ?? ''}`
+    : '';
+  const currentPracticeRequestKey = `${currentPracticeKey}|${practiceInput}`;
+  practiceContextKeyRef.current = currentPracticeRequestKey;
 
   useEffect(() => {
     setAnalysisError('');
@@ -617,6 +625,13 @@ export default function WorkspacePage() {
     setRewriteError('');
     setRewriteCards(createRewriteCards());
   }, [currentRewriteKey]);
+
+  useEffect(() => {
+    setPracticeInput('');
+    setPracticeFeedback(null);
+    setPracticeError('');
+    setMobilePracticeIndex(0);
+  }, [currentPracticeKey]);
 
   useEffect(() => () => {
     if (rewriteRefreshTimerRef.current) {
@@ -761,6 +776,10 @@ export default function WorkspacePage() {
     setRewriteAllCompleted(false);
     setRewriteCards((cards) => cards.map(resetRewriteCard));
     setRewriteError('');
+    setPracticeInput('');
+    setPracticeFeedback(null);
+    setPracticeError('');
+    setMobilePracticeIndex(0);
     setWorkspaceHistoryExpanded(false);
     rememberWorkspaceDocument(hydratedDocument);
     setView('workspace');
@@ -1383,17 +1402,212 @@ export default function WorkspacePage() {
     )));
   }
 
-  async function tryPracticeResponse(event) {
+  async function tryPracticeResponse(event, { showMobileFeedback = false } = {}) {
     const target = event.currentTarget;
+    const documentId = selectedDocument?.id;
+    const blockId = activeEditorBlock?.blockId;
+    const attemptText = practiceInput.trim();
+
+    if (!documentId || !blockId) {
+      setPracticeError('Select a text block before starting practice.');
+      return;
+    }
+    if (documentId.startsWith('demo-')) {
+      setPracticeError('Save this document to the backend before using AI practice.');
+      return;
+    }
+    if (!attemptText) {
+      setPracticeError('Write your own revision before requesting feedback.');
+      return;
+    }
     if (practiceBusy) return;
+
+    const requestKey = currentPracticeRequestKey;
     setPracticeBusy(true);
-    setPracticeResponse('');
+    setPracticeFeedback(null);
+    setPracticeError('');
+    setWorkspaceNotice('');
+    setWorkspaceOwlError(false);
     setWorkspaceOwlLoading(true);
-    runWorkspaceMagic(target);
-    await sleep(PLACEHOLDER_DELAY_MS);
-    setPracticeResponse(`This is placeholder practice response for: ${practiceInput || 'the selected sentence'}.`);
-    setWorkspaceOwlLoading(false);
-    setPracticeBusy(false);
+    if (showMobileFeedback) setMobilePracticeIndex(1);
+    void runWorkspaceMagic(target);
+
+    try {
+      if (workspaceDirty) {
+        const saved = await saveWorkspaceDocument();
+        if (!saved) {
+          setPracticeError('Save the current document before requesting AI feedback.');
+          return;
+        }
+      }
+
+      const response = await requestDocumentBlockPracticeFeedback(documentId, blockId, attemptText);
+      if (practiceContextKeyRef.current !== requestKey) return;
+
+      setPracticeFeedback(response.practice);
+      setWorkspaceNotice(response.cached ? 'Loaded saved practice feedback.' : 'Practice feedback is ready.');
+    } catch (error) {
+      if (practiceContextKeyRef.current !== requestKey) return;
+      setPracticeError(error.message || 'AI practice feedback is temporarily unavailable.');
+      triggerWorkspaceError();
+    } finally {
+      setWorkspaceOwlLoading(false);
+      setPracticeBusy(false);
+    }
+  }
+
+  function handlePracticeInputChange(event) {
+    setPracticeInput(event.target.value);
+    setPracticeFeedback(null);
+    setPracticeError('');
+  }
+
+  function renderPracticeComposer({ mobile = false } = {}) {
+    const learningGoals = currentBlockAnalysis?.ai?.learningGoals ?? [];
+
+    return (
+      <article
+        className="practice-card practice-card--composer"
+        data-workspace-wand-target="true"
+        onMouseEnter={holdWorkspaceWand}
+        onPointerEnter={holdWorkspaceWand}
+        onFocus={holdWorkspaceWand}
+      >
+        <div className="practice-card-heading">
+          <strong>Your revision</strong>
+          <span>{practiceInput.length} / {PRACTICE_MAX_CHARS}</span>
+        </div>
+        <div className="practice-goals">
+          <strong>Practice goals from analysis</strong>
+          <ul>
+            {learningGoals.length
+              ? learningGoals.map((goal) => <li key={goal}>{goal}</li>)
+              : <li>Analyze this block first to get targeted practice goals.</li>}
+          </ul>
+        </div>
+        <textarea
+          value={practiceInput}
+          onChange={handlePracticeInputChange}
+          maxLength={PRACTICE_MAX_CHARS}
+          aria-label="Your practice revision"
+          placeholder="Rewrite the selected block in your own words..."
+        />
+        {practiceError ? <p className="practice-error" role="alert">{practiceError}</p> : null}
+        <button
+          type="button"
+          onMouseEnter={holdWorkspaceWand}
+          onClick={mobile ? handleMobilePracticeTry : tryPracticeResponse}
+          disabled={practiceBusy || !activeEditorBlock?.blockId || !practiceInput.trim()}
+        >
+          {practiceBusy ? 'Reviewing...' : 'Get AI feedback'}
+        </button>
+      </article>
+    );
+  }
+
+  function renderPracticeFeedback({ mobile = false } = {}) {
+    const feedback = practiceFeedback;
+    const originalScores = feedback?.scores?.original ?? {};
+    const revisionScores = feedback?.scores?.revision ?? {};
+
+    return (
+      <article
+        className={`practice-card practice-card--response${feedback?.readyToApply ? ' is-ready' : ''}`}
+        data-workspace-wand-target="true"
+        onMouseEnter={holdWorkspaceWand}
+        onPointerEnter={holdWorkspaceWand}
+        onFocus={holdWorkspaceWand}
+        aria-live="polite"
+      >
+        <div className="practice-card-heading">
+          <strong>AI coaching</strong>
+          {feedback ? (
+            <span className={feedback.readyToApply ? 'is-ready' : 'needs-revision'}>
+              {feedback.readyToApply ? 'Ready for review' : 'Revise and retry'}
+            </span>
+          ) : null}
+        </div>
+        {practiceBusy ? <p className="practice-feedback-empty">Reviewing your revision...</p> : null}
+        {!practiceBusy && mobile && practiceError ? <p className="practice-error" role="alert">{practiceError}</p> : null}
+        {!practiceBusy && !practiceError && !feedback ? (
+          <p className="practice-feedback-empty">Submit your own revision to receive coaching.</p>
+        ) : null}
+        {feedback ? (
+          <>
+            <p className="practice-feedback-summary">{feedback.summary}</p>
+            <div className="practice-score-table">
+              <table aria-label="Original and revision score comparison">
+                <thead>
+                  <tr>
+                    <th scope="col">Measure</th>
+                    <th scope="col">Original</th>
+                    <th scope="col">Yours</th>
+                    <th scope="col">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(PRACTICE_SCORE_LABELS).map(([key, label]) => {
+                    const originalScore = originalScores[key] ?? 0;
+                    const revisionScore = revisionScores[key] ?? 0;
+                    const difference = revisionScore - originalScore;
+                    const changeClass = difference > 0
+                      ? 'is-improved'
+                      : difference < 0 ? 'is-lower' : 'is-same';
+
+                    return (
+                      <tr key={key}>
+                        <th scope="row">{label}</th>
+                        <td>{originalScore}</td>
+                        <td>{revisionScore}</td>
+                        <td className={`practice-score-change ${changeClass}`}>
+                          {difference > 0 ? `+${difference}` : difference}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <section className="practice-feedback-section">
+              <h3>What you did well</h3>
+              {feedback.strengths?.length ? (
+                <ul>
+                  {feedback.strengths.map((strength) => <li key={strength}>{strength}</li>)}
+                </ul>
+              ) : (
+                <p>No clear improvement from the original yet.</p>
+              )}
+            </section>
+            <section className="practice-feedback-section">
+              <h3>Hints for your next revision</h3>
+              {feedback.hints?.length ? (
+                <div className="practice-hint-list">
+                  {feedback.hints.map((hint, index) => (
+                    <article className={`practice-hint priority-${hint.priority}`} key={`${hint.issue}-${index}`}>
+                      <div>
+                        <strong>{hint.issue}</strong>
+                        <span>{hint.priority}</span>
+                      </div>
+                      <p>{hint.explanation}</p>
+                      <p className="practice-try"><strong>Try:</strong> <q>{hint.suggestedPhrase}</q></p>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p>No substantial issues were identified.</p>
+              )}
+            </section>
+            <div className="practice-next-step">
+              <strong>Next step</strong>
+              <p>{feedback.nextStep}</p>
+            </div>
+            {mobile ? (
+              <button type="button" onClick={() => setMobilePracticeIndex(0)}>Revise my attempt</button>
+            ) : null}
+          </>
+        ) : null}
+      </article>
+    );
   }
 
   function renderRewriteCard(card) {
@@ -1480,8 +1694,7 @@ export default function WorkspacePage() {
   }
 
   function handleMobilePracticeTry(event) {
-    setMobilePracticeIndex(1);
-    tryPracticeResponse(event);
+    tryPracticeResponse(event, { showMobileFeedback: true });
   }
 
   function handleMobileOwlPointerUp(event) {
@@ -1547,36 +1760,9 @@ export default function WorkspacePage() {
                 <PanelChevron direction="right" />
               </button>
             </div>
-            {mobilePracticeIndex === 0 ? (
-              <article
-                className="practice-card"
-                data-workspace-wand-target="true"
-                onMouseEnter={holdWorkspaceWand}
-                onPointerEnter={holdWorkspaceWand}
-                onFocus={holdWorkspaceWand}
-              >
-                <p>Write a replacement sentence and try a local placeholder response.</p>
-                <textarea
-                  value={practiceInput}
-                  onChange={(event) => setPracticeInput(event.target.value)}
-                  placeholder="Type your replacement sentence..."
-                />
-                <button type="button" onMouseEnter={holdWorkspaceWand} onClick={handleMobilePracticeTry} disabled={practiceBusy}>
-                  {practiceBusy ? 'Thinking...' : 'Try Response'}
-                </button>
-              </article>
-            ) : (
-              <article
-                className="practice-card practice-card--response"
-                data-workspace-wand-target="true"
-                onMouseEnter={holdWorkspaceWand}
-                onPointerEnter={holdWorkspaceWand}
-                onFocus={holdWorkspaceWand}
-              >
-                <span>View only</span>
-                <p>{practiceResponse || 'Responses will appear here after the 5s placeholder delay.'}</p>
-              </article>
-            )}
+            {mobilePracticeIndex === 0
+              ? renderPracticeComposer({ mobile: true })
+              : renderPracticeFeedback({ mobile: true })}
           </div>
         )}
       </section>
@@ -1791,33 +1977,8 @@ export default function WorkspacePage() {
     return (
       <section className="workspace-mode-card workspace-mode-card--interactive">
         <h2>Practicing</h2>
-        <article
-          className="practice-card"
-          data-workspace-wand-target="true"
-          onMouseEnter={holdWorkspaceWand}
-          onPointerEnter={holdWorkspaceWand}
-          onFocus={holdWorkspaceWand}
-        >
-          <p>Write a replacement sentence and try a local placeholder response.</p>
-          <textarea
-            value={practiceInput}
-            onChange={(event) => setPracticeInput(event.target.value)}
-            placeholder="Type your replacement sentence..."
-          />
-          <button type="button" onMouseEnter={holdWorkspaceWand} onClick={tryPracticeResponse} disabled={practiceBusy}>
-            {practiceBusy ? 'Thinking...' : 'Try Response'}
-          </button>
-        </article>
-        <article
-          className="practice-card practice-card--response"
-          data-workspace-wand-target="true"
-          onMouseEnter={holdWorkspaceWand}
-          onPointerEnter={holdWorkspaceWand}
-          onFocus={holdWorkspaceWand}
-        >
-          <span>View only</span>
-          <p>{practiceResponse || 'Responses will appear here after the 5s placeholder delay.'}</p>
-        </article>
+        {renderPracticeComposer()}
+        {renderPracticeFeedback()}
       </section>
     );
   }

@@ -61,3 +61,10 @@ export function acceptDocumentBlockRewrite(documentId, blockId, rewriteId) {
     method: 'POST',
   });
 }
+
+export function requestDocumentBlockPracticeFeedback(documentId, blockId, attemptText) {
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/practice-feedback`, {
+    method: 'POST',
+    body: JSON.stringify({ attemptText }),
+  });
+}

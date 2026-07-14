@@ -1,6 +1,6 @@
 # AI Integration
 
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
 This is the living technical document for AI integration in Thesis Rewriter.
 Update it whenever an AI workflow, prompt, endpoint, database table, model,
@@ -15,15 +15,15 @@ backend path, persistence, and verification are implemented.
 | Area | Status | Current behavior |
 | --- | --- | --- |
 | OpenAI configuration | Implemented | Server-only API key and model variables are documented in `.env.example`. |
-| OpenAI Responses API | Implemented for analysis | Express calls the configured model through the OpenAI Node SDK. |
-| Structured Outputs | Implemented for analysis | The analysis response is parsed and validated with Zod and `zodTextFormat`. |
+| OpenAI Responses API | Implemented | Express calls configured models for analysis, rewriting, and practice feedback through the OpenAI Node SDK. |
+| Structured Outputs | Implemented | Analysis, rewriting, and practice responses are parsed and validated with Zod and `zodTextFormat`. |
 | Deterministic block metrics | Implemented | Counts and simple writing signals are calculated locally before the model call. |
 | Selected-block analysis | Implemented | Users select one editor block, choose filters, and request focused coaching. |
 | Analysis persistence | Implemented | Results are cached in `block_analyses` using document, block, text hash, filters, model, and prompt version. |
 | Three rewriting options | Implemented | Users generate, inspect, regenerate, and apply Formal & Academic, Persuasive & Argumentative, and Accessible & Concise rewrites. |
-| Practice feedback | Placeholder | Existing feedback is still generated locally after a simulated delay. |
+| Practice feedback | Implemented | Users submit their own selected-block revision and receive comparative scores, concrete improvements, short phrase suggestions, and a readiness flag. |
 | Realtime AI progress | Not implemented | Socket.io is installed, but AI processing events are not connected. |
-| Per-user AI credits | Not implemented | The analysis and rewriting routes have an IP rate limit but no user quota or subscription enforcement. |
+| Per-user AI credits | Not implemented | The analysis, rewriting, and practice routes have an IP rate limit but no user quota or subscription enforcement. |
 
 ## User Workflow
 
@@ -52,7 +52,7 @@ The intended complete product workflow remains:
 Analyze selected block
     -> generate a rewrite from any of the three tone cards
     -> let the user write a practice revision
-    -> return teaching feedback
+    -> return teaching feedback with targeted phrase suggestions
     -> apply or reject a suggestion
     -> save the edited document
     -> advance to another block
@@ -66,12 +66,14 @@ The server reads these variables:
 OPENAI_API_KEY=
 OPENAI_REWRITE_MODEL=gpt-5.4-mini
 OPENAI_ANALYSIS_MODEL=gpt-5.4-mini
+OPENAI_PRACTICE_MODEL=gpt-5.4-mini
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 ```
 
 - `OPENAI_API_KEY` authenticates requests made by Express.
 - `OPENAI_ANALYSIS_MODEL` selects the block-analysis model.
 - `OPENAI_REWRITE_MODEL` selects the three-tone rewriting model.
+- `OPENAI_PRACTICE_MODEL` selects the student-revision coaching model.
 - `OPENAI_EMBEDDING_MODEL` is reserved for future embedding-based features;
   current semantic partitioning runs locally and does not call this model.
 
@@ -332,7 +334,7 @@ The Analyzing panel now:
 6. displays deterministic metrics separately from model scores;
 7. displays issue counts by filter;
 8. shows evidence, explanations, and suggestions; and
-9. exposes learning goals for the future practice workflow.
+9. exposes learning goals for the Practice workflow.
 
 Client results are keyed by block id, current block text, and selected filters.
 Changing the selected text or filter set therefore hides a result that no
@@ -352,7 +354,7 @@ Implemented controls:
 - Zod-validated Structured Output;
 - 30-second OpenAI client timeout;
 - one SDK retry;
-- 30 analysis or rewrite-generation requests per 15 minutes per rate-limit identity;
+- 30 analysis, rewrite-generation, or practice-feedback requests per 15 minutes per rate-limit identity;
 - safe messages for upstream failures and rate limits;
 - source-text hashing and response caching;
 - `store: false` on the Responses API request; and
@@ -438,24 +440,193 @@ restores the previous block's original display status. Rewriting targets the
 selected block, and **Use this rewrite** persists `processed` while replacing
 its text.
 
-## Planned Practice Feedback
+## Implemented Practice Feedback
 
-Planned endpoint:
+### File workflow
+
+1. `src/pages/WorkspacePage.jsx` reads `activeEditorBlock.blockId` and the
+   student's text from the Practice panel. It optionally displays the current
+   analysis learning goals, but analysis is not required to submit practice.
+2. Pending editor changes are saved so the server compares the attempt with the
+   current PostgreSQL block rather than stale browser text.
+3. `src/services/documentsApi.js` sends the attempt to the authenticated
+   practice endpoint.
+4. `server/routers/documents.js` validates the attempt, resolves the signed-in
+   user, loads the owned block and immediate neighbors, checks the exact cache,
+   and coordinates generation and persistence.
+5. `server/ai/practiceFeedback.js` sends the comparison prompt through the
+   Responses API and validates the Structured Output.
+6. `server/models/practice.js` saves or retrieves the exact attempt in
+   `block_practice_attempts`.
+7. `WorkspacePage.jsx` renders the structured coaching, unless the selected
+   block or attempt changed while the request was running.
+
+### Endpoint
 
 ```http
 POST /api/documents/:documentId/blocks/:blockId/practice-feedback
+Content-Type: application/json
 ```
 
-Practice mode should first expose the learning goals produced by analysis. The
-user writes a revision, and the model compares the original and attempted text
-using stable criteria such as meaning preservation, target tone, clarity, and
-grammar.
+Request body:
 
-The first response should provide strengths and targeted hints instead of
-replacing the student's work with a complete answer. A separate action may
-reveal an example rewrite afterward.
+```json
+{
+  "attemptText": "The student's own revised block."
+}
+```
 
-The existing practice response remains a local placeholder.
+The attempt is trimmed and must contain between 1 and 4,000 characters. The
+document ID and stable block ID come from the active workspace selection. The
+server does not trust browser-provided source text: it reads the current source
+block from PostgreSQL after verifying ownership.
+
+Response shape:
+
+```json
+{
+  "practice": {
+    "id": "practice-attempt-uuid",
+    "blockId": "selected-block-uuid",
+    "sourceTextHash": "sha256",
+    "attemptText": "The student's own revised block.",
+    "summary": "The revision is clearer, but one claim became stronger.",
+    "scores": {
+      "original": {
+        "meaningPreservation": 100,
+        "clarity": 72,
+        "academicStyle": 89,
+        "grammar": 94
+      },
+      "revision": {
+        "meaningPreservation": 74,
+        "clarity": 88,
+        "academicStyle": 82,
+        "grammar": 94
+      }
+    },
+    "strengths": [
+      "The revision uses a more direct subject and verb."
+    ],
+    "hints": [
+      {
+        "priority": "high",
+        "issue": "Claim strength changed",
+        "explanation": "The attempt presents a tentative relationship as certain.",
+        "suggestedPhrase": "may contribute to increased political engagement"
+      }
+    ],
+    "nextStep": "Revise the certainty of the central claim, then compare both versions again.",
+    "readyToApply": false,
+    "model": "gpt-5.4-mini",
+    "promptVersion": "practice-feedback-v2",
+    "createdAt": "2026-07-13T00:00:00.000Z"
+  },
+  "cached": false
+}
+```
+
+### Prompt and teaching contract
+
+The prompt version is:
+
+```text
+practice-feedback-v2
+```
+
+The model compares the student's attempt with the original before evaluating
+style. It checks:
+
+- meaning and claim-strength preservation;
+- logical relationships;
+- citations, quotations, proper names, numbers, statistics, equations, and
+  technical terms;
+- clarity and grammar;
+- compatibility with the document's selected academic style; and
+- continuity with the immediately neighboring blocks.
+
+All source and attempt text is marked as untrusted quoted content. The prompt
+prohibits following instructions found inside that text, inventing evidence or
+citations, and increasing certainty beyond the source.
+
+Practice is intentionally different from Rewriting. A strength must identify a
+concrete improvement introduced by the student's revision, rather than praise
+language that was already present in the original. Each hint includes a short
+`suggestedPhrase` that can be inserted or adapted directly. The phrase may
+rewrite the relevant phrase or clause, but the model must not return a complete
+replacement for the selected block. `readyToApply` is only a coaching signal;
+Practice does not automatically replace the block or change its processed
+status.
+
+### Structured response
+
+The Zod schema requires:
+
+- one summary;
+- original and revision score sets, each containing integer scores from 0 to
+  100 for meaning preservation, clarity, academic style, and grammar;
+- zero to three strengths limited to improvements relative to the original;
+- zero to four hints with low, medium, or high priority and a directly usable
+  phrase suggestion;
+- one next step; and
+- one `readyToApply` boolean.
+
+Each hint contains an issue label, an explanation, and an actionable hint. An
+unparseable or incomplete result is rejected rather than partially rendered.
+
+### Persistence and caching
+
+`block_practice_attempts` stores:
+
+| Column | Purpose |
+| --- | --- |
+| `document_id` | Document ownership and cascade-delete boundary. |
+| `block_id` | Stable selected editor block UUID. |
+| `source_text_hash` | Prevents feedback for old source text from matching edited text. |
+| `attempt_text` | The student's submitted revision. |
+| `attempt_text_hash` | Detects an exact repeated attempt without indexing its full text. |
+| `feedback_json` | Validated scores, strengths, hints, summary, next step, and readiness. |
+| `usage_json` | OpenAI token-usage metadata when available. |
+| `model` | Model that generated the coaching. |
+| `prompt_version` | Prompt/schema contract version. |
+| `created_at` | Creation or exact-cache refresh time. |
+
+The exact cache key is:
+
+```text
+document_id
+block_id
+SHA-256 hash of the source text
+SHA-256 hash of the normalized attempt
+model
+prompt version
+```
+
+Changing the source block, student attempt, configured model, or prompt version
+therefore requests fresh feedback. Repeating the same normalized attempt for
+unchanged source text reuses saved feedback.
+
+### Frontend behavior
+
+Desktop displays the revision composer and coaching together. Mobile uses two
+navigable cards and moves to the coaching card while the request runs. Both
+layouts:
+
+- require an active block and a non-empty attempt;
+- show analysis learning goals as list items, or prompt the user to analyze the
+  selected block when no goals are available;
+- enforce the 4,000-character input limit;
+- save unsaved editor changes before the request;
+- use the owl loading and error states;
+- clear practice text and feedback when another block is selected;
+- discard a response if the block or attempt changed during the request; and
+- compare original and revision scores with a visible change value;
+- show only revision-specific improvements under **What you did well**;
+- render each **Try** value as suggested language rather than another
+  instruction; and
+- distinguish "Ready for review" from "Revise and retry" without changing the
+  block's status.
+
 
 ## AI-Related File Inventory
 
@@ -468,12 +639,15 @@ The existing practice response remains a local placeholder.
 | `server/ai/blockAnalysis.test.js` | Tests deterministic metrics, filter normalization, signatures, and hashing. |
 | `server/ai/blockRewrites.js` | Defines the three tones, Structured Output schemas, versioned safety prompt, and rewrite generation calls. |
 | `server/ai/blockRewrites.test.js` | Tests supported tones and stable structured-result mapping. |
+| `server/ai/practiceFeedback.js` | Validates practice attempts and defines the versioned coaching prompt and Structured Output schema. |
+| `server/ai/practiceFeedback.test.js` | Tests practice-attempt normalization and length validation. |
 | `server/models/analyses.js` | Loads owned block context and reads/writes cached analyses. |
 | `server/models/rewrites.js` | Reads/writes cached rewrite options and records accepted options. |
-| `server/routers/documents.js` | Exposes authenticated analysis, rewrite-generation, and rewrite-acceptance endpoints. |
-| `scripts/db/schema.sql` | Defines `block_analyses`, `block_rewrite_options`, and their cache indexes. |
-| `src/services/documentsApi.js` | Calls the analysis and rewriting endpoints. |
-| `src/pages/WorkspacePage.jsx` | Saves pending edits, requests AI results, rejects stale results, renders coaching, and applies accepted rewrites. |
+| `server/models/practice.js` | Reads and writes exact cached student attempts and structured coaching. |
+| `server/routers/documents.js` | Exposes authenticated analysis, rewriting, and practice endpoints. |
+| `scripts/db/schema.sql` | Defines the AI result tables and their exact cache indexes. |
+| `src/services/documentsApi.js` | Calls the analysis, rewriting, and practice endpoints. |
+| `src/pages/WorkspacePage.jsx` | Saves pending edits, requests AI results, rejects stale results, renders analysis and practice coaching, and applies accepted rewrites. |
 | `src/components/DocumentEditor.jsx` | Reports the currently selected block and its text. |
 | `src/styles/workspace.css` | Styles analysis controls, metrics, scores, issues, goals, loading, errors, and responsive layouts. |
 
@@ -494,15 +668,13 @@ implemented.
 
 | Planned area | Intended responsibility |
 | --- | --- |
-| Practice schema/service | Evaluate a user's revision and return teaching feedback. |
-| Practice model module | Persist attempts, feedback, and scores. |
 | Prompt regression fixtures | Detect behavior changes across prompt/model updates. |
 | AI request accounting | Store latency, usage, status, and user credit consumption. |
 
 ## Verification
 
-The block-analysis and three-tone rewriting implementations were verified on
-2026-07-12 with:
+The block-analysis, three-tone rewriting, and Practice implementations were
+verified on 2026-07-13 with:
 
 ```bash
 npm run db:migrate
@@ -514,9 +686,9 @@ npm run build
 Observed results:
 
 - product schema migration succeeded;
-- `block_analyses` exists in PostgreSQL;
+- all three AI persistence tables exist in PostgreSQL;
 - server syntax checks passed;
-- all 24 automated tests passed; and
+- all 27 automated tests passed; and
 - the Vite production build succeeded.
 
 The build still reports existing dependency/bundle warnings for `lottie-web`
@@ -545,11 +717,29 @@ a persisted document.
 - [x] Add rewrite persistence and endpoint.
 - [x] Replace placeholder rewrite cards with API results.
 - [x] Persist accepted rewrite metadata.
-- [ ] Add practice-attempt persistence and endpoint.
-- [ ] Replace placeholder practice feedback with API results.
+- [x] Add practice-attempt persistence and endpoint.
+- [x] Replace placeholder practice feedback with API results.
 - [ ] Add realtime progress only if observed request duration requires it.
 
 ## Change Log
+
+### 2026-07-13
+
+- Replaced the Practice placeholder delay with authenticated Responses API
+  coaching for the currently selected block.
+- Added `practice-feedback-v2`, a strict schema for meaning, clarity, academic
+  style, grammar, strengths, prioritized hints, next steps, and readiness.
+- Refined Practice feedback to compare original and revision scores, restrict
+  strengths to actual improvements, and return directly usable phrase
+  suggestions instead of instructional **Try** text.
+- Kept Practice educational by prohibiting the model from supplying a complete
+  replacement and by leaving text application and block status unchanged.
+- Added exact attempt caching and persistence in `block_practice_attempts`, with
+  source and attempt hashes, model metadata, prompt version, and token usage.
+- Connected desktop and mobile Practice cards, analysis learning goals,
+  pre-request saving, input validation, owl states, and stale-result rejection.
+- Added `OPENAI_PRACTICE_MODEL`, validation tests, schema migration coverage,
+  and this file-by-file workflow documentation.
 
 ### 2026-07-12
 

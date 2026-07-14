@@ -152,6 +152,33 @@ create unique index if not exists block_rewrite_options_cache_key
 create index if not exists block_rewrite_options_block_created
   on block_rewrite_options (document_id, block_id, created_at desc);
 
+create table if not exists block_practice_attempts (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid not null references documents(id) on delete cascade,
+  block_id uuid not null,
+  source_text_hash text not null,
+  attempt_text text not null,
+  attempt_text_hash text not null,
+  feedback_json jsonb not null,
+  usage_json jsonb,
+  model text not null,
+  prompt_version text not null,
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists block_practice_attempts_cache_key
+  on block_practice_attempts (
+    document_id,
+    block_id,
+    source_text_hash,
+    attempt_text_hash,
+    model,
+    prompt_version
+  );
+
+create index if not exists block_practice_attempts_block_created
+  on block_practice_attempts (document_id, block_id, created_at desc);
+
 create table if not exists document_versions (
   id uuid primary key default gen_random_uuid(),
   document_id uuid not null references documents(id) on delete cascade,

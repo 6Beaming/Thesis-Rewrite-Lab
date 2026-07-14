@@ -43,6 +43,16 @@ import {
   markRewriteAccepted,
   saveBlockRewrite,
 } from '../models/rewrites.js';
+import {
+  PRACTICE_FEEDBACK_PROMPT_VERSION,
+  generatePracticeFeedback,
+  normalizePracticeAttempt,
+} from '../ai/practiceFeedback.js';
+import {
+  findCachedPracticeFeedback,
+  formatPracticeFeedback,
+  savePracticeFeedback,
+} from '../models/practice.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -507,6 +517,56 @@ router.post('/:id/blocks/:blockId/rewrites/:rewriteId/accept', async (req, res) 
   }
 
   res.json({ rewrite: formatBlockRewrite(accepted) });
+});
+
+router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req, res) => {
+  const attemptText = normalizePracticeAttempt(req.body?.attemptText);
+  if (!attemptText) {
+    res.status(400).json({ error: 'Practice text is empty or too long.' });
+    return;
+  }
+
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const context = await getOwnedBlockContext({
+    documentId: req.params.id,
+    blockId: req.params.blockId,
+    userId: user.id,
+  });
+  if (!context) {
+    res.status(404).json({ error: 'Document block not found' });
+    return;
+  }
+
+  const sourceTextHash = hashBlockText(context.text_content);
+  const attemptTextHash = hashBlockText(attemptText);
+  const model = process.env.OPENAI_PRACTICE_MODEL || 'gpt-5.4-mini';
+  const cached = await findCachedPracticeFeedback({
+    documentId: context.document_id,
+    blockId: context.id,
+    sourceTextHash,
+    attemptTextHash,
+    model,
+    promptVersion: PRACTICE_FEEDBACK_PROMPT_VERSION,
+  });
+  if (cached) {
+    res.json({ practice: formatPracticeFeedback(cached), cached: true });
+    return;
+  }
+
+  const generated = await generatePracticeFeedback({ context, attemptText });
+  const saved = await savePracticeFeedback({
+    documentId: context.document_id,
+    blockId: context.id,
+    sourceTextHash,
+    attemptText,
+    attemptTextHash,
+    result: generated.result,
+    usage: generated.usage,
+    model: generated.model,
+    promptVersion: PRACTICE_FEEDBACK_PROMPT_VERSION,
+  });
+
+  res.status(201).json({ practice: formatPracticeFeedback(saved), cached: false });
 });
 
 router.post('/:id/blocks/:blockId/skip', async (req, res) => {
