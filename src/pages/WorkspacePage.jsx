@@ -20,7 +20,6 @@ import {
   listDocuments,
   requestDocumentBlockPracticeFeedback,
   saveDocument,
-  updateDocumentBlockStatus,
   uploadDocument,
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
@@ -878,6 +877,15 @@ export default function WorkspacePage() {
 
   async function handleEditorBlockStatusChange({ blockId, status }) {
     const payload = arguments[0] ?? {};
+
+    // Rewrites are saved from the complete editor snapshot after the replacement
+    // is applied. A separate status-only request here could publish the old block
+    // text and overwrite the local rewrite before that save finishes.
+    if (payload.replacementText !== null && payload.replacementText !== undefined) {
+      setWorkspaceDirty(true);
+      return;
+    }
+
     const nextDocument = payload.contentJson && selectedDocument
       ? documentFromContent(
         selectedDocument,
@@ -902,7 +910,13 @@ export default function WorkspacePage() {
       setWorkspaceDraft(nextDraft);
       setSelectedDocument(nextDocument);
       setEditorContent(nextDocument.content_json);
-      refreshRewriteCardsFromDocument(nextDocument);
+      const hasRemainingBlocks = nextDocument.blocks?.some((block) => (
+        block.status === 'processing' || block.status === 'unprocessed'
+      ));
+      const actionNotice = status === 'skipped'
+        ? 'Skipped block. Moved to the next block.'
+        : 'Completed block. Moved to the next block.';
+      refreshRewriteCardsFromDocument(nextDocument, hasRemainingBlocks ? actionNotice : '');
     }
 
     if (!selectedDocument?.id) {
@@ -915,11 +929,14 @@ export default function WorkspacePage() {
       return;
     }
 
+    if (!nextDocument) {
+      setWorkspaceNotice('Could not save the block status from the editor.');
+      return;
+    }
+
     try {
-      await updateDocumentBlockStatus(selectedDocument.id, blockId, status);
-      if (status !== 'processing') {
-        setWorkspaceNotice(`Marked block as ${status}.`);
-      }
+      const versionLabel = status === 'skipped' ? 'Skipped block' : 'Completed block';
+      await persistWorkspaceDocument(nextDocument, versionLabel);
     } catch (error) {
       setWorkspaceNotice(error.message || 'Could not update the block status.');
     }
@@ -1092,10 +1109,17 @@ export default function WorkspacePage() {
       || !card.response
       || !card.meaningPreserved
     ) return;
+    const animationTarget = event.currentTarget;
     setRewriteBusy(true);
     setRewriteError('');
     try {
       await acceptDocumentBlockRewrite(selectedDocument.id, currentRewriteBlockId, card.rewriteId);
+      const document = applyRewriteCard(card);
+      if (!document) {
+        throw new Error('The selected block could not be updated. Please select it and try again.');
+      }
+      await persistWorkspaceDocument(document, `Accepted ${card.title} rewrite`);
+      void runWorkspaceMagic(animationTarget).catch(() => {});
     } catch (error) {
       setRewriteError(error.message || 'The rewrite could not be applied.');
       triggerWorkspaceError();
@@ -1103,9 +1127,6 @@ export default function WorkspacePage() {
       setWorkspaceOwlLoading(false);
       setRewriteBusy(false);
     }
-    await runWorkspaceMagic(event.currentTarget);
-    applyRewriteCard(card);
-    setRewriteBusy(false);
   }
 
   function resetRewriteCardsForNextBlock(nextNotice = 'Cards refreshed for the next processing block.') {
@@ -1253,11 +1274,12 @@ export default function WorkspacePage() {
   }
 
   function applyRewriteCard(card) {
-    if (!card.response) return;
+    if (!card.response) return null;
     const document = applyStatusToSelectedBlock('processed', card.response);
     if (document) {
       lockOrCompleteRewriteCards(document, `${card.title} applied. Cards refreshed for the next block.`);
     }
+    return document;
   }
 
   function toggleRewriteExplanation(cardId) {

@@ -424,29 +424,41 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
   }
 }
 
-function selectedBlockActionButton({ action, label, className = '', disabled = false }) {
+function selectedBlockActionButton({
+  action,
+  blockId,
+  label,
+  className = '',
+  disabled = false,
+}) {
   const button = window.document.createElement('button');
   button.type = 'button';
   button.className = className;
   button.dataset.selectedBlockAction = action;
+  if (blockId) button.dataset.selectedBlockId = blockId;
   button.disabled = disabled;
   button.setAttribute('aria-label', label);
   button.addEventListener('mousedown', (event) => event.preventDefault());
   return button;
 }
 
-function createSelectedBlockActions(hasNextBlock) {
+function createSelectedBlockActions(blockId, hasNextBlock) {
   const actions = window.document.createElement('span');
   actions.className = 'selected-block-actions';
   actions.contentEditable = 'false';
   actions.setAttribute('role', 'group');
   actions.setAttribute('aria-label', 'Selected block actions');
 
-  const skipButton = selectedBlockActionButton({ action: 'skip', label: 'Skip selected block' });
+  const skipButton = selectedBlockActionButton({
+    action: 'skip',
+    blockId,
+    label: 'Skip selected block',
+  });
   skipButton.textContent = 'Skip';
 
   const completeButton = selectedBlockActionButton({
     action: 'complete',
+    blockId,
     label: 'Complete selected block',
     className: 'selected-block-action--complete',
   });
@@ -454,6 +466,7 @@ function createSelectedBlockActions(hasNextBlock) {
 
   const nextButton = selectedBlockActionButton({
     action: 'next',
+    blockId,
     label: 'Go to next block',
     className: 'selected-block-action--next',
     disabled: !hasNextBlock,
@@ -488,7 +501,7 @@ const BlockSelectionDecoration = Extension.create({
               Decoration.node(range.from, range.to, { class: 'doc-block--selected' }),
               Decoration.widget(
                 range.to - 1,
-                () => createSelectedBlockActions(hasNextBlock),
+                () => createSelectedBlockActions(selected?.blockId ?? null, hasNextBlock),
                 {
                   key: `selected-block-actions-${selected?.blockId ?? 'none'}-${hasNextBlock}`,
                   side: 1,
@@ -971,8 +984,9 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       if (!button || button.disabled) return;
 
       const action = button.dataset.selectedBlockAction;
-      if (action === 'skip') setSelectedBlockStatus('skipped');
-      if (action === 'complete') setSelectedBlockStatus('processed');
+      const targetBlockId = button.dataset.selectedBlockId ?? null;
+      if (action === 'skip') setSelectedBlockStatus('skipped', targetBlockId);
+      if (action === 'complete') setSelectedBlockStatus('processed', targetBlockId);
       if (action === 'next') selectNextBlock();
     };
 
@@ -1172,6 +1186,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       onBlockStatusChange?.({
         blockId: updatedBlockId,
         status,
+        replacementText,
         nextProcessingBlockId: nextLocalProcessingId,
         ...snapshot,
       });
@@ -1184,8 +1199,8 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     getSnapshot: () => createEditorSnapshot(editor),
   }), [editor, onBlockStatusChange]);
 
-  function setSelectedBlockStatus(status) {
-    const blockId = selectedParagraphInfo(editor).blockId;
+  function setSelectedBlockStatus(status, targetBlockId = null) {
+    const blockId = targetBlockId ?? selectedParagraphInfo(editor).blockId;
     applyCurrentBlockStatus({ status, targetBlockId: blockId });
   }
 
