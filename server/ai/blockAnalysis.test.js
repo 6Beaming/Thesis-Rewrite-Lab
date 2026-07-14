@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  BLOCK_ANALYSIS_PROMPT_VERSION,
   analysisFilterSignature,
   computeDeterministicMetrics,
   hashBlockText,
   normalizeAnalysisFilters,
 } from './blockAnalysis.js';
+
+test('uses the context-sensitive block analysis prompt', () => {
+  assert.equal(BLOCK_ANALYSIS_PROMPT_VERSION, 'block-analysis-v2');
+});
 
 test('computes stable local metrics for an academic block', () => {
   const metrics = computeDeterministicMetrics(
@@ -30,4 +35,3 @@ test('hashes the exact block text', () => {
   assert.equal(hashBlockText('Same text.'), hashBlockText('Same text.'));
   assert.notEqual(hashBlockText('Same text.'), hashBlockText('Same text!'));
 });
-

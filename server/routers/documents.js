@@ -19,6 +19,7 @@ import {
 import { getVersion, listVersions, revertDocumentToVersion } from '../models/versions.js';
 import {
   findCachedBlockAnalysis,
+  findLatestBlockAnalysis,
   formatBlockAnalysis,
   getOwnedBlockContext,
   saveBlockAnalysis,
@@ -539,12 +540,19 @@ router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req,
 
   const sourceTextHash = hashBlockText(context.text_content);
   const attemptTextHash = hashBlockText(attemptText);
+  const latestAnalysis = await findLatestBlockAnalysis({
+    documentId: context.document_id,
+    blockId: context.id,
+    sourceTextHash,
+  });
+  const analysisContextKey = latestAnalysis?.id ?? 'none';
   const model = process.env.OPENAI_PRACTICE_MODEL || 'gpt-5.4-mini';
   const cached = await findCachedPracticeFeedback({
     documentId: context.document_id,
     blockId: context.id,
     sourceTextHash,
     attemptTextHash,
+    analysisContextKey,
     model,
     promptVersion: PRACTICE_FEEDBACK_PROMPT_VERSION,
   });
@@ -553,13 +561,18 @@ router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req,
     return;
   }
 
-  const generated = await generatePracticeFeedback({ context, attemptText });
+  const generated = await generatePracticeFeedback({
+    context,
+    attemptText,
+    analysis: latestAnalysis ? formatBlockAnalysis(latestAnalysis) : null,
+  });
   const saved = await savePracticeFeedback({
     documentId: context.document_id,
     blockId: context.id,
     sourceTextHash,
     attemptText,
     attemptTextHash,
+    analysisContextKey,
     result: generated.result,
     usage: generated.usage,
     model: generated.model,

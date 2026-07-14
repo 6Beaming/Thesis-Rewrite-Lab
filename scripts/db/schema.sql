@@ -159,6 +159,7 @@ create table if not exists block_practice_attempts (
   source_text_hash text not null,
   attempt_text text not null,
   attempt_text_hash text not null,
+  analysis_context_key text not null default 'none',
   feedback_json jsonb not null,
   usage_json jsonb,
   model text not null,
@@ -166,12 +167,18 @@ create table if not exists block_practice_attempts (
   created_at timestamptz not null default now()
 );
 
-create unique index if not exists block_practice_attempts_cache_key
+alter table block_practice_attempts
+  add column if not exists analysis_context_key text not null default 'none';
+
+drop index if exists block_practice_attempts_cache_key;
+
+create unique index if not exists block_practice_attempts_context_cache_key
   on block_practice_attempts (
     document_id,
     block_id,
     source_text_hash,
     attempt_text_hash,
+    analysis_context_key,
     model,
     prompt_version
   );

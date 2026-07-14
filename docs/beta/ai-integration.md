@@ -187,7 +187,7 @@ Successful response shape:
       ]
     },
     "model": "gpt-5.4-mini",
-    "promptVersion": "block-analysis-v1",
+    "promptVersion": "block-analysis-v2",
     "createdAt": "2026-07-12T00:00:00.000Z"
   },
   "cached": false
@@ -248,7 +248,7 @@ model-generated scores.
 The prompt version is currently:
 
 ```text
-block-analysis-v1
+block-analysis-v2
 ```
 
 The server prompt instructs the model to:
@@ -257,6 +257,11 @@ The server prompt instructs the model to:
 - analyze exactly one selected block;
 - use neighbors only for local context;
 - report only requested filter categories;
+- avoid manufacturing an issue merely because a filter is enabled;
+- treat passive voice as acceptable when it appropriately backgrounds an
+  unknown or unimportant actor;
+- when an active alternative is warranted, keep it academic and use a concrete
+  actor supported by the source rather than a vague subject such as "people";
 - avoid rewriting during the analysis step;
 - avoid inventing facts, evidence, statistics, or citations;
 - keep evidence as a short exact excerpt from the target block;
@@ -354,6 +359,8 @@ Implemented controls:
 - Zod-validated Structured Output;
 - 30-second OpenAI client timeout;
 - one SDK retry;
+- one Practice semantic retry when a suggested phrase restores wording that
+  the matching analysis flagged;
 - 30 analysis, rewrite-generation, or practice-feedback requests per 15 minutes per rate-limit identity;
 - safe messages for upstream failures and rate limits;
 - source-text hashing and response caching;
@@ -452,13 +459,15 @@ its text.
 3. `src/services/documentsApi.js` sends the attempt to the authenticated
    practice endpoint.
 4. `server/routers/documents.js` validates the attempt, resolves the signed-in
-   user, loads the owned block and immediate neighbors, checks the exact cache,
-   and coordinates generation and persistence.
-5. `server/ai/practiceFeedback.js` sends the comparison prompt through the
+   user, loads the owned block and immediate neighbors, then loads the newest
+   analysis for that exact source text when one exists.
+5. The route includes the analysis row ID in the exact Practice cache key, then
+   coordinates generation and persistence.
+6. `server/ai/practiceFeedback.js` sends the comparison prompt through the
    Responses API and validates the Structured Output.
-6. `server/models/practice.js` saves or retrieves the exact attempt in
+7. `server/models/practice.js` saves or retrieves the exact attempt in
    `block_practice_attempts`.
-7. `WorkspacePage.jsx` renders the structured coaching, unless the selected
+8. `WorkspacePage.jsx` renders the structured coaching, unless the selected
    block or attempt changed while the request was running.
 
 ### Endpoint
@@ -490,6 +499,7 @@ Response shape:
     "blockId": "selected-block-uuid",
     "sourceTextHash": "sha256",
     "attemptText": "The student's own revised block.",
+    "analysisContextKey": "latest-analysis-uuid-or-none",
     "summary": "The revision is clearer, but one claim became stronger.",
     "scores": {
       "original": {
@@ -519,7 +529,7 @@ Response shape:
     "nextStep": "Revise the certainty of the central claim, then compare both versions again.",
     "readyToApply": false,
     "model": "gpt-5.4-mini",
-    "promptVersion": "practice-feedback-v2",
+    "promptVersion": "practice-feedback-v3",
     "createdAt": "2026-07-13T00:00:00.000Z"
   },
   "cached": false
@@ -531,7 +541,7 @@ Response shape:
 The prompt version is:
 
 ```text
-practice-feedback-v2
+practice-feedback-v3
 ```
 
 The model compares the student's attempt with the original before evaluating
@@ -545,9 +555,31 @@ style. It checks:
 - compatibility with the document's selected academic style; and
 - continuity with the immediately neighboring blocks.
 
-All source and attempt text is marked as untrusted quoted content. The prompt
-prohibits following instructions found inside that text, inventing evidence or
-citations, and increasing certainty beyond the source.
+All source text, attempt text, and prior analysis guidance are marked as
+untrusted reference content. The prompt prohibits following instructions found
+inside those fields, inventing evidence or citations, and increasing certainty
+beyond the source.
+
+When an analysis exists for the current source-text hash, Practice also receives
+its requested filters, flagged issues, evidence excerpts, suggestions, and
+learning goals. Practice must acknowledge when a revision addresses one of
+those issues. If the revision creates a second problem, it explains the
+tradeoff and suggests language that satisfies both goals instead of restoring
+the wording that analysis flagged.
+
+For example, if analysis flags `can be found` as passive and the student writes
+`people can find`, Practice may identify the successful move to active voice
+and the new vague-agent/formality problem. Its phrase suggestion should use a
+concrete academic actor, such as `institutional repositories provide access
+to`, rather than recommending either conflicting version.
+
+After parsing the structured response, the server also compares every
+`suggestedPhrase` with the evidence excerpts from the matching analysis. If a
+phrase contains wording that analysis flagged, the server rejects that result
+and retries once with the conflicting phrase and evidence explicitly listed.
+If the retry still conflicts, the request fails safely instead of displaying
+contradictory coaching. When this semantic retry occurs, `usage_json` records
+both response-usage objects under an `attempts` array.
 
 Practice is intentionally different from Rewriting. A strength must identify a
 concrete improvement introduced by the student's revision, rather than praise
@@ -585,6 +617,7 @@ unparseable or incomplete result is rejected rather than partially rendered.
 | `source_text_hash` | Prevents feedback for old source text from matching edited text. |
 | `attempt_text` | The student's submitted revision. |
 | `attempt_text_hash` | Detects an exact repeated attempt without indexing its full text. |
+| `analysis_context_key` | Latest matching analysis row ID, or `none` when the block has not been analyzed. |
 | `feedback_json` | Validated scores, strengths, hints, summary, next step, and readiness. |
 | `usage_json` | OpenAI token-usage metadata when available. |
 | `model` | Model that generated the coaching. |
@@ -598,13 +631,15 @@ document_id
 block_id
 SHA-256 hash of the source text
 SHA-256 hash of the normalized attempt
+latest matching analysis row ID or none
 model
 prompt version
 ```
 
-Changing the source block, student attempt, configured model, or prompt version
-therefore requests fresh feedback. Repeating the same normalized attempt for
-unchanged source text reuses saved feedback.
+Changing the source block, student attempt, latest analysis context, configured
+model, or prompt version therefore requests fresh feedback. Repeating the same
+normalized attempt with unchanged source and analysis context reuses saved
+feedback.
 
 ### Frontend behavior
 
@@ -641,7 +676,7 @@ layouts:
 | `server/ai/blockRewrites.test.js` | Tests supported tones and stable structured-result mapping. |
 | `server/ai/practiceFeedback.js` | Validates practice attempts and defines the versioned coaching prompt and Structured Output schema. |
 | `server/ai/practiceFeedback.test.js` | Tests practice-attempt normalization and length validation. |
-| `server/models/analyses.js` | Loads owned block context and reads/writes cached analyses. |
+| `server/models/analyses.js` | Loads owned block context, reads/writes cached analyses, and supplies the latest matching analysis to Practice. |
 | `server/models/rewrites.js` | Reads/writes cached rewrite options and records accepted options. |
 | `server/models/practice.js` | Reads and writes exact cached student attempts and structured coaching. |
 | `server/routers/documents.js` | Exposes authenticated analysis, rewriting, and practice endpoints. |
@@ -688,7 +723,7 @@ Observed results:
 - product schema migration succeeded;
 - all three AI persistence tables exist in PostgreSQL;
 - server syntax checks passed;
-- all 27 automated tests passed; and
+- all 30 automated tests passed; and
 - the Vite production build succeeded.
 
 The build still reports existing dependency/bundle warnings for `lottie-web`
@@ -727,8 +762,17 @@ a persisted document.
 
 - Replaced the Practice placeholder delay with authenticated Responses API
   coaching for the currently selected block.
-- Added `practice-feedback-v2`, a strict schema for meaning, clarity, academic
+- Added `practice-feedback-v3`, a strict schema for meaning, clarity, academic
   style, grammar, strengths, prioritized hints, next steps, and readiness.
+- Connected Practice to the latest analysis for the exact source block and made
+  the cache key analysis-aware, preventing contradictory cached coaching.
+- Updated `block-analysis-v2` to avoid treating passive voice as inherently
+  wrong and to require concrete, academically appropriate actors when an active
+  alternative is genuinely useful.
+- Required Practice to acknowledge resolved analysis issues and handle new
+  tradeoffs without suggesting the exact wording that analysis flagged.
+- Added a deterministic flagged-evidence check and one semantic retry so a
+  model response cannot silently restore an excerpt that Analysis rejected.
 - Refined Practice feedback to compare original and revision scores, restrict
   strengths to actual improvements, and return directly usable phrase
   suggestions instead of instructional **Try** text.

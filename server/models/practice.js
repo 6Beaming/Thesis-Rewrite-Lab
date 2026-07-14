@@ -5,6 +5,7 @@ export async function findCachedPracticeFeedback({
   blockId,
   sourceTextHash,
   attemptTextHash,
+  analysisContextKey,
   model,
   promptVersion,
 }) {
@@ -16,12 +17,21 @@ export async function findCachedPracticeFeedback({
         and block_id = $2
         and source_text_hash = $3
         and attempt_text_hash = $4
-        and model = $5
-        and prompt_version = $6
+        and analysis_context_key = $5
+        and model = $6
+        and prompt_version = $7
       order by created_at desc
       limit 1
     `,
-    [documentId, blockId, sourceTextHash, attemptTextHash, model, promptVersion],
+    [
+      documentId,
+      blockId,
+      sourceTextHash,
+      attemptTextHash,
+      analysisContextKey,
+      model,
+      promptVersion,
+    ],
   );
   return result.rows[0] ?? null;
 }
@@ -32,6 +42,7 @@ export async function savePracticeFeedback({
   sourceTextHash,
   attemptText,
   attemptTextHash,
+  analysisContextKey,
   result,
   usage,
   model,
@@ -45,13 +56,22 @@ export async function savePracticeFeedback({
         source_text_hash,
         attempt_text,
         attempt_text_hash,
+        analysis_context_key,
         feedback_json,
         usage_json,
         model,
         prompt_version
       )
-      values ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)
-      on conflict (document_id, block_id, source_text_hash, attempt_text_hash, model, prompt_version)
+      values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10)
+      on conflict (
+        document_id,
+        block_id,
+        source_text_hash,
+        attempt_text_hash,
+        analysis_context_key,
+        model,
+        prompt_version
+      )
       do update set
         attempt_text = excluded.attempt_text,
         feedback_json = excluded.feedback_json,
@@ -65,6 +85,7 @@ export async function savePracticeFeedback({
       sourceTextHash,
       attemptText,
       attemptTextHash,
+      analysisContextKey,
       JSON.stringify(result),
       JSON.stringify(usage),
       model,
@@ -80,6 +101,7 @@ export function formatPracticeFeedback(row) {
     blockId: row.block_id,
     sourceTextHash: row.source_text_hash,
     attemptText: row.attempt_text,
+    analysisContextKey: row.analysis_context_key,
     ...row.feedback_json,
     model: row.model,
     promptVersion: row.prompt_version,

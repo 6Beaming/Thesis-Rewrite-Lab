@@ -53,6 +53,22 @@ export async function findCachedBlockAnalysis({
   return result.rows[0] ?? null;
 }
 
+export async function findLatestBlockAnalysis({ documentId, blockId, sourceTextHash }) {
+  const result = await query(
+    `
+      select *
+      from block_analyses
+      where document_id = $1
+        and block_id = $2
+        and source_text_hash = $3
+      order by created_at desc
+      limit 1
+    `,
+    [documentId, blockId, sourceTextHash],
+  );
+  return result.rows[0] ?? null;
+}
+
 export async function saveBlockAnalysis({
   documentId,
   blockId,
