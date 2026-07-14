@@ -7,6 +7,7 @@ import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
   hasUnfinishedBlocks,
+  insertTextIntoSelectedSegment,
   splitSegmentedTextBlock,
 } from './editorBlockCommands.js';
 
@@ -19,6 +20,7 @@ const BlockSegment = Node.create({
     return {
       blockId: { default: null },
       status: { default: 'unprocessed' },
+      length: { default: 0 },
     };
   },
   renderHTML({ HTMLAttributes }) {
@@ -56,11 +58,54 @@ test('Enter command splits an inline processing block into two paragraphs', () =
 
   assert.equal(handled, true);
   assert.equal(paragraphs.length, 2);
+  assert.equal(paragraphs[0].content[0].attrs.blockId, 'block-1');
+  assert.equal(paragraphs[0].content[0].attrs.length, 5);
+  assert.equal(paragraphs[1].content[0].attrs.status, 'unprocessed');
+  assert.notEqual(paragraphs[1].content[0].attrs.blockId, 'block-1');
+  assert.equal(paragraphs[1].content[0].attrs.length, 6);
   assert.deepEqual(
     paragraphs.map((paragraph) => paragraph.content[0].content[0].text),
     ['Hello', ' world'],
   );
   assert.ok(paragraphs.every((paragraph) => paragraph.content[0].type === 'blockSegment'));
+
+  editor.destroy();
+});
+
+test('Enter at the end creates an empty tracked block for the next paragraph', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'blockSegment',
+        attrs: { blockId: 'block-1', status: 'processing' },
+        content: [{ type: 'text', text: 'Hello world' }],
+      }],
+    }],
+  });
+
+  editor.commands.setTextSelection(13);
+  const handled = splitSegmentedTextBlock(editor.state, editor.view.dispatch);
+  const paragraphs = editor.getJSON().content;
+
+  assert.equal(handled, true);
+  assert.equal(paragraphs.length, 2);
+  assert.equal(paragraphs[1].content[0].type, 'blockSegment');
+  assert.equal(paragraphs[1].content[0].attrs.status, 'unprocessed');
+  assert.notEqual(paragraphs[1].content[0].attrs.blockId, 'block-1');
+  assert.equal(paragraphs[1].content[0].attrs.length, 0);
+  assert.equal(editor.state.selection.from, 17);
+
+  assert.equal(insertTextIntoSelectedSegment(editor.state, editor.view.dispatch, 'T'), true);
+  assert.equal(paragraphs[1].content[0].content, undefined);
+  assert.equal(editor.getJSON().content[1].content[0].content[0].text, 'T');
+  assert.equal(
+    editor.state.doc.resolve(editor.state.selection.from).parent.type.name,
+    'blockSegment',
+  );
+  assert.equal(insertTextIntoSelectedSegment(editor.state, editor.view.dispatch, 'h'), true);
+  assert.equal(editor.getJSON().content[1].content[0].content[0].text, 'Th');
 
   editor.destroy();
 });

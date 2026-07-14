@@ -23,6 +23,7 @@ import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
   hasUnfinishedBlocks,
+  insertTextIntoSelectedSegment,
   splitSegmentedTextBlock,
 } from '../lib/editorBlockCommands.js';
 import A4EditorPage from './A4EditorPage.jsx';
@@ -179,6 +180,18 @@ const BlockSegmentEnter = Extension.create({
     return {
       Enter: () => splitSegmentedTextBlock(this.editor.state, this.editor.view.dispatch),
     };
+  },
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('blockSegmentTextInput'),
+        props: {
+          handleTextInput: (view, _from, _to, text) => (
+            insertTextIntoSelectedSegment(view.state, view.dispatch, text)
+          ),
+        },
+      }),
+    ];
   },
 });
 
@@ -344,8 +357,10 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
   if (!pageElement) return;
 
   let frame = pageElement.querySelector(':scope > .selected-block-frame');
+  let actions = pageElement.querySelector(':scope > .selected-block-actions');
   if (!blockId || !editor?.view?.dom) {
     if (frame) frame.setAttribute('hidden', '');
+    if (actions) actions.setAttribute('hidden', '');
     return;
   }
 
@@ -354,8 +369,27 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
   );
   if (!selectedBlock) {
     if (frame) frame.setAttribute('hidden', '');
+    if (actions) actions.setAttribute('hidden', '');
     return;
   }
+
+  const blocks = collectTrackedBlocks(editor.state).filter((block) => !block.isEmpty);
+  const selectedIndex = blocks.findIndex((block) => block.blockId === blockId);
+  const hasNextBlock = selectedIndex >= 0 && selectedIndex < blocks.length - 1;
+  if (
+    !actions
+    || actions.dataset.blockId !== blockId
+    || actions.dataset.hasNextBlock !== String(hasNextBlock)
+  ) {
+    const nextActions = createSelectedBlockActions(blockId, hasNextBlock);
+    if (actions) {
+      actions.replaceWith(nextActions);
+    } else {
+      pageElement.append(nextActions);
+    }
+    actions = nextActions;
+  }
+  actions.removeAttribute('hidden');
 
   if (!frame) {
     frame = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -368,10 +402,8 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
     pageElement.append(frame);
   }
 
-  const selectedActions = selectedBlock.querySelector('.selected-block-actions');
   const selectedTextRange = document.createRange();
   selectedTextRange.selectNodeContents(selectedBlock);
-  if (selectedActions) selectedTextRange.setEndBefore(selectedActions);
 
   const lineRects = Array.from(selectedTextRange.getClientRects())
     .filter((rect) => rect.width > 0 && rect.height > 0)
@@ -399,13 +431,29 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
       currentLine.bottom = Math.max(currentLine.bottom, rect.bottom);
       return lines;
     }, []);
+
+  const pageRect = pageElement.getBoundingClientRect();
+  const editorRect = editor.view.dom.getBoundingClientRect();
+  const selectedBlockRect = selectedBlock.getBoundingClientRect();
+  const paragraphRect = selectedBlock.closest('.document-paragraph')?.getBoundingClientRect()
+    ?? selectedBlockRect;
+  const textIndent = Number.parseFloat(getComputedStyle(selectedBlock).textIndent) || 0;
+  const preferredActionsLeft = lineRects[0]?.left
+    ?? Math.max(selectedBlockRect.left, editorRect.left + textIndent);
+  const actionsRect = actions.getBoundingClientRect();
+  const actionsLeft = Math.max(
+    editorRect.left,
+    Math.min(preferredActionsLeft, editorRect.right - actionsRect.width),
+  );
+  const selectedBlockTop = lineRects[0]?.top ?? selectedBlockRect.top ?? paragraphRect.top;
+  actions.style.left = `${actionsLeft - pageRect.left}px`;
+  actions.style.top = `${selectedBlockTop - actionsRect.height - 5 - pageRect.top}px`;
+
   if (!lineRects.length) {
     frame.setAttribute('hidden', '');
     return;
   }
 
-  const pageRect = pageElement.getBoundingClientRect();
-  const editorRect = editor.view.dom.getBoundingClientRect();
   const frameGap = 4;
   const left = editorRect.left - frameGap;
   const top = Math.min(...lineRects.map((rect) => rect.top)) - frameGap;
@@ -480,6 +528,8 @@ function selectedBlockActionButton({
 function createSelectedBlockActions(blockId, hasNextBlock) {
   const actions = window.document.createElement('span');
   actions.className = 'selected-block-actions';
+  actions.dataset.blockId = blockId ?? '';
+  actions.dataset.hasNextBlock = String(hasNextBlock);
   actions.contentEditable = 'false';
   actions.setAttribute('role', 'group');
   actions.setAttribute('aria-label', 'Selected block actions');
@@ -539,20 +589,8 @@ const BlockSelectionDecoration = Extension.create({
 
             const range = selectedBlockDecorationRange(state);
             if (!range) return DecorationSet.empty;
-            const selected = selectedParagraphFromState(state);
-            const selectedIndex = blocks.findIndex((block) => block.blockId === selected?.blockId);
-            const hasNextBlock = selectedIndex >= 0 && selectedIndex < blocks.length - 1;
             return DecorationSet.create(state.doc, [
               Decoration.node(range.from, range.to, { class: 'doc-block--selected' }),
-              Decoration.widget(
-                range.to - 1,
-                () => createSelectedBlockActions(selected?.blockId ?? null, hasNextBlock),
-                {
-                  key: `selected-block-actions-${selected?.blockId ?? 'none'}-${hasNextBlock}`,
-                  side: 1,
-                  stopEvent: (event) => Boolean(event.target.closest?.('[data-selected-block-action]')),
-                },
-              ),
             ]);
           },
         },
@@ -1063,8 +1101,9 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       onActiveBlockChange?.(info);
     };
 
-    editor.view.dom.addEventListener('click', handleEditorBlockClick);
-    return () => editor.view.dom.removeEventListener('click', handleEditorBlockClick);
+    const eventRoot = pageRef.current ?? editor.view.dom;
+    eventRoot.addEventListener('click', handleEditorBlockClick);
+    return () => eventRoot.removeEventListener('click', handleEditorBlockClick);
   }, [editor, onActiveBlockChange, onBlockStatusChange]);
 
   useEffect(() => {

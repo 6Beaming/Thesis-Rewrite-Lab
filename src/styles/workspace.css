@@ -763,14 +763,15 @@
 }
 
 .selected-block-actions {
-  position: relative;
+  position: absolute;
   z-index: 4;
   display: inline-flex;
+  width: fit-content;
   align-items: center;
   gap: 6px;
   box-sizing: border-box;
   height: 42px;
-  margin: calc((1lh - 42px) * 0.5) 0 calc((1lh - 42px) * 0.5) 8px;
+  margin: 0;
   padding: 5px;
   border: 1px solid #b96b0b;
   border-radius: 10px;
@@ -778,6 +779,10 @@
   box-shadow: 0 8px 20px rgba(70, 42, 8, 0.16);
   vertical-align: middle;
   white-space: nowrap;
+}
+
+.selected-block-actions[hidden] {
+  display: none;
 }
 
 .selected-block-actions button {

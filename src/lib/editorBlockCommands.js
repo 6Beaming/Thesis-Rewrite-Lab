@@ -1,4 +1,5 @@
 import { splitBlockKeepMarks } from '@tiptap/pm/commands';
+import { TextSelection } from '@tiptap/pm/state';
 
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
@@ -136,5 +137,94 @@ export function isSegmentedTextBlockSelection(state) {
 
 export function splitSegmentedTextBlock(state, dispatch) {
   if (!isSegmentedTextBlockSelection(state)) return false;
-  return splitBlockKeepMarks(state, dispatch);
+
+  let sourceBlock = null;
+  let sourceBlockPos = null;
+  for (let depth = state.selection.$from.depth; depth > 0; depth -= 1) {
+    const node = state.selection.$from.node(depth);
+    if (node.type.name === 'blockSegment') {
+      sourceBlock = node;
+      sourceBlockPos = state.selection.$from.before(depth);
+      break;
+    }
+  }
+
+  return splitBlockKeepMarks(state, (transaction) => {
+    const { $from } = transaction.selection;
+    let containingTextBlock = null;
+    let splitBlock = null;
+    let splitBlockPos = null;
+    for (let depth = $from.depth; depth > 0; depth -= 1) {
+      const node = $from.node(depth);
+      if (node.type.name === 'blockSegment') {
+        splitBlock = node;
+        splitBlockPos = $from.before(depth);
+      }
+      if (STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type.name)) {
+        containingTextBlock = node;
+        break;
+      }
+    }
+
+    // The split copies the inline node into the new paragraph. Give that copy
+    // its own identity and unfinished status in the same transaction, so the
+    // first typed character does not trigger a follow-up normalization.
+    if (sourceBlock && containingTextBlock) {
+      const randomId = globalThis.crypto?.randomUUID?.();
+      const blockId = randomId
+        ? `block-${randomId}`
+        : `block-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const leftBlockPos = sourceBlockPos == null
+        ? null
+        : transaction.mapping.map(sourceBlockPos, -1);
+      const leftBlock = leftBlockPos == null ? null : transaction.doc.nodeAt(leftBlockPos);
+
+      if (splitBlock && splitBlockPos != null && leftBlock?.type.name === 'blockSegment') {
+        const leftIsEmpty = !leftBlock.textContent.trim();
+        transaction.setNodeMarkup(splitBlockPos, undefined, {
+          ...splitBlock.attrs,
+          blockId: leftIsEmpty ? sourceBlock.attrs.blockId : blockId,
+          status: leftIsEmpty ? sourceBlock.attrs.status : 'unprocessed',
+          length: splitBlock.textContent.length,
+        });
+        transaction.setNodeMarkup(leftBlockPos, undefined, {
+          ...leftBlock.attrs,
+          blockId: leftIsEmpty ? blockId : sourceBlock.attrs.blockId,
+          status: leftIsEmpty ? 'unprocessed' : sourceBlock.attrs.status,
+          length: leftBlock.textContent.length,
+        });
+      } else {
+        const block = sourceBlock.type.create({
+          ...sourceBlock.attrs,
+          blockId,
+          status: 'unprocessed',
+          length: 0,
+        });
+        const insertAt = transaction.selection.from;
+        transaction.insert(insertAt, block);
+        transaction.setSelection(TextSelection.create(transaction.doc, insertAt + 1));
+      }
+    }
+
+    dispatch?.(transaction);
+  });
+}
+
+export function insertTextIntoSelectedSegment(state, dispatch, text) {
+  if (!text) return false;
+
+  function selectedSegment($position) {
+    for (let depth = $position.depth; depth > 0; depth -= 1) {
+      const node = $position.node(depth);
+      if (node.type.name === 'blockSegment') return node;
+    }
+    return null;
+  }
+
+  const fromSegment = selectedSegment(state.selection.$from);
+  const toSegment = selectedSegment(state.selection.$to);
+  if (!fromSegment || fromSegment !== toSegment) return false;
+
+  dispatch?.(state.tr.insertText(text).scrollIntoView());
+  return true;
 }
