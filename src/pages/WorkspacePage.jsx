@@ -46,22 +46,22 @@ const REWRITE_TONE_CARDS = Object.freeze([
     id: 1,
     tone: 'formal-academic',
     title: 'Formal & Academic Tone',
-    bestFor: 'Best for dissertations, peer-reviewed journals, and committee submissions.',
-    focus: 'Objectivity, precise academic vocabulary, neutrality, and research-centered phrasing.',
+    bestFor: 'For rigorous academic writing.',
+    focus: 'Precision, objectivity, and research-first language.',
   },
   {
     id: 2,
     tone: 'persuasive-argumentative',
     title: 'Persuasive & Argumentative Tone',
-    bestFor: 'Best for thesis statements, proposals, and op-eds.',
-    focus: 'Active verbs, strong reasoning, and the significance of the claim or findings.',
+    bestFor: 'For arguments that must persuade.',
+    focus: 'Active verbs, firm reasoning, and clear significance.',
   },
   {
     id: 3,
     tone: 'accessible-concise',
     title: 'Accessible & Concise Tone',
-    bestFor: 'Best for executive summaries, abstract overviews, and elevator pitches.',
-    focus: 'Short sentences, active verbs, plain language, and no unnecessary filler.',
+    bestFor: 'For fast, clear communication.',
+    focus: 'Plain language, active voice, and no filler.',
   },
 ]);
 
@@ -1686,9 +1686,7 @@ export default function WorkspacePage() {
               <p className="rewrite-card-safety">This option is disabled because the model could not preserve the original meaning safely.</p>
             ) : null}
           </>
-        ) : (
-          <p className="rewrite-card-empty">Generate this tone to create a rewrite for the selected block.</p>
-        )}
+        ) : null}
       </article>
     );
   }
@@ -1798,11 +1796,6 @@ export default function WorkspacePage() {
 
     return (
       <>
-        <div className="analysis-selected-block">
-          <span>Selected block</span>
-          <p>{activeEditorBlock?.text || 'Click a text block in the editor.'}</p>
-        </div>
-
         <div className="analysis-filter-list">
           {Object.entries(ANALYSIS_FILTER_LABELS).map(([key, label]) => (
             <label key={key} className="analysis-filter-row">
@@ -1990,8 +1983,9 @@ export default function WorkspacePage() {
           ) : null}
           {mobileOptionsTab === 'analyzing' ? (
             <section className="workspace-mode-card workspace-mode-card--interactive">
-              <h2>Analyzing</h2>
-              <p>Select a block, choose your goals, and learn with our AI coach.</p>
+              {!currentBlockAnalysis ? (
+                <p>Select a block, choose your goals, and learn with our AI coach.</p>
+              ) : null}
               {renderAnalysisStats()}
             </section>
           ) : null}
@@ -2004,8 +1998,9 @@ export default function WorkspacePage() {
     if (workspaceMode === 'analyzing') {
       return (
         <section className="workspace-mode-card workspace-mode-card--interactive">
-          <h2>Analyzing</h2>
-          <p>Select a block, choose your goals, and learn with our AI coach.</p>
+          {!currentBlockAnalysis ? (
+            <p>Select a block, choose your goals, and learn with our AI coach.</p>
+          ) : null}
           {renderAnalysisStats()}
         </section>
       );
@@ -2014,9 +2009,6 @@ export default function WorkspacePage() {
     if (workspaceMode === 'rewriting') {
       return (
         <section className="workspace-mode-card workspace-mode-card--interactive">
-          <div className="workspace-mode-card-title-row">
-            <h2>Rewriting</h2>
-          </div>
           {rewriteError ? <p className="rewrite-panel-error" role="alert">{rewriteError}</p> : null}
           <div className="rewrite-card-list">
             {rewriteAllCompleted ? renderRewriteCompleteCard() : rewriteCards.map((card) => renderRewriteCard(card))}
@@ -2027,7 +2019,6 @@ export default function WorkspacePage() {
 
     return (
       <section className="workspace-mode-card workspace-mode-card--interactive">
-        <h2>Practicing</h2>
         {renderPracticeComposer()}
         {renderPracticeFeedback()}
       </section>

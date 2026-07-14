@@ -702,7 +702,7 @@
   --block-selected-background: #ccd4d1;
   --block-selected-border: #64746d;
   --block-selected-glow: rgba(100, 116, 109, 0.2);
-  background: #e0e5e3;
+  background: transparent;
 }
 
 .document-editor-surface .analysis-phrase-issue {
@@ -885,7 +885,7 @@
 }
 
 .workspace-mode-card {
-  padding: 18px;
+  padding: 10px;
   background: rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(4px);
@@ -973,7 +973,6 @@
   font-size: 0.82rem;
 }
 
-.analysis-selected-block,
 .analysis-empty-result,
 .analysis-result-heading,
 .analysis-learning-goals {
@@ -983,18 +982,9 @@
   padding: 12px;
 }
 
-.analysis-selected-block span,
 .analysis-result-heading span {
   color: rgba(255, 255, 255, 0.68);
   font-size: 0.78rem;
-}
-
-.analysis-selected-block p {
-  display: -webkit-box;
-  margin-top: 6px;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
 }
 
 .analysis-run-button {
@@ -1167,13 +1157,6 @@
 .workspace-mode-card--interactive {
   max-height: min(58dvh, 620px);
   overflow-y: auto;
-}
-
-.workspace-mode-card-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 
 .rewrite-card-actions {
@@ -1854,7 +1837,6 @@
     background: #edf7ea;
   }
 
-  .workspace-mobile-options-panel .analysis-selected-block,
   .workspace-mobile-options-panel .analysis-empty-result,
   .workspace-mobile-options-panel .analysis-result-heading,
   .workspace-mobile-options-panel .analysis-learning-goals,
@@ -1865,7 +1847,6 @@
     background: #edf7ea;
   }
 
-  .workspace-mobile-options-panel .analysis-selected-block span,
   .workspace-mobile-options-panel .analysis-result-heading span,
   .workspace-mobile-options-panel .analysis-source-lookup-heading span,
   .workspace-mobile-options-panel .analysis-source-lookup li span,

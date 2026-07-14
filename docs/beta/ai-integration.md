@@ -427,20 +427,19 @@ deletes its analyses.
 
 The Analyzing panel now:
 
-1. shows a preview of the selected block;
-2. starts with all four writing filters selected and lets the user disable any
+1. starts with all four writing filters selected and lets the user disable any
    filter;
-3. saves unsaved editor content before analysis;
-4. disables duplicate submissions while a request is active;
-5. triggers the existing owl loading/error states;
-6. displays deterministic metrics separately from model scores;
-7. displays issue counts by filter;
-8. shows MCP/Crossref metadata or an unavailable state when a DOI is detected,
+2. saves unsaved editor content before analysis;
+3. disables duplicate submissions while a request is active;
+4. triggers the existing owl loading/error states;
+5. displays deterministic metrics separately from model scores;
+6. displays issue counts by filter;
+7. shows MCP/Crossref metadata or an unavailable state when a DOI is detected,
    and hides the external-source card when no DOI is present;
-9. shows evidence, explanations, and suggestions;
-10. keeps red wavy evidence underlines visible for every block analyzed during
+8. shows evidence, explanations, and suggestions;
+9. keeps red wavy evidence underlines visible for every block analyzed during
     the current workspace session; and
-11. exposes learning goals for the Practice workflow.
+10. exposes learning goals for the Practice workflow.
 
 Client results are keyed by block id, current block text, and selected filters.
 Changing the selected text or filter set therefore hides a result that no
@@ -885,6 +884,9 @@ a persisted document.
 
 ### 2026-07-14
 
+- Simplified the three workspace modes by removing repeated headings and the
+  selected-block preview, hiding the analysis introduction after a result, and
+  shortening the visible rewrite-tone descriptions.
 - Added exact-evidence red wavy underlines to every analyzed editor block and
   invalidated them when the analyzed block text changes.
 - Hid the MCP/Crossref external-source card when the selected block contains no
