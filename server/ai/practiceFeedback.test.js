@@ -25,19 +25,19 @@ test('rejects missing, empty, and oversized practice attempts', () => {
 test('passes prior block issues and learning goals into Practice guidance', () => {
   const guidance = practiceGuidanceFromAnalysis({
     id: 'analysis-1',
-    promptVersion: 'block-analysis-v2',
-    filters: ['passive'],
+    promptVersion: 'block-analysis-v3',
+    filters: ['clarity'],
     ai: {
-      issues: [{ type: 'passive', evidence: 'can be found' }],
+      issues: [{ type: 'clarity', evidence: 'can be found' }],
       learningGoals: ['Use a concrete actor when changing to active voice.'],
     },
   });
 
   assert.deepEqual(guidance, {
     analysisId: 'analysis-1',
-    promptVersion: 'block-analysis-v2',
-    filters: ['passive'],
-    issues: [{ type: 'passive', evidence: 'can be found' }],
+    promptVersion: 'block-analysis-v3',
+    filters: ['clarity'],
+    issues: [{ type: 'clarity', evidence: 'can be found' }],
     learningGoals: ['Use a concrete actor when changing to active voice.'],
   });
   assert.equal(practiceGuidanceFromAnalysis(null), null);
@@ -46,10 +46,10 @@ test('passes prior block issues and learning goals into Practice guidance', () =
 test('rejects a suggested phrase that restores wording flagged by analysis', () => {
   const analysis = {
     id: 'analysis-1',
-    promptVersion: 'block-analysis-v2',
-    filters: ['passive'],
+    promptVersion: 'block-analysis-v3',
+    filters: ['clarity'],
     ai: {
-      issues: [{ type: 'passive', evidence: 'can also be found' }],
+      issues: [{ type: 'clarity', evidence: 'can also be found' }],
       learningGoals: [],
     },
   };

@@ -29,11 +29,11 @@ const PRACTICE_MAX_CHARS = 4000;
 const DEMO_STORE_KEY = 'project-thesis-rewriter:demo-store:v1';
 const LAST_WORKSPACE_DOCUMENT_KEY = 'project-thesis-rewriter:last-workspace-document:v1';
 const DEMO_BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
-const ANALYSIS_SIGNAL_LABELS = {
-  passive: 'Passive constructions',
-  nominalization: 'Nominalization clusters',
-  hedging: 'Hedging and certainty',
-  transitions: 'Transition gaps',
+const ANALYSIS_FILTER_LABELS = {
+  clarity: 'Clear and understandable',
+  conciseness: 'Concise and direct',
+  'academic-style': 'Academic and precise',
+  flow: 'Logical flow',
 };
 const PRACTICE_SCORE_LABELS = {
   meaningPreservation: 'Meaning kept',
@@ -556,11 +556,11 @@ export default function WorkspacePage() {
   const [mobileOptionsTab, setMobileOptionsTab] = useState('setup');
   const [workspaceHistoryDocuments, setWorkspaceHistoryDocuments] = useState([]);
   const [workspaceHistoryExpanded, setWorkspaceHistoryExpanded] = useState(false);
-  const [analysisSignals, setAnalysisSignals] = useState({
-    passive: true,
-    nominalization: true,
-    hedging: false,
-    transitions: false,
+  const [analysisFilters, setAnalysisFilters] = useState({
+    clarity: true,
+    conciseness: true,
+    'academic-style': true,
+    flow: true,
   });
   const [blockAnalyses, setBlockAnalyses] = useState({});
   const [analysisBusy, setAnalysisBusy] = useState(false);
@@ -591,11 +591,11 @@ export default function WorkspacePage() {
   }), [mobileOwlMetrics, mobileOwlPosition]);
   const styleSettingsSignature = useMemo(() => JSON.stringify(styleSettings ?? {}), [styleSettings]);
   const selectedAnalysisFilters = useMemo(() => (
-    Object.entries(analysisSignals)
+    Object.entries(analysisFilters)
       .filter(([, enabled]) => enabled)
       .map(([filter]) => filter)
       .sort()
-  ), [analysisSignals]);
+  ), [analysisFilters]);
   const currentAnalysisKey = useMemo(() => (
     activeEditorBlock?.blockId
       ? `${activeEditorBlock.blockId}|${activeEditorBlock.text ?? ''}|${selectedAnalysisFilters.join(',')}`
@@ -1773,7 +1773,7 @@ export default function WorkspacePage() {
     const analysis = currentBlockAnalysis;
     const metrics = analysis?.deterministic;
     const ai = analysis?.ai;
-    const signalCounts = Object.fromEntries(Object.keys(ANALYSIS_SIGNAL_LABELS).map((key) => [
+    const filterCounts = Object.fromEntries(Object.keys(ANALYSIS_FILTER_LABELS).map((key) => [
       key,
       ai?.issues?.filter((issue) => issue.type === key).length ?? null,
     ]));
@@ -1786,20 +1786,20 @@ export default function WorkspacePage() {
         </div>
 
         <div className="analysis-filter-list">
-          {Object.entries(ANALYSIS_SIGNAL_LABELS).map(([key, label]) => (
+          {Object.entries(ANALYSIS_FILTER_LABELS).map(([key, label]) => (
             <label key={key} className="analysis-filter-row">
               <input
                 type="checkbox"
-                checked={analysisSignals[key]}
+                checked={analysisFilters[key]}
                 onChange={() => {
-                  setAnalysisSignals((current) => ({
+                  setAnalysisFilters((current) => ({
                     ...current,
                     [key]: !current[key],
                   }));
                 }}
               />
               <span>{label}</span>
-              <span className="analysis-filter-count">{signalCounts[key] ?? '—'}</span>
+              <span className="analysis-filter-count">{filterCounts[key] ?? '—'}</span>
             </label>
           ))}
         </div>
@@ -1832,12 +1832,12 @@ export default function WorkspacePage() {
                 <span>Avg. sentence length</span>
               </div>
               <div className="analysis-stat-card">
-                <strong>{metrics.passiveConstructionCount}</strong>
-                <span>Passive indicators</span>
+                <strong>{metrics.sentenceCount}</strong>
+                <span>Sentences</span>
               </div>
               <div className="analysis-stat-card">
-                <strong>{metrics.nominalizationCount}</strong>
-                <span>Nominalizations</span>
+                <strong>{metrics.characterCount}</strong>
+                <span>Characters</span>
               </div>
             </div>
 
@@ -1862,7 +1862,7 @@ export default function WorkspacePage() {
               <h3>Coaching notes</h3>
               {ai.issues.length ? ai.issues.map((issue, index) => (
                 <article key={`${issue.type}-${index}`} className={`analysis-issue analysis-issue--${issue.severity}`}>
-                  <div><strong>{ANALYSIS_SIGNAL_LABELS[issue.type]}</strong><span>{issue.severity}</span></div>
+                  <div><strong>{ANALYSIS_FILTER_LABELS[issue.type]}</strong><span>{issue.severity}</span></div>
                   <q>{issue.evidence}</q>
                   <p>{issue.explanation}</p>
                   <small>{issue.suggestion}</small>

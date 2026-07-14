@@ -18,7 +18,7 @@ backend path, persistence, and verification are implemented.
 | OpenAI Responses API | Implemented | Express calls configured models for analysis, rewriting, and practice feedback through the OpenAI Node SDK. |
 | Structured Outputs | Implemented | Analysis, rewriting, and practice responses are parsed and validated with Zod and `zodTextFormat`. |
 | Deterministic block metrics | Implemented | Counts and simple writing signals are calculated locally before the model call. |
-| Selected-block analysis | Implemented | Users select one editor block, choose filters, and request focused coaching. |
+| Selected-block analysis | Implemented | Users select one editor block and request coaching through four plain-language writing filters, all selected by default. |
 | Analysis persistence | Implemented | Results are cached in `block_analyses` using document, block, text hash, filters, model, and prompt version. |
 | Three rewriting options | Implemented | Users generate, inspect, regenerate, and apply Formal & Academic, Persuasive & Argumentative, and Accessible & Concise rewrites. |
 | Practice feedback | Implemented | Users submit their own selected-block revision and receive comparative scores, concrete improvements, short phrase suggestions, and a readiness flag. |
@@ -129,21 +129,22 @@ Request body:
 
 ```json
 {
-  "filters": ["passive", "nominalization"]
+  "filters": ["clarity", "conciseness", "academic-style", "flow"]
 }
 ```
 
 Supported filters:
 
-| Filter | Intended coaching focus |
-| --- | --- |
-| `passive` | Passive constructions and whether they weaken directness. |
-| `nominalization` | Dense noun forms that may hide an action or actor. |
-| `hedging` | Qualification, uncertainty, and strength of claims. |
-| `transitions` | Local connections to the preceding and following blocks. |
+| Filter | Interface label | Intended coaching focus |
+| --- | --- | --- |
+| `clarity` | Clear and understandable | Wording, sentence structure, vague references, and unclear actors that make the block difficult to understand. |
+| `conciseness` | Concise and direct | Repetition, filler, unnecessary complexity, and wordy phrasing that can be shortened without losing meaning. |
+| `academic-style` | Academic and precise | Informal, vague, or imprecise language and claims that are too strong or cautious for the selected academic style. |
+| `flow` | Logical flow | Logical connections, sentence ordering, and transitions within the block and with its immediate neighbors. |
 
-At least one filter is required. Unknown filters return `400` rather than being
-silently ignored.
+All four filters are selected by default in the interface. A user may disable
+individual filters, but at least one is required. Unknown filters return `400`
+rather than being silently ignored.
 
 Successful response shape:
 
@@ -153,7 +154,7 @@ Successful response shape:
     "id": "analysis-uuid",
     "blockId": "block-uuid",
     "sourceTextHash": "sha256-hash",
-    "filters": ["nominalization", "passive"],
+    "filters": ["academic-style", "clarity", "conciseness", "flow"],
     "deterministic": {
       "characterCount": 218,
       "wordCount": 37,
@@ -175,7 +176,7 @@ Successful response shape:
       },
       "issues": [
         {
-          "type": "passive",
+          "type": "clarity",
           "severity": "medium",
           "evidence": "was evaluated",
           "explanation": "The construction hides the actor.",
@@ -187,7 +188,7 @@ Successful response shape:
       ]
     },
     "model": "gpt-5.4-mini",
-    "promptVersion": "block-analysis-v2",
+    "promptVersion": "block-analysis-v3",
     "createdAt": "2026-07-12T00:00:00.000Z"
   },
   "cached": false
@@ -239,16 +240,18 @@ input. Neighbor text is for cohesion and transition judgments only.
 - known transition-word counts.
 
 Sentence boundaries use `Intl.Segmenter` when available. These values are
-transparent indicators, not authoritative grammar judgments. They are shown
-beside model feedback so deterministic measurements are not confused with
-model-generated scores.
+transparent indicators, not authoritative grammar judgments. The interface
+shows the plain length measurements: characters, words, sentences, and average
+words per sentence. Passive, nominalization, hedging, and transition counts
+remain internal diagnostic cues for storage and development; they are not
+user-facing filters or automatic writing problems.
 
 ### Prompt and schema contract
 
 The prompt version is currently:
 
 ```text
-block-analysis-v2
+block-analysis-v3
 ```
 
 The server prompt instructs the model to:
@@ -256,7 +259,11 @@ The server prompt instructs the model to:
 - act as an academic writing coach;
 - analyze exactly one selected block;
 - use neighbors only for local context;
+- use the supplied definitions as the complete meaning of the four writing
+  filters;
 - report only requested filter categories;
+- treat passive voice, nominalization, hedging, and explicit transition words
+  as possible evidence rather than automatic problems or issue categories;
 - avoid manufacturing an issue merely because a filter is enabled;
 - treat passive voice as acceptable when it appropriately backgrounds an
   unknown or unimportant actor;
@@ -332,7 +339,8 @@ deletes its analyses.
 The Analyzing panel now:
 
 1. shows a preview of the selected block;
-2. lets the user enable or disable filters;
+2. starts with all four writing filters selected and lets the user disable any
+   filter;
 3. saves unsaved editor content before analysis;
 4. disables duplicate submissions while a request is active;
 5. triggers the existing owl loading/error states;
@@ -766,9 +774,14 @@ a persisted document.
   style, grammar, strengths, prioritized hints, next steps, and readiness.
 - Connected Practice to the latest analysis for the exact source block and made
   the cache key analysis-aware, preventing contradictory cached coaching.
-- Updated `block-analysis-v2` to avoid treating passive voice as inherently
-  wrong and to require concrete, academically appropriate actors when an active
-  alternative is genuinely useful.
+- Replaced specialist analysis filters with Clear and understandable, Concise
+  and direct, Academic and precise, and Logical flow, with all four selected by
+  default.
+- Added `block-analysis-v3`, which treats passive voice, nominalization,
+  hedging, and explicit transitions as diagnostic cues rather than automatic
+  problems or response categories.
+- Kept the existing requirement that an active alternative use a concrete,
+  academically appropriate actor when it is genuinely useful.
 - Required Practice to acknowledge resolved analysis issues and handle new
   tradeoffs without suggesting the exact wording that analysis flagged.
 - Added a deterministic flagged-evidence check and one semantic retry so a

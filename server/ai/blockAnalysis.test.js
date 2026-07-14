@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  ANALYSIS_FILTER_DETAILS,
   BLOCK_ANALYSIS_PROMPT_VERSION,
   analysisFilterSignature,
   computeDeterministicMetrics,
@@ -9,7 +10,13 @@ import {
 } from './blockAnalysis.js';
 
 test('uses the context-sensitive block analysis prompt', () => {
-  assert.equal(BLOCK_ANALYSIS_PROMPT_VERSION, 'block-analysis-v2');
+  assert.equal(BLOCK_ANALYSIS_PROMPT_VERSION, 'block-analysis-v3');
+  assert.deepEqual(Object.keys(ANALYSIS_FILTER_DETAILS), [
+    'clarity',
+    'conciseness',
+    'academic-style',
+    'flow',
+  ]);
 });
 
 test('computes stable local metrics for an academic block', () => {
@@ -26,9 +33,9 @@ test('computes stable local metrics for an academic block', () => {
 });
 
 test('normalizes filters and creates a stable cache signature', () => {
-  const filters = normalizeAnalysisFilters(['transitions', 'passive', 'invalid', 'passive']);
-  assert.deepEqual(filters, ['passive', 'transitions']);
-  assert.equal(analysisFilterSignature(filters), 'passive,transitions');
+  const filters = normalizeAnalysisFilters(['flow', 'clarity', 'invalid', 'clarity']);
+  assert.deepEqual(filters, ['clarity', 'flow']);
+  assert.equal(analysisFilterSignature(filters), 'clarity,flow');
 });
 
 test('hashes the exact block text', () => {
