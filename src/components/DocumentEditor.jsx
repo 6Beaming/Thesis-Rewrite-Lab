@@ -18,6 +18,7 @@ import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { DEFAULT_CLUSTER_OPTIONS } from '../lib/clusteringOptions.js';
+import { splitSegmentedTextBlock } from '../lib/editorBlockCommands.js';
 import A4EditorPage from './A4EditorPage.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 
@@ -172,6 +173,16 @@ const BlockSegment = Node.create({
     const rendered = renderTrackedBlock('span', HTMLAttributes);
     rendered[1]['data-ai-block'] = 'true';
     return rendered;
+  },
+});
+
+const BlockSegmentEnter = Extension.create({
+  name: 'blockSegmentEnter',
+  priority: 1100,
+  addKeyboardShortcuts() {
+    return {
+      Enter: () => splitSegmentedTextBlock(this.editor.state, this.editor.view.dispatch),
+    };
   },
 });
 
@@ -852,6 +863,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       AcademicParagraph,
       AcademicHeading,
       BlockSegment,
+      BlockSegmentEnter,
       BlockSelectionDecoration,
       PageBreak,
       BulletList.configure({ keepMarks: true }),

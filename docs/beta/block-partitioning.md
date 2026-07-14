@@ -214,7 +214,9 @@ When a live block is divided:
 - additional portions receive new IDs and start as `unprocessed`;
 - text typed at an inline boundary is first absorbed into a neighboring tracked
   block;
-- Enter creates a paragraph boundary that partitioning cannot cross; and
+- a dedicated segmented-block Enter command creates a paragraph boundary that
+  partitioning cannot cross, while normal paragraphs keep TipTap's default
+  Enter behavior; and
 - the structural partition transaction does not add a separate undo step.
 
 The new structure becomes part of the next normal document save.
@@ -273,6 +275,7 @@ a newline.
 | `scripts/lib/clustering.test.cjs` | Punctuation, abbreviations, decimals, paragraph rules, balancing, and oversized sentences. |
 | `scripts/lib/semanticClustering.test.cjs` | Lemmas, stop words, similarity scoring, and semantic boundary choice. |
 | `src/lib/clustering.test.js` | Browser sentence handling and semantic character balancing. |
+| `src/lib/editorBlockCommands.test.js` | Enter splitting for inline processing blocks without intercepting normal paragraphs. |
 | `server/models/blocks.test.js` | Multiple processing blocks remaining inside one structural paragraph. |
 
 ## Change Log
