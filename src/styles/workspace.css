@@ -1015,6 +1015,58 @@
   gap: 5px;
 }
 
+.analysis-source-lookup {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+  border-left: 3px solid #89d4ff;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.09);
+  padding: 12px;
+}
+
+.analysis-source-lookup-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.analysis-source-lookup h3,
+.analysis-source-lookup p,
+.analysis-source-lookup ul {
+  margin: 0;
+}
+
+.analysis-source-lookup h3 {
+  font-size: 0.95rem;
+}
+
+.analysis-source-lookup-heading span,
+.analysis-source-lookup li span,
+.analysis-source-lookup small {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.78rem;
+}
+
+.analysis-source-lookup ul {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.analysis-source-lookup li {
+  display: grid;
+  gap: 3px;
+}
+
+.analysis-source-lookup code {
+  overflow-wrap: anywhere;
+  color: #bcecff;
+  font-size: 0.78rem;
+}
+
 .analysis-score-row {
   display: grid !important;
   gap: 7px !important;
@@ -1797,6 +1849,7 @@
   .workspace-mobile-options-panel .analysis-empty-result,
   .workspace-mobile-options-panel .analysis-result-heading,
   .workspace-mobile-options-panel .analysis-learning-goals,
+  .workspace-mobile-options-panel .analysis-source-lookup,
   .workspace-mobile-options-panel .analysis-issue,
   .workspace-mobile-options-panel .analysis-filter-row,
   .workspace-mobile-options-panel .analysis-stat-card {
@@ -1805,10 +1858,17 @@
 
   .workspace-mobile-options-panel .analysis-selected-block span,
   .workspace-mobile-options-panel .analysis-result-heading span,
+  .workspace-mobile-options-panel .analysis-source-lookup-heading span,
+  .workspace-mobile-options-panel .analysis-source-lookup li span,
+  .workspace-mobile-options-panel .analysis-source-lookup small,
   .workspace-mobile-options-panel .analysis-filter-count,
   .workspace-mobile-options-panel .analysis-issue > div span,
   .workspace-mobile-options-panel .analysis-issue small {
     color: #53665b;
+  }
+
+  .workspace-mobile-options-panel .analysis-source-lookup code {
+    color: #17617b;
   }
 
   .workspace-mobile-options-panel .analysis-error {

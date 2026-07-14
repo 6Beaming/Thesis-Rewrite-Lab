@@ -54,6 +54,7 @@ import {
   formatPracticeFeedback,
   savePracticeFeedback,
 } from '../models/practice.js';
+import { lookupAcademicSourcesViaMcp } from '../mcp/academicSources.js';
 
 const require = createRequire(import.meta.url);
 const {
@@ -432,7 +433,8 @@ router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
   }
 
   const deterministicMetrics = computeDeterministicMetrics(context.text_content);
-  const generated = await generateBlockAnalysis({ context, filters });
+  const sourceLookup = await lookupAcademicSourcesViaMcp(context.text_content);
+  const generated = await generateBlockAnalysis({ context, filters, sourceLookup });
   const saved = await saveBlockAnalysis({
     documentId: context.document_id,
     blockId: context.id,

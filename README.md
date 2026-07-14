@@ -40,24 +40,24 @@ Refine the UI/UX for a professional and intuitive user experience. Serves as the
 
 ### Real-time Enablement
 Using the correct technologies, enable real-time capabilities without browser reload on your web application. 
-* **Assignees:** Eric, Erfang
+* **Assignees:** Erfang
 * **Technology/Library:** Socket.io (Node.js) coupled with Redis for session pub/sub, allowing real-time workspace syncing and live AI processing updates on the frontend. 
 * *Note:* Will be implemented during each functionality.
 
 ### AI Integration with MCP / Tools
 Develop complex AI workflows that interact with external sources. 
-* **Assignees:** Eric, Erfang
-* **Provider:** OpenAI API (GPT-4o-mini / GPT-4o) *(tentatively)*.
-* **Integration Strategy:** We will use LangChain to construct standardized prompt chains. The system will first run a deterministic NLP script (e.g., using spaCy/NLTK/sentence transformer) to perform structural and semantic partition of the user's text. LangChain will then take these clustered, small-context chunks and pass them to the OpenAI API via an MCP framework, ensuring the AI focuses strictly on sentence-level rewriting instructions and style explanations rather than full-document regeneration.
+* **Assignees:** Eric
+* **Providers:** OpenAI Responses API and Crossref REST API.
+* **Integration Strategy:** The block-analysis workflow runs an application-owned MCP server and client using the official TypeScript SDK. When a selected block contains a DOI, the MCP client discovers and calls the read-only `lookup_crossref_doi` tool. The tool sends only the DOI to Crossref, returns bibliographic metadata, and supplies that external context to the versioned OpenAI analysis prompt. The analysis remains available when Crossref is unavailable, and cached analyses prevent repeated external lookups. See `docs/beta/ai-integration.md` for the complete workflow and privacy boundary.
 
 ### Stripe Integration
 Set up a functional payment gateway for service subscriptions. 
-* **Assignee:** Eric
+* **Assignee:** Erfang
 * **Details:** Provide a sandbox account publishable key: `pk_test_51...[THESIS_TEST_KEY]...` *(tentative)*.
 
 ### Deployment
 Successfully hosting the application on DigitalOcean. 
-* **Assignee:** Erfang
+* **Assignee:** Eric/Erfang
 * **Details:** Provide an available domain name: `thesis-rewrite-training.app` *(tentative)*.
 
 ## Architecture

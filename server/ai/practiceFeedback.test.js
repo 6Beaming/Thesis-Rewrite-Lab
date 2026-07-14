@@ -25,7 +25,7 @@ test('rejects missing, empty, and oversized practice attempts', () => {
 test('passes prior block issues and learning goals into Practice guidance', () => {
   const guidance = practiceGuidanceFromAnalysis({
     id: 'analysis-1',
-    promptVersion: 'block-analysis-v3',
+    promptVersion: 'block-analysis-v4',
     filters: ['clarity'],
     ai: {
       issues: [{ type: 'clarity', evidence: 'can be found' }],
@@ -35,7 +35,7 @@ test('passes prior block issues and learning goals into Practice guidance', () =
 
   assert.deepEqual(guidance, {
     analysisId: 'analysis-1',
-    promptVersion: 'block-analysis-v3',
+    promptVersion: 'block-analysis-v4',
     filters: ['clarity'],
     issues: [{ type: 'clarity', evidence: 'can be found' }],
     learningGoals: ['Use a concrete actor when changing to active voice.'],
@@ -46,7 +46,7 @@ test('passes prior block issues and learning goals into Practice guidance', () =
 test('rejects a suggested phrase that restores wording flagged by analysis', () => {
   const analysis = {
     id: 'analysis-1',
-    promptVersion: 'block-analysis-v3',
+    promptVersion: 'block-analysis-v4',
     filters: ['clarity'],
     ai: {
       issues: [{ type: 'clarity', evidence: 'can also be found' }],

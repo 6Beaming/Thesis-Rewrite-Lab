@@ -10,7 +10,7 @@ import {
 } from './blockAnalysis.js';
 
 test('uses the context-sensitive block analysis prompt', () => {
-  assert.equal(BLOCK_ANALYSIS_PROMPT_VERSION, 'block-analysis-v3');
+  assert.equal(BLOCK_ANALYSIS_PROMPT_VERSION, 'block-analysis-v4');
   assert.deepEqual(Object.keys(ANALYSIS_FILTER_DETAILS), [
     'clarity',
     'conciseness',

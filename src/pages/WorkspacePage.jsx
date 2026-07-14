@@ -1773,6 +1773,7 @@ export default function WorkspacePage() {
     const analysis = currentBlockAnalysis;
     const metrics = analysis?.deterministic;
     const ai = analysis?.ai;
+    const sourceLookup = ai?.sourceLookup;
     const filterCounts = Object.fromEntries(Object.keys(ANALYSIS_FILTER_LABELS).map((key) => [
       key,
       ai?.issues?.filter((issue) => issue.type === key).length ?? null,
@@ -1840,6 +1841,39 @@ export default function WorkspacePage() {
                 <span>Characters</span>
               </div>
             </div>
+
+            {sourceLookup && sourceLookup.status !== 'not-needed' ? (
+              <section className="analysis-source-lookup">
+                <div className="analysis-source-lookup-heading">
+                  <h3>External source check</h3>
+                  <span>MCP · Crossref</span>
+                </div>
+
+                {sourceLookup.items?.length ? (
+                  <ul>
+                    {sourceLookup.items.map((source) => (
+                      <li key={source.doi}>
+                        <strong>{source.title}</strong>
+                        <span>
+                          {[
+                            source.authors?.join(', '),
+                            source.publishedYear,
+                            source.containerTitle,
+                          ].filter(Boolean).join(' · ') || 'Bibliographic metadata'}
+                        </span>
+                        <code>{source.doi}</code>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>Crossref could not be reached. Analysis continued without external metadata.</p>
+                )}
+
+                {sourceLookup.status === 'partial' ? (
+                  <small>Some DOI records could not be retrieved.</small>
+                ) : null}
+              </section>
+            ) : null}
 
             <dl className="analysis-stats">
               {Object.entries(ai.scores).map(([label, score], index) => (
@@ -1940,7 +1974,7 @@ export default function WorkspacePage() {
           {mobileOptionsTab === 'analyzing' ? (
             <section className="workspace-mode-card workspace-mode-card--interactive">
               <h2>Analyzing</h2>
-              <p>Select a block, choose writing signals, and request focused AI coaching.</p>
+              <p>Select a block, choose your goals, and learn with our AI coach.</p>
               {renderAnalysisStats()}
             </section>
           ) : null}
@@ -1954,7 +1988,7 @@ export default function WorkspacePage() {
       return (
         <section className="workspace-mode-card workspace-mode-card--interactive">
           <h2>Analyzing</h2>
-          <p>Select a block, choose writing signals, and request focused AI coaching.</p>
+          <p>Select a block, choose your goals, and learn with our AI coach.</p>
           {renderAnalysisStats()}
         </section>
       );
