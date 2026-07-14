@@ -82,6 +82,12 @@ export default function EditorToolbar({
     editor.chain().focus().insertContent({ type: 'pageBreak' }).run();
   }
 
+  function applyHistoryAction(action) {
+    return action === 'undo'
+      ? editor.chain().focus().undo().run()
+      : editor.chain().focus().redo().run();
+  }
+
   return (
     <section className="editor-toolbar" aria-label="Document editing toolbar">
       <div className="editor-toolbar-group">
@@ -174,8 +180,8 @@ export default function EditorToolbar({
         <ToolbarButton label="Outdent" icon={<ToolIcon type="outdent" />} onClick={() => editor.chain().focus().updateAttributes('paragraph', { textIndent: '0in' }).run()} />
         <ToolbarButton label="Indent" icon={<ToolIcon type="indent" />} onClick={() => editor.chain().focus().updateAttributes('paragraph', { textIndent: '0.5in' }).run()} />
         <ToolbarButton label="Page break" icon={<ToolIcon type="break" />} onClick={insertPageBreak} />
-        <ToolbarButton label="Undo" icon={<ToolIcon type="undo" />} disabled={!editor.can().undo()} onClick={() => editor.chain().focus().undo().run()} />
-        <ToolbarButton label="Redo" icon={<ToolIcon type="redo" />} disabled={!editor.can().redo()} onClick={() => editor.chain().focus().redo().run()} />
+        <ToolbarButton label="Undo" icon={<ToolIcon type="undo" />} disabled={!editor.can().undo()} onClick={() => applyHistoryAction('undo')} />
+        <ToolbarButton label="Redo" icon={<ToolIcon type="redo" />} disabled={!editor.can().redo()} onClick={() => applyHistoryAction('redo')} />
       </div>
     </section>
   );

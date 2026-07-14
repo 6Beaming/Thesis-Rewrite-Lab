@@ -5,14 +5,23 @@ import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { ExpressAuth } from '@auth/express';
 import path from 'path';
+import { createServer } from 'node:http';
 import { fileURLToPath } from 'url';
 import {
   appOrigin,
   authConfig,
   closeAuthDatabase,
+  getAuthSession,
 } from './server/auth.js';
 import { requireTrustedAuthHost } from './server/middlewares/requireAuth.js';
+import { closeDatabase } from './server/models/db.js';
+import { userOwnsActiveDocument } from './server/models/documents.js';
+import { getOrCreateUserFromSession } from './server/models/users.js';
+import { getSubscriptionForUserId } from './server/models/subscriptions.js';
+import { attachRealtimeServer } from './server/realtime/index.js';
+import { createEventPublisher } from './server/realtime/publisher.js';
 import apiRouter from './server/routers/index.js';
+import { stripeWebhookHandler } from './server/routers/stripe.js';
 import { errorHandler, notFound } from './server/middlewares/errors.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -51,8 +60,16 @@ app.use(
     origin: appOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type'],
+    allowedHeaders: ['Content-Type', 'X-Mutation-Id'],
   }),
+);
+
+// Stripe signs the original bytes. This route must be mounted before the
+// global JSON parser, and is authenticated only by Stripe's signature.
+app.post(
+  '/api/stripe/webhook',
+  express.raw({ type: 'application/json' }),
+  stripeWebhookHandler,
 );
 app.use(express.json({ limit: '15mb' }));
 
@@ -75,7 +92,6 @@ app.use(
 // The application's own API endpoints start with /api.
 app.use('/api', apiRouter);
 app.use('/api', notFound);
-app.use(errorHandler);
 
 // In production, serve the built React app. Returning index.html for browser
 // routes lets React Router open pages such as /profile.
@@ -86,26 +102,28 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-// Log server errors without sending private error details to the browser.
-app.use((error, _req, res, next) => {
-  if (res.headersSent) return next(error);
+app.use(errorHandler);
 
-  console.error(
-    'Request failed:',
-    error instanceof Error ? error.name : 'UnknownError',
-  );
-  return res.status(500).json({ error: 'Internal server error' });
+const server = createServer(app);
+const realtime = attachRealtimeServer(server, {
+  origin: appOrigin,
+  getSession: getAuthSession,
+  resolveProductUser: getOrCreateUserFromSession,
+  resolveSubscription: getSubscriptionForUserId,
+  ownsDocument: userOwnsActiveDocument,
 });
+app.set('realtime', realtime);
+app.set('eventPublisher', createEventPublisher(realtime));
 
-const server = app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
 
 // Close the server and database connection before the program stops.
 async function shutDown() {
-  server.close(async () => {
-    await closeAuthDatabase();
-  });
+  realtime.close();
+  server.close();
+  await Promise.allSettled([closeAuthDatabase(), closeDatabase()]);
 }
 
 process.once('SIGINT', shutDown);

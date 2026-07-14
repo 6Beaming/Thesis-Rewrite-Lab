@@ -1,85 +1,53 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import ConfirmModal from '../components/ConfirmModal.jsx';
 import DocumentCard from '../components/DocumentCard.jsx';
 import EmptyState from '../components/EmptyState.jsx';
-import { deleteForever, listTrash, restoreDocument } from '../services/trashApi.js';
+import { useRealtime } from '../components/RealtimeProvider.jsx';
+import { deleteForever, restoreDocument } from '../services/trashApi.js';
 import trashUrl from '../assets/trash.png?url';
 
-export default function HomepageTrash({
-  demoDocuments = [],
-  onDemoRestore,
-  onDemoDeleteForever,
-  onNotice,
-}) {
-  const [documents, setDocuments] = useState([]);
+export default function HomepageTrash({ onNotice, onChanged }) {
+  const { state: realtimeState, applyDocument } = useRealtime();
+  const documents = realtimeState.trashDocuments;
   const [selected, setSelected] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [usingDemoTrash, setUsingDemoTrash] = useState(false);
   const [localNotice, setLocalNotice] = useState('');
-
-  useEffect(() => {
-    let alive = true;
-    listTrash()
-      .then((data) => {
-        if (!alive) return;
-        setUsingDemoTrash(false);
-        setDocuments(data.documents ?? []);
-        setLocalNotice('');
-      })
-      .catch(() => {
-        if (!alive) return;
-        setUsingDemoTrash(true);
-        setDocuments(demoDocuments);
-        setLocalNotice('Trash is showing local demo items until PostgreSQL is connected.');
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [demoDocuments, onNotice]);
+  const visibleNotice = localNotice || realtimeState.error;
 
   async function handleRestore(document) {
-    if (usingDemoTrash || document.id?.startsWith('demo-')) {
-      onDemoRestore?.(document);
-      setDocuments((current) => current.filter((item) => item.id !== document.id));
-      return;
-    }
-
     try {
-      await restoreDocument(document.id);
-      setDocuments((current) => current.filter((item) => item.id !== document.id));
+      const result = await restoreDocument(document.id);
+      applyDocument('document:restored', result.document);
+      onChanged?.();
     } catch (error) {
-      onNotice?.(error.message || 'Restore failed.');
+      const message = error.message || 'Restore failed.';
+      setLocalNotice(message);
+      onNotice?.(message);
     }
   }
 
   async function handleDeleteForever() {
     if (!selected) return;
 
-    if (usingDemoTrash || selected.id?.startsWith('demo-')) {
-      onDemoDeleteForever?.(selected);
-      setDocuments((current) => current.filter((item) => item.id !== selected.id));
-      setSelected(null);
-      return;
-    }
-
     try {
-      await deleteForever(selected.id);
-      setDocuments((current) => current.filter((item) => item.id !== selected.id));
+      const result = await deleteForever(selected.id);
+      applyDocument('document:deleted', result.document);
       setSelected(null);
+      onChanged?.();
     } catch (error) {
-      onNotice?.(error.message || 'Delete forever failed.');
+      const message = error.message || 'Delete forever failed.';
+      setLocalNotice(message);
+      onNotice?.(message);
     }
   }
 
   const totalSize = documents.reduce((sum, document) => sum + Number(document.total_chars ?? 0), 0);
 
-  if (!loading && !documents.length) {
+  if (!documents.length) {
     return (
-      <EmptyState title="No items in trash">
-        <img className="trash-empty-icon" src={trashUrl} alt="" />
+      <EmptyState title={visibleNotice ? 'Could not load trash' : 'No items in trash'}>
+        {visibleNotice
+          ? <p role="alert">{visibleNotice}</p>
+          : <img className="trash-empty-icon" src={trashUrl} alt="" />}
       </EmptyState>
     );
   }
@@ -92,7 +60,7 @@ export default function HomepageTrash({
           <p>{documents.length} items, {totalSize} characters</p>
         </div>
       </header>
-      {localNotice ? <p className="trash-local-notice">{localNotice}</p> : null}
+      {visibleNotice ? <p className="trash-local-notice">{visibleNotice}</p> : null}
       <div className="trash-grid">
         {documents.map((document) => (
           <div className="trash-card-wrap" key={document.id}>
@@ -111,7 +79,7 @@ export default function HomepageTrash({
           onCancel={() => setSelected(null)}
           onConfirm={handleDeleteForever}
         >
-          {selected.title} will be permanently removed from {usingDemoTrash ? 'local demo data' : 'the local database'}.
+          {selected.title} will be permanently removed from the database.
         </ConfirmModal>
       ) : null}
     </section>

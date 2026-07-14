@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
-import path from 'path';
 import { createRequire } from 'module';
-import mammoth from 'mammoth';
+import path from 'path';
 import { upload } from '../middlewares/upload.js';
-import { getOrCreateUserFromSession } from '../models/users.js';
+import { resolveDocumentUpload } from '../../src/services/documentResolver.js';
+import { getOrCreateUserFromSession, getUserStats } from '../models/users.js';
 import {
   checkExpiredTrash,
   createBlankDocument,
@@ -57,10 +57,7 @@ import {
 import { lookupAcademicSourcesViaMcp } from '../mcp/academicSources.js';
 
 const require = createRequire(import.meta.url);
-const {
-  characterBalancedRanges,
-  clusteringWithMetadata,
-} = require('../../scripts/lib/clustering.cjs');
+const { characterBalancedRanges } = require('../../scripts/lib/clustering.cjs');
 
 const router = Router();
 const aiRateLimiter = rateLimit({
@@ -69,73 +66,128 @@ const aiRateLimiter = rateLimit({
   standardHeaders: 'draft-8',
   legacyHeaders: false,
 });
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ACADEMIC_STYLES = new Set(['APA', 'MLA', 'Chicago', 'Customized']);
+const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
+const UUID_PATTERN_LOWERCASE = UUID_PATTERN;
+
+function invalidInput(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+function mutationIdFromRequest(req) {
+  const value = String(req.get('x-mutation-id') ?? '');
+  return UUID_PATTERN_LOWERCASE.test(value) ? value : null;
+}
+
+async function publishProgress(req, user, document, mutationId) {
+  const publisher = req.app.get('eventPublisher');
+  if (!publisher) return;
+  publisher.publishProgress({
+    authUserId: resAuthUserId(req),
+    productUserId: user.id,
+    stats: await getUserStats(user.id),
+    documentId: document?.id ?? null,
+    revision: document?.revision ?? null,
+    mutationId,
+  });
+}
+
+function resAuthUserId(req) {
+  return req.res?.locals?.session?.user?.id ?? req.app?.locals?.session?.user?.id ?? null;
+}
+
+function publishDocument(req, user, type, document, mutationId, extra = {}) {
+  const publisher = req.app.get('eventPublisher');
+  if (!publisher) return;
+  publisher.publishDocument({
+    authUserId: resAuthUserId(req),
+    type,
+    document,
+    mutationId,
+    extra,
+  });
+}
+
+function publishVersion(req, user, document, version, mutationId) {
+  const publisher = req.app.get('eventPublisher');
+  if (!publisher || !version) return;
+  publisher.publishVersion({
+    authUserId: resAuthUserId(req),
+    document,
+    version,
+    mutationId,
+  });
+}
+
+function publishDeletedDocument(req, document, mutationId) {
+  const publisher = req.app.get('eventPublisher');
+  if (!publisher) return;
+  publisher.publishDeletedDocument({
+    authUserId: resAuthUserId(req),
+    document,
+    mutationId,
+  });
+}
+
+function requireUuid(value, label) {
+  if (!UUID_PATTERN.test(String(value ?? ''))) {
+    throw invalidInput(`${label} must be a valid UUID`);
+  }
+}
+
+function validateAcademicStyle(value) {
+  if (!ACADEMIC_STYLES.has(value)) {
+    throw invalidInput('Invalid academic style');
+  }
+}
+
+function validateSavePayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw invalidInput('Request body must be an object');
+  }
+  if (payload.title !== undefined && (
+    typeof payload.title !== 'string'
+    || !payload.title.trim()
+    || payload.title.length > 300
+  )) {
+    throw invalidInput('Title must contain 1 to 300 characters');
+  }
+  if (payload.academicStyle !== undefined) {
+    validateAcademicStyle(payload.academicStyle);
+  }
+  if (payload.styleSettings !== undefined && (
+    !payload.styleSettings
+    || typeof payload.styleSettings !== 'object'
+    || Array.isArray(payload.styleSettings)
+  )) {
+    throw invalidInput('Style settings must be an object');
+  }
+  if (payload.contentJson !== undefined && (
+    !payload.contentJson
+    || payload.contentJson.type !== 'doc'
+    || !Array.isArray(payload.contentJson.content)
+  )) {
+    throw invalidInput('Content must be a Tiptap document');
+  }
+  if (payload.createVersion !== undefined && typeof payload.createVersion !== 'boolean') {
+    throw invalidInput('createVersion must be a boolean');
+  }
+  if (payload.versionLabel !== undefined && (
+    typeof payload.versionLabel !== 'string'
+    || payload.versionLabel.length > 200
+  )) {
+    throw invalidInput('Version label must be at most 200 characters');
+  }
+}
 
 function titleFromFilename(filename) {
   return path.basename(filename, path.extname(filename)).replace(/[_-]+/g, ' ') || 'Untitled document';
 }
 
-function decodeHtmlEntities(value) {
-  return String(value ?? '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
-    .replace(/&#x([a-f0-9]+);/gi, (_match, code) => String.fromCharCode(parseInt(code, 16)));
-}
-
-function markForTag(tagName) {
-  if (tagName === 'strong' || tagName === 'b') return 'bold';
-  if (tagName === 'em' || tagName === 'i') return 'italic';
-  if (tagName === 'u') return 'underline';
-  if (tagName === 'code') return 'code';
-  return null;
-}
-
-function attrsForBlockTag(tagName) {
-  if (tagName === 'h1') return { fontSize: '20pt', textIndent: '0in' };
-  if (tagName === 'h2') return { fontSize: '16pt', textIndent: '0in' };
-  if (tagName === 'h3') return { fontSize: '14pt', textIndent: '0in' };
-  if (tagName === 'li') return { textIndent: '0.25in' };
-  return {};
-}
-
-function cloneMarks(activeMarks) {
-  return activeMarks.map((type) => ({ type }));
-}
-
-function appendText(content, text, activeMarks) {
-  if (!text) return;
-  const node = { type: 'text', text };
-  if (activeMarks.length) node.marks = cloneMarks(activeMarks);
-  content.push(node);
-}
-
-function trimContent(content) {
-  const next = content
-    .map((node) => ({ ...node, marks: node.marks ? [...node.marks] : undefined }))
-    .filter((node) => node.text);
-
-  while (next.length && !next[0].text.trim()) {
-    next.shift();
-  }
-  while (next.length && !next[next.length - 1].text.trim()) {
-    next.pop();
-  }
-  if (next.length) {
-    next[0].text = next[0].text.replace(/^\s+/, '');
-    next[next.length - 1].text = next[next.length - 1].text.replace(/\s+$/, '');
-  }
-  return next.filter((node) => node.text);
-}
-
-function textFromContent(content) {
-  return content.map((node) => node.text ?? '').join('');
-}
-
-function sliceFormattedContent(content, start, end) {
+function sliceFormattedContent(content = [], start, end) {
   const result = [];
   let offset = 0;
 
@@ -154,128 +206,34 @@ function sliceFormattedContent(content, start, end) {
     offset = nodeEnd;
   }
 
-  return trimContent(result);
+  return result.filter((node) => node.text);
 }
 
-function formattedBlocksFromHtml(html, partitionMode) {
-  const blocks = [];
-  let activeMarks = [];
-  let currentContent = [];
-  let currentAttrs = {};
-  let paragraphIndex = 0;
-
-  function finishBlock({ resetAttrs = false } = {}) {
-    const content = trimContent(currentContent);
-    const text = textFromContent(content);
-    for (const range of characterBalancedRanges(text, {
+function partitionResolvedBlocks(blocks, partitionMode) {
+  return blocks.flatMap((block, paragraphIndex) => {
+    const ranges = characterBalancedRanges(block.text, {
       paragraphBreak: 'blank-line',
       partitionMode,
-    })) {
-      blocks.push({
-        text: range.text,
-        content: sliceFormattedContent(content, range.start, range.end),
-        attrs: { ...currentAttrs, paragraphIndex },
-      });
-    }
-    if (text) paragraphIndex += 1;
-    currentContent = [];
-    if (resetAttrs) currentAttrs = {};
-  }
+    });
 
-  function appendFormattedText(rawText) {
-    const decoded = decodeHtmlEntities(rawText).replace(/\s+/g, ' ');
-    appendText(currentContent, decoded, activeMarks);
-  }
-
-  const tokenPattern = /<[^>]+>|[^<]+/g;
-  for (const match of html.matchAll(tokenPattern)) {
-    const token = match[0];
-    if (!token.startsWith('<')) {
-      appendFormattedText(token);
-      continue;
-    }
-
-    const tag = token.match(/^<\s*(\/)?\s*([a-z0-9]+)/i);
-    if (!tag) continue;
-
-    const isClosing = Boolean(tag[1]);
-    const tagName = tag[2].toLowerCase();
-    const mark = markForTag(tagName);
-    const isBlockTag = ['p', 'div', 'li', 'h1', 'h2', 'h3'].includes(tagName);
-
-    if (tagName === 'br' && !isClosing) {
-      appendText(currentContent, '\n', activeMarks);
-      continue;
-    }
-
-    if (mark) {
-      if (isClosing) {
-        const index = activeMarks.lastIndexOf(mark);
-        if (index >= 0) activeMarks.splice(index, 1);
-      } else {
-        activeMarks.push(mark);
-      }
-      continue;
-    }
-
-    if (isBlockTag) {
-      if (!isClosing) {
-        finishBlock({ resetAttrs: true });
-        currentAttrs = attrsForBlockTag(tagName);
-      } else {
-        finishBlock({ resetAttrs: true });
-      }
-    }
-  }
-
-  finishBlock({ resetAttrs: true });
-  return blocks;
+    return ranges.map((range) => ({
+      ...block,
+      text: range.text,
+      attrs: {
+        ...(block.attrs ?? {}),
+        paragraphIndex,
+      },
+      content: sliceFormattedContent(block.content, range.start, range.end),
+    }));
+  });
 }
 
 async function extractBlocks(file, partitionMode) {
-  const lowerName = file.originalname.toLowerCase();
-
-  if (lowerName.endsWith('.doc')) {
-    const error = new Error('.doc uploads are not supported. Please upload .docx, .md, or .txt.');
-    error.statusCode = 400;
-    throw error;
-  }
-
-  if (lowerName.endsWith('.docx')) {
-    const htmlResult = await mammoth.convertToHtml({ buffer: file.buffer });
-    const formattedBlocks = formattedBlocksFromHtml(htmlResult.value, partitionMode);
-    if (formattedBlocks.length) return formattedBlocks;
-
-    const textResult = await mammoth.extractRawText({ buffer: file.buffer });
-    return clusteringWithMetadata(textResult.value, {
-      paragraphBreak: 'blank-line',
-      partitionMode,
-    }).map((block) => ({
-      text: block.text,
-      attrs: { paragraphIndex: block.paragraphIndex },
-    }));
-  }
-
-  if (lowerName.endsWith('.md')) {
-    return clusteringWithMetadata(file.buffer.toString('utf8'), {
-      paragraphBreak: 'blank-line',
-      partitionMode,
-    }).map((block) => ({
-      text: block.text,
-      attrs: { paragraphIndex: block.paragraphIndex },
-    }));
-  }
-
-  if (lowerName.endsWith('.txt')) {
-    return clusteringWithMetadata(file.buffer.toString('utf8'), { partitionMode }).map((block) => ({
-      text: block.text,
-      attrs: { paragraphIndex: block.paragraphIndex },
-    }));
-  }
-
-  const error = new Error('Only .txt, .md, and .docx uploads are supported.');
-  error.statusCode = 400;
-  throw error;
+  const structuralBlocks = await resolveDocumentUpload({
+    buffer: file.buffer,
+    filename: file.originalname,
+  });
+  return partitionResolvedBlocks(structuralBlocks, partitionMode);
 }
 
 router.get('/', async (req, res) => {
@@ -291,8 +249,12 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (_req, res) => {
   const user = await getOrCreateUserFromSession(res.locals.session.user);
-  const document = await createBlankDocument(user.id);
-  res.status(201).json({ document });
+  const mutation = await createBlankDocument(user.id, { returnMutation: true });
+  const mutationId = mutationIdFromRequest(_req);
+  publishDocument(_req, user, 'document:created', mutation.document, mutationId);
+  publishVersion(_req, user, mutation.document, mutation.version, mutationId);
+  await publishProgress(_req, user, mutation.document, mutationId);
+  res.status(201).json({ document: mutation.document });
 });
 
 router.post('/upload', upload.single('file'), async (req, res) => {
@@ -309,26 +271,37 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
   const user = await getOrCreateUserFromSession(res.locals.session.user);
   const blocks = await extractBlocks(req.file, partitionMode);
-  const document = await createDocumentWithBlocks({
+  const academicStyle = req.body.academicStyle ?? 'APA';
+  validateAcademicStyle(academicStyle);
+  const mutation = await createDocumentWithBlocks({
     userId: user.id,
     title: titleFromFilename(req.file.originalname),
-    academicStyle: req.body.academicStyle ?? 'APA',
+    academicStyle,
     textBlocks: blocks,
     originalFile: req.file.buffer,
     originalFilename: req.file.originalname,
     originalMime: req.file.mimetype,
+    returnMutation: true,
   });
 
-  res.status(201).json({ document });
+  const mutationId = mutationIdFromRequest(req);
+  publishDocument(req, user, 'document:created', mutation.document, mutationId);
+  publishVersion(req, user, mutation.document, mutation.version, mutationId);
+  await publishProgress(req, user, mutation.document, mutationId);
+  res.status(201).json({ document: mutation.document });
 });
 
 router.post('/trash/check-expired', async (_req, res) => {
   const user = await getOrCreateUserFromSession(res.locals.session.user);
   const deleted = await checkExpiredTrash(user.id);
+  const mutationId = mutationIdFromRequest(_req);
+  deleted.forEach((document) => publishDeletedDocument(_req, document, mutationId));
+  if (deleted.length) await publishProgress(_req, user, null, mutationId);
   res.json({ deleted });
 });
 
 router.get('/:id', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
   const document = await getDocument(req.params.id, user.id);
   if (!document) {
@@ -339,6 +312,7 @@ router.get('/:id', async (req, res) => {
 });
 
 router.get('/:id/rate', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
   const rate = await getDocumentRate(req.params.id, user.id);
   if (!rate) {
@@ -349,47 +323,69 @@ router.get('/:id/rate', async (req, res) => {
 });
 
 router.patch('/:id', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  validateSavePayload(req.body);
   const user = await getOrCreateUserFromSession(res.locals.session.user);
-  const document = await saveDocument(req.params.id, user.id, req.body);
-  if (!document) {
+  const mutation = await saveDocument(req.params.id, user.id, req.body, { returnMutation: true });
+  if (!mutation) {
     res.status(404).json({ error: 'Document not found' });
     return;
   }
-  res.json({ document });
+  const mutationId = mutationIdFromRequest(req);
+  publishDocument(req, user, 'document:updated', mutation.document, mutationId);
+  publishVersion(req, user, mutation.document, mutation.version, mutationId);
+  await publishProgress(req, user, mutation.document, mutationId);
+  res.json({ document: mutation.document });
 });
 
 router.delete('/:id', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
   const document = await moveDocumentToTrash(req.params.id, user.id);
   if (!document) {
     res.status(404).json({ error: 'Document not found' });
     return;
   }
+  const mutationId = mutationIdFromRequest(req);
+  publishDocument(req, user, 'document:trashed', document, mutationId);
+  await publishProgress(req, user, document, mutationId);
   res.json({ document });
 });
 
 router.patch('/:id/blocks/:blockId', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.blockId, 'Block ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
   const status = req.body.status;
-  if (!['unprocessed', 'processing', 'processed', 'skipped'].includes(status)) {
+  if (!BLOCK_STATUSES.has(status)) {
     res.status(400).json({ error: 'Invalid block status' });
     return;
   }
 
-  const next = await updateDocumentBlockStatus({
+  const result = await updateDocumentBlockStatus({
     documentId: req.params.id,
     userId: user.id,
     blockId: req.params.blockId,
     status,
   });
-  if (next === null) {
-    res.status(404).json({ error: 'Document not found' });
+  if (result === null) {
+    res.status(404).json({ error: 'Document or block not found' });
     return;
   }
-  res.json({ nextProcessingBlock: next });
+  const mutationId = mutationIdFromRequest(req);
+  const block = result.document.blocks.find((item) => item.id === req.params.blockId) ?? null;
+  publishDocument(req, user, 'block:updated', result.document, mutationId, {
+    block,
+    nextProcessingBlock: result.nextProcessingBlock,
+  });
+  publishVersion(req, user, result.document, result.version, mutationId);
+  await publishProgress(req, user, result.document, mutationId);
+  res.json(result);
 });
 
 router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.blockId, 'Block ID');
   const requestedFilters = req.body?.filters;
   if (
     !Array.isArray(requestedFilters)
@@ -452,6 +448,8 @@ router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
 });
 
 router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.blockId, 'Block ID');
   const tone = normalizeRewriteTone(req.body?.tone);
   const force = req.body?.force ?? false;
 
@@ -507,6 +505,9 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => 
 });
 
 router.post('/:id/blocks/:blockId/rewrites/:rewriteId/accept', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.blockId, 'Block ID');
+  requireUuid(req.params.rewriteId, 'Rewrite ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
   const accepted = await markRewriteAccepted({
     documentId: req.params.id,
@@ -523,6 +524,8 @@ router.post('/:id/blocks/:blockId/rewrites/:rewriteId/accept', async (req, res) 
 });
 
 router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.blockId, 'Block ID');
   const attemptText = normalizePracticeAttempt(req.body?.attemptText);
   if (!attemptText) {
     res.status(400).json({ error: 'Practice text is empty or too long.' });
@@ -585,41 +588,64 @@ router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req,
 });
 
 router.post('/:id/blocks/:blockId/skip', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.blockId, 'Block ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
-  const next = await updateDocumentBlockStatus({
+  const result = await updateDocumentBlockStatus({
     documentId: req.params.id,
     userId: user.id,
     blockId: req.params.blockId,
     status: 'skipped',
   });
-  if (next === null) {
-    res.status(404).json({ error: 'Document not found' });
+  if (result === null) {
+    res.status(404).json({ error: 'Document or block not found' });
     return;
   }
-  res.json({ nextProcessingBlock: next });
+  const mutationId = mutationIdFromRequest(req);
+  const block = result.document.blocks.find((item) => item.id === req.params.blockId) ?? null;
+  publishDocument(req, user, 'block:updated', result.document, mutationId, {
+    block,
+    nextProcessingBlock: result.nextProcessingBlock,
+  });
+  publishVersion(req, user, result.document, result.version, mutationId);
+  await publishProgress(req, user, result.document, mutationId);
+  res.json(result);
 });
 
 router.post('/:id/blocks/:blockId/complete', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.blockId, 'Block ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
-  const next = await updateDocumentBlockStatus({
+  const result = await updateDocumentBlockStatus({
     documentId: req.params.id,
     userId: user.id,
     blockId: req.params.blockId,
     status: 'processed',
   });
-  if (next === null) {
-    res.status(404).json({ error: 'Document not found' });
+  if (result === null) {
+    res.status(404).json({ error: 'Document or block not found' });
     return;
   }
-  res.json({ nextProcessingBlock: next });
+  const mutationId = mutationIdFromRequest(req);
+  const block = result.document.blocks.find((item) => item.id === req.params.blockId) ?? null;
+  publishDocument(req, user, 'block:updated', result.document, mutationId, {
+    block,
+    nextProcessingBlock: result.nextProcessingBlock,
+  });
+  publishVersion(req, user, result.document, result.version, mutationId);
+  await publishProgress(req, user, result.document, mutationId);
+  res.json(result);
 });
 
 router.get('/:id/versions', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
   res.json({ versions: await listVersions(req.params.id, user.id) });
 });
 
 router.get('/:id/versions/:versionId', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.versionId, 'Version ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
   const version = await getVersion(req.params.id, req.params.versionId, user.id);
   if (!version) {
@@ -630,15 +656,19 @@ router.get('/:id/versions/:versionId', async (req, res) => {
 });
 
 router.post('/:id/revert', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.body.versionId, 'Version ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
-  const version = await revertDocumentToVersion(req.params.id, req.body.versionId, user.id);
-  if (!version) {
+  const result = await revertDocumentToVersion(req.params.id, req.body.versionId, user.id);
+  if (!result) {
     res.status(404).json({ error: 'Version not found' });
     return;
   }
-
-  const document = await getDocument(req.params.id, user.id);
-  res.json({ version, document });
+  const mutationId = mutationIdFromRequest(req);
+  publishDocument(req, user, 'document:reverted', result.document, mutationId);
+  publishVersion(req, user, result.document, result.version, mutationId);
+  await publishProgress(req, user, result.document, mutationId);
+  res.json(result);
 });
 
 export default router;

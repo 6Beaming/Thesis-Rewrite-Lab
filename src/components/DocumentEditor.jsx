@@ -254,34 +254,7 @@ function fallbackContent(document) {
   }
   return {
     type: 'doc',
-    content: [
-      {
-        type: 'paragraph',
-        attrs: {
-          blockId: 'demo-processing',
-          status: 'processing',
-          lineHeight: '2.0',
-          textIndent: '0.5in',
-          textAlign: 'left',
-          fontFamily: 'Times New Roman',
-          fontSize: '12pt',
-        },
-        content: [{ type: 'text', text: 'Assignment 2: article 2. This editable paper area is ready for local testing.' }],
-      },
-      {
-        type: 'paragraph',
-        attrs: {
-          blockId: 'demo-unprocessed',
-          status: 'unprocessed',
-          lineHeight: '2.0',
-          textIndent: '0.5in',
-          textAlign: 'left',
-          fontFamily: 'Times New Roman',
-          fontSize: '12pt',
-        },
-        content: [{ type: 'text', text: 'Use the toolbar to change inline styling. The color blocks show processing status.' }],
-      },
-    ],
+    content: [],
   };
 }
 
@@ -863,6 +836,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   const paragraphTextSnapshotRef = useRef(new Map());
   const suppressEditedStatusResetRef = useRef(false);
   const blockPartitionTimerRef = useRef(null);
+  const suppressProgrammaticUpdateRef = useRef(false);
   const [pageCount, setPageCount] = useState(1);
   const processingBlockId = useMemo(() => {
     if (document?.current_processing_block_id) return document.current_processing_block_id;
@@ -906,6 +880,11 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       },
     },
     onUpdate({ editor: activeEditor, transaction }) {
+      if (suppressProgrammaticUpdateRef.current) {
+        suppressProgrammaticUpdateRef.current = false;
+        paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
+        return;
+      }
       absorbUntrackedEditorText(activeEditor);
       const skipEditedStatusReset = suppressEditedStatusResetRef.current || isHistoryTransaction(transaction);
       const normalizedJson = reconcileEditorBlocks(
@@ -1026,6 +1005,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
 
       if (changed) {
         tr.setMeta('addToHistory', false);
+        suppressProgrammaticUpdateRef.current = true;
         dispatch?.(tr);
       }
       return true;

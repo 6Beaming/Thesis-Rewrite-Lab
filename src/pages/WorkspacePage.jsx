@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router';
+import { useLocation, useNavigate, useParams } from 'react-router';
 import blackboardUrl from '../assets/blackboard.png';
 import AcademicStylePanel, {
   DEFAULT_CUSTOM_STYLE,
   TEMPLATE_STYLE_SETTINGS,
 } from '../components/AcademicStylePanel.jsx';
 import DocumentEditor from '../components/DocumentEditor.jsx';
+import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
 import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
 import OwlContainer from '../components/OwlContainer.jsx';
@@ -26,9 +27,7 @@ import HomePage from './HomePage.jsx';
 
 const REGEN_COOLDOWN_MS = 10000;
 const PRACTICE_MAX_CHARS = 4000;
-const DEMO_STORE_KEY = 'project-thesis-rewriter:demo-store:v1';
-const LAST_WORKSPACE_DOCUMENT_KEY = 'project-thesis-rewriter:last-workspace-document:v1';
-const DEMO_BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
+const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 const ANALYSIS_FILTER_LABELS = {
   clarity: 'Clear and understandable',
   conciseness: 'Concise and direct',
@@ -113,82 +112,22 @@ function UploadDocIcon() {
   );
 }
 
-function workspaceHistoryFallback(selectedDocument) {
-  const now = Date.now();
-  const storedDocuments = readDemoStore()?.documents ?? [];
-  return [
-    ...storedDocuments,
-    {
-      id: 'demo-history-literature-review',
-      title: 'Literature review draft',
-      academic_style: 'MLA',
-      updated_at: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: 'demo-history-methods-notes',
-      title: 'Methods notes',
-      academic_style: 'Chicago',
-      updated_at: new Date(now - 26 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: 'demo-history-article-summary',
-      title: 'Article summary practice',
-      academic_style: 'APA',
-      updated_at: new Date(now - 4 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    selectedDocument,
-  ].filter((document, index, documents) => (
-    document?.id && documents.findIndex((item) => item?.id === document.id) === index
-  ));
-}
-
-function readDemoStore() {
-  if (typeof window === 'undefined') return null;
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(DEMO_STORE_KEY) || 'null');
-    if (!parsed || !Array.isArray(parsed.documents)) return null;
-    return {
-      documents: parsed.documents,
-      trashDocuments: Array.isArray(parsed.trashDocuments) ? parsed.trashDocuments : [],
-      hiddenDocumentIds: Array.isArray(parsed.hiddenDocumentIds) ? parsed.hiddenDocumentIds : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeDemoStore(store) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(DEMO_STORE_KEY, JSON.stringify(store));
-}
-
-function readLastWorkspaceDocument() {
-  if (typeof window === 'undefined') return null;
-  try {
-    return JSON.parse(window.sessionStorage.getItem(LAST_WORKSPACE_DOCUMENT_KEY) || 'null');
-  } catch {
-    return null;
-  }
-}
-
-function rememberWorkspaceDocument(document) {
-  if (typeof window === 'undefined' || !document?.id) return;
-  window.sessionStorage.setItem(LAST_WORKSPACE_DOCUMENT_KEY, JSON.stringify({
-    id: document.id,
-    title: document.title,
-    academic_style: document.academic_style,
-    style_settings: document.style_settings,
-  }));
-}
-
-function textFromDemoNode(node) {
+function textFromNode(node) {
   if (!node) return '';
   if (node.type === 'text') return node.text ?? '';
   if (!Array.isArray(node.content)) return '';
-  return node.content.map(textFromDemoNode).join('');
+  return node.content.map(textFromNode).join('');
 }
 
-function isEditableDemoBlock(node) {
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m6 6 12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+function isEditableBlock(node) {
   if (node?.type === 'blockSegment') return true;
   if (node?.type !== 'paragraph' && node?.type !== 'heading') return false;
   return !node.content?.some((child) => child?.type === 'blockSegment');
@@ -196,11 +135,11 @@ function isEditableDemoBlock(node) {
 
 function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
   const text = block.text ?? block.text_content ?? '';
-  const status = DEMO_BLOCK_STATUSES.has(block.status ?? block.attrs?.status)
+  const status = BLOCK_STATUSES.has(block.status ?? block.attrs?.status)
     ? (block.status ?? block.attrs?.status)
     : 'unprocessed';
   const id = block.id ?? block.blockId ?? block.attrs?.blockId ?? `${documentId}-block-${index + 1}`;
-  const attrs = demoAttrs(
+  const attrs = blockAttrs(
     id,
     status,
     text.length,
@@ -236,11 +175,11 @@ function extractRuntimeBlocksFromContent(document, contentJson, styleSettings = 
 
   function walk(node) {
     if (!node || typeof node !== 'object') return;
-    if (isEditableDemoBlock(node)) {
-      const text = textFromDemoNode(node);
+    if (isEditableBlock(node)) {
+      const text = textFromNode(node);
       const id = node.attrs?.blockId ?? `${document.id}-block-${entries.length + 1}`;
-      const status = DEMO_BLOCK_STATUSES.has(node.attrs?.status) ? node.attrs.status : 'unprocessed';
-      const attrs = demoAttrs(id, status, text.length, node.attrs ?? {}, styleSettings);
+      const status = BLOCK_STATUSES.has(node.attrs?.status) ? node.attrs.status : 'unprocessed';
+      const attrs = blockAttrs(id, status, text.length, node.attrs ?? {}, styleSettings);
       entries.push({
         id,
         blockId: id,
@@ -300,7 +239,7 @@ function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = 
       }
     }
 
-    const attrs = demoAttrs(block.id, status, block.text.length, block.attrs, styleSettings);
+    const attrs = blockAttrs(block.id, status, block.text.length, block.attrs, styleSettings);
     return {
       ...block,
       block_index: index,
@@ -318,12 +257,11 @@ function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = 
     contentJson,
     blocks: nextBlocks,
     currentProcessingBlockId: processingBlockId ?? null,
-    revision: Date.now(),
   };
 }
 
 function draftFromDocument(document, styleSettings = {}) {
-  const contentJson = document?.content_json ?? fallbackWorkspaceContent(document, styleSettings);
+  const contentJson = document?.content_json ?? { type: 'doc', content: [] };
   const sourceBlocks = Array.isArray(document?.blocks) && document.blocks.length
     ? document.blocks
     : extractRuntimeBlocksFromContent(document ?? { id: 'workspace-document' }, contentJson, styleSettings);
@@ -337,7 +275,7 @@ function draftFromDocument(document, styleSettings = {}) {
   );
 }
 
-function demoAttrs(blockId, status, length, existingAttrs = {}, styleSettings = {}) {
+function blockAttrs(blockId, status, length, existingAttrs = {}, styleSettings = {}) {
   return {
     lineHeight: styleSettings.spacing || styleSettings.lineHeight || existingAttrs.lineHeight || '2.0',
     textIndent: styleSettings.indentation || styleSettings.textIndent || existingAttrs.textIndent || '0.5in',
@@ -377,7 +315,7 @@ function documentFromWorkspaceDraft(document, draft, styleName, styleSettings) {
   };
 }
 
-function demoDocumentFromContent(document, contentJson, styleName, styleSettings, blockSnapshots = null, preferredProcessingBlockId = null) {
+function documentFromContent(document, contentJson, styleName, styleSettings, blockSnapshots = null, preferredProcessingBlockId = null) {
   const draft = normalizeWorkspaceDraft(
     document,
     contentJson,
@@ -405,122 +343,22 @@ function normalizeWorkspaceContent(document, contentJson, styleName, styleSettin
   };
 }
 
-function upsertDemoDocumentInStore(document) {
-  const store = readDemoStore() ?? {
-    documents: [],
-    trashDocuments: [],
-    hiddenDocumentIds: [],
-  };
-  const nextDocuments = [
-    document,
-    ...store.documents.filter((item) => item.id !== document.id),
-  ];
-  writeDemoStore({
-    ...store,
-    documents: nextDocuments,
-  });
-}
-
-function fallbackWorkspaceContent(document, styleSettings = {}) {
-  const documentId = document?.id || 'workspace-document';
-  const title = document?.title || 'Untitled document';
-  const paragraphs = [
-    `${title}. This local workspace draft is ready for editing.`,
-    'Use the rewriting cards to test applying a replacement sentence, then press Save to keep the changes.',
-  ];
-
-  return {
-    type: 'doc',
-    content: paragraphs.map((text, index) => ({
-      type: 'paragraph',
-      attrs: demoAttrs(
-        `${documentId}-block-${index + 1}`,
-        index === 0 ? 'processing' : 'unprocessed',
-        text.length,
-        {},
-        styleSettings,
-      ),
-      content: [{ type: 'text', text }],
-    })),
-  };
-}
-
-function contentFromPlainText(document, text, styleSettings = {}) {
-  const documentId = document?.id || 'workspace-document';
-  const sentences = String(text || '')
-    .split(/(?<=\.)\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const paragraphs = sentences.length ? sentences : ['Start writing your document.'];
-
-  return {
-    type: 'doc',
-    content: paragraphs.map((paragraph, index) => ({
-      type: 'paragraph',
-      attrs: demoAttrs(
-        `${documentId}-block-${index + 1}`,
-        index === 0 ? 'processing' : 'unprocessed',
-        paragraph.length,
-        {},
-        styleSettings,
-      ),
-      content: [{ type: 'text', text: paragraph }],
-    })),
-  };
-}
-
-function createWorkspaceUploadDocument({ title, text, filename }, styleName = 'APA', styleSettings = TEMPLATE_STYLE_SETTINGS.APA) {
-  const id = `demo-upload-${Date.now()}`;
-  const baseDocument = {
-    id,
-    title: title || filename?.replace(/\.[^.]+$/, '') || 'Uploaded document',
-    academic_style: styleName,
-    style_settings: styleSettings,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  return demoDocumentFromContent(
-    baseDocument,
-    contentFromPlainText(baseDocument, text, styleSettings),
-    styleName,
-    styleSettings,
-  );
-}
-
 function hydrateWorkspaceDocument(document) {
   if (!document) return null;
-
-  const storeDocument = readDemoStore()?.documents?.find((item) => item.id === document.id);
-  const source = storeDocument ?? document;
-  if (source.content_json || source.blocks?.length) {
-    return source;
-  }
-
-  const nextStyleName = source.academic_style || 'APA';
-  const nextStyleSettings = {
-    ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
-    ...(source.style_settings ?? {}),
-  };
-
-  return demoDocumentFromContent(
-    {
-      ...source,
-      title: source.title || 'Untitled document',
-      academic_style: nextStyleName,
-      style_settings: nextStyleSettings,
-    },
-    fallbackWorkspaceContent(source, nextStyleSettings),
-    nextStyleName,
-    nextStyleSettings,
-  );
+  return document;
 }
 
 export default function WorkspacePage() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { documentId } = useParams();
+  const {
+    state: realtimeState,
+    applyDocument,
+    subscribeDocument,
+  } = useRealtime();
   const [view, setView] = useState(() => (
-    location.pathname === '/worksapce' ? 'workspace' : 'home'
+    documentId ? 'workspace' : 'home'
   ));
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [workspaceNotice, setWorkspaceNotice] = useState('');
@@ -577,6 +415,8 @@ export default function WorkspacePage() {
   const workspaceUploadInputRef = useRef(null);
   const mobileOptionsPanelRef = useRef(null);
   const mobileOptionsButtonRef = useRef(null);
+  const pendingDocumentMutationsRef = useRef(new Set());
+  const localDocumentRevisionsRef = useRef(new Map());
   const blackboardStyle = getBlackboardCssVars();
   const {
     windowRef: mobileOwlRef,
@@ -648,36 +488,63 @@ export default function WorkspacePage() {
   }, []);
 
   useEffect(() => {
-    if (location.pathname !== '/worksapce') {
+    if (!documentId) {
       setView('home');
+      setSelectedDocument(null);
       return undefined;
     }
 
     setView('workspace');
-    if (selectedDocument) return undefined;
-
-    const rememberedDocument = readLastWorkspaceDocument();
-    if (rememberedDocument) {
-      openWorkspace(rememberedDocument, { updateRoute: false });
-      return undefined;
-    }
-
     let alive = true;
-    listDocuments({ sort: 'most_recent' })
-      .then((data) => {
+    setWorkspaceNotice('Loading document...');
+    getDocument(documentId)
+      .then(({ document }) => {
         if (!alive) return;
-        const document = data.documents?.[0] ?? workspaceHistoryFallback(null)[0];
+        applyDocument('document:updated', document, { force: true });
         openWorkspace(document, { updateRoute: false });
       })
-      .catch(() => {
+      .catch((error) => {
         if (!alive) return;
-        openWorkspace(workspaceHistoryFallback(null)[0], { updateRoute: false });
+        setSelectedDocument(null);
+        setWorkspaceNotice(error.message || 'Could not load the document.');
       });
 
     return () => {
       alive = false;
     };
-  }, [location.pathname]);
+  }, [applyDocument, documentId]);
+
+  useEffect(() => {
+    if (view !== 'workspace' || !documentId) return undefined;
+    return subscribeDocument(documentId);
+  }, [documentId, subscribeDocument, view]);
+
+  useEffect(() => {
+    if (!documentId || selectedDocument?.id !== documentId) return;
+    if (
+      realtimeState.trashDocuments.some((document) => document.id === documentId)
+      || realtimeState.deletedDocumentIds.some((document) => document.id === documentId)
+    ) {
+      setWorkspaceDirty(false);
+      setWorkspaceNotice('This document was removed from the workspace in another session.');
+      setView('home');
+      navigate('/');
+      return;
+    }
+
+    const remoteDocument = realtimeState.documentDetails[documentId];
+    if (
+      remoteDocument
+      && Number(remoteDocument.revision) > Number(selectedDocument.revision ?? 0)
+      && Number(remoteDocument.revision) > (localDocumentRevisionsRef.current.get(documentId) ?? 0)
+      && !pendingDocumentMutationsRef.current.has(documentId)
+    ) {
+      // A keyed editor remount loads this canonical document as initial state, so
+      // Tiptap does not emit an onUpdate/save cycle for a remote replacement.
+      openWorkspace(remoteDocument, { updateRoute: false });
+      setWorkspaceNotice('Updated from another session.');
+    }
+  }, [documentId, navigate, realtimeState.deletedDocumentIds, realtimeState.documentDetails, realtimeState.trashDocuments, selectedDocument?.id, selectedDocument?.revision, view]);
 
   useEffect(() => {
     if (!mobileOptionsOpen) return undefined;
@@ -699,37 +566,6 @@ export default function WorkspacePage() {
   }, [mobileOptionsOpen]);
 
   useEffect(() => {
-    if (view !== 'workspace' || !selectedDocument?.id || selectedDocument.id.startsWith('demo-')) {
-      return undefined;
-    }
-
-    let alive = true;
-    getDocument(selectedDocument.id)
-      .then(({ document }) => {
-        if (!alive) return;
-        const nextStyleName = document.academic_style || 'APA';
-        const nextStyleSettings = {
-          ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
-          ...(document.style_settings ?? {}),
-        };
-        const nextDraft = draftFromDocument(document, nextStyleSettings);
-        setWorkspaceDraft(nextDraft);
-        setSelectedDocument(documentFromWorkspaceDraft(document, nextDraft, nextStyleName, nextStyleSettings));
-        setStyleName(nextStyleName);
-        setStyleSettings(nextStyleSettings);
-        setEditorContent(nextDraft.contentJson);
-        setEditorReloadKey((value) => value + 1);
-      })
-      .catch(() => {
-        if (alive) setWorkspaceNotice('');
-      });
-
-    return () => {
-      alive = false;
-    };
-  }, [view, selectedDocument?.id]);
-
-  useEffect(() => {
     if (view !== 'workspace') {
       return undefined;
     }
@@ -742,9 +578,10 @@ export default function WorkspacePage() {
           document.id !== selectedDocument?.id
         )));
       })
-      .catch(() => {
+      .catch((error) => {
         if (!alive) return;
-        setWorkspaceHistoryDocuments(workspaceHistoryFallback(selectedDocument));
+        setWorkspaceHistoryDocuments([]);
+        setWorkspaceNotice(error.message || 'Could not load recent documents.');
       });
 
     return () => {
@@ -787,10 +624,10 @@ export default function WorkspacePage() {
     setPracticeError('');
     setMobilePracticeIndex(0);
     setWorkspaceHistoryExpanded(false);
-    rememberWorkspaceDocument(hydratedDocument);
     setView('workspace');
-    if (updateRoute && location.pathname !== '/worksapce') {
-      navigate('/worksapce');
+    const targetPath = `/workspace/${hydratedDocument.id}`;
+    if (updateRoute && location.pathname !== targetPath) {
+      navigate(targetPath);
     }
   }
 
@@ -855,36 +692,60 @@ export default function WorkspacePage() {
     return documentFromWorkspaceDraft(selectedDocument, fallbackDraft, styleName, styleSettings);
   }
 
+  async function persistWorkspaceDocument(document, versionLabel) {
+    if (!document?.id) throw new Error('No persisted document is open.');
+
+    pendingDocumentMutationsRef.current.add(document.id);
+    try {
+      const result = await saveDocument(document.id, {
+        title: document.title,
+        academicStyle: styleName,
+        styleSettings,
+        contentJson: document.content_json,
+        createVersion: true,
+        versionLabel,
+      });
+      const persistedDocument = result.document ?? document;
+      const persistedStyleName = persistedDocument.academic_style || styleName;
+      const persistedStyleSettings = {
+        ...(TEMPLATE_STYLE_SETTINGS[persistedStyleName] ?? DEFAULT_CUSTOM_STYLE),
+        ...(persistedDocument.style_settings ?? styleSettings),
+      };
+      const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
+      setWorkspaceDraft(persistedDraft);
+      setSelectedDocument(documentFromWorkspaceDraft(
+        persistedDocument,
+        persistedDraft,
+        persistedStyleName,
+        persistedStyleSettings,
+      ));
+      setEditorContent(persistedDraft.contentJson ?? document.content_json);
+      setActiveEditorBlock({
+        blockId: persistedDraft.currentProcessingBlockId ?? null,
+        status: persistedDraft.currentProcessingBlockId ? 'processing' : 'unprocessed',
+      });
+      setStyleName(persistedStyleName);
+      setStyleSettings(persistedStyleSettings);
+      setWorkspaceDirty(false);
+      const revision = Number(persistedDocument.revision);
+      if (Number.isFinite(revision)) {
+        localDocumentRevisionsRef.current.set(persistedDocument.id, revision);
+      }
+      applyDocument('document:updated', persistedDocument);
+      return persistedDocument;
+    } finally {
+      pendingDocumentMutationsRef.current.delete(document.id);
+    }
+  }
+
   async function saveWorkspaceDocument({ leaveAfterSave = false } = {}) {
     const document = normalizedWorkspaceDocument();
     if (!document?.id) return false;
 
     setWorkspaceSaving(true);
     try {
-      if (document.id.startsWith('demo-')) {
-        upsertDemoDocumentInStore(document);
-        setSelectedDocument(document);
-        setEditorContent(document.content_json);
-        setWorkspaceDraft(draftFromDocument(document, styleSettings));
-        setWorkspaceNotice('Saved locally');
-      } else {
-        const result = await saveDocument(document.id, {
-          title: document.title,
-          academicStyle: styleName,
-          styleSettings,
-          contentJson: document.content_json,
-          createVersion: true,
-          versionLabel: 'Manual save',
-        });
-        const persistedDocument = result.document ?? document;
-        const persistedDraft = draftFromDocument(persistedDocument, styleSettings);
-        setWorkspaceDraft(persistedDraft);
-        setSelectedDocument(documentFromWorkspaceDraft(persistedDocument, persistedDraft, styleName, styleSettings));
-        setEditorContent(persistedDraft.contentJson ?? document.content_json);
-        setWorkspaceNotice('Saved');
-      }
-
-      setWorkspaceDirty(false);
+      await persistWorkspaceDocument(document, 'Manual save');
+      setWorkspaceNotice('Saved');
       setShowUnsavedBackPrompt(false);
       if (leaveAfterSave) {
         setView('home');
@@ -892,7 +753,7 @@ export default function WorkspacePage() {
       }
       return true;
     } catch (error) {
-      setWorkspaceNotice(error.message || 'Save is waiting for the local API.');
+      setWorkspaceNotice(error.message || 'Could not save the document.');
       return false;
     } finally {
       setWorkspaceSaving(false);
@@ -910,6 +771,10 @@ export default function WorkspacePage() {
 
   function leaveWorkspaceWithoutSaving() {
     setShowUnsavedBackPrompt(false);
+    setSelectedDocument(null);
+    setWorkspaceDraft(null);
+    setEditorContent(null);
+    setActiveEditorBlock({ blockId: null, status: 'unprocessed' });
     setWorkspaceDirty(false);
     setView('home');
     navigate('/');
@@ -951,22 +816,11 @@ export default function WorkspacePage() {
 
     try {
       const result = await uploadDocument(file, styleName);
+      applyDocument('document:created', result.document);
       openWorkspace(result.document);
       setWorkspaceNotice(`${file.name} uploaded as a new document.`);
     } catch (error) {
-      if (/\.(txt|md)$/i.test(file.name)) {
-        const text = await file.text();
-        const document = createWorkspaceUploadDocument({
-          title: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '),
-          text,
-          filename: file.name,
-        }, styleName, styleSettings);
-        upsertDemoDocumentInStore(document);
-        openWorkspace(document);
-        setWorkspaceNotice(`${file.name} opened as a local demo upload.`);
-        return;
-      }
-      setWorkspaceNotice(error.message || '.docx parsing needs the local upload API.');
+      setWorkspaceNotice(error.message || 'Could not upload the document.');
     }
   }
 
@@ -975,10 +829,6 @@ export default function WorkspacePage() {
     const blockId = activeEditorBlock?.blockId;
     if (!documentId || !blockId) {
       setAnalysisError('Select a text block to analyze.');
-      return;
-    }
-    if (documentId.startsWith('demo-')) {
-      setAnalysisError('Save this document to the backend before using AI analysis.');
       return;
     }
     if (!selectedAnalysisFilters.length) {
@@ -1029,7 +879,7 @@ export default function WorkspacePage() {
   async function handleEditorBlockStatusChange({ blockId, status }) {
     const payload = arguments[0] ?? {};
     const nextDocument = payload.contentJson && selectedDocument
-      ? demoDocumentFromContent(
+      ? documentFromContent(
         selectedDocument,
         payload.contentJson,
         styleName,
@@ -1055,7 +905,7 @@ export default function WorkspacePage() {
       refreshRewriteCardsFromDocument(nextDocument);
     }
 
-    if (!selectedDocument?.id || selectedDocument.id.startsWith('demo-')) {
+    if (!selectedDocument?.id) {
       if (status !== 'processing') {
         setWorkspaceNotice(`Marked block as ${status}.`);
       } else {
@@ -1071,7 +921,7 @@ export default function WorkspacePage() {
         setWorkspaceNotice(`Marked block as ${status}.`);
       }
     } catch (error) {
-      setWorkspaceNotice(error.message || 'Block status is waiting for the local API.');
+      setWorkspaceNotice(error.message || 'Could not update the block status.');
     }
   }
 
@@ -1173,10 +1023,6 @@ export default function WorkspacePage() {
       setRewriteError('Select a text block to rewrite.');
       return;
     }
-    if (documentId.startsWith('demo-')) {
-      setRewriteError('Save this document to the backend before using AI rewriting.');
-      return;
-    }
     if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy) return;
 
     const requestKey = currentRewriteKey;
@@ -1253,8 +1099,9 @@ export default function WorkspacePage() {
     } catch (error) {
       setRewriteError(error.message || 'The rewrite could not be applied.');
       triggerWorkspaceError();
+    } finally {
+      setWorkspaceOwlLoading(false);
       setRewriteBusy(false);
-      return;
     }
     await runWorkspaceMagic(event.currentTarget);
     applyRewriteCard(card);
@@ -1320,7 +1167,7 @@ export default function WorkspacePage() {
 
     const rawSourceContent = editorContent
       ?? selectedDocument.content_json
-      ?? fallbackWorkspaceContent(selectedDocument, styleSettings);
+      ?? { type: 'doc', content: [] };
     const normalized = normalizeWorkspaceContent(
       selectedDocument,
       rawSourceContent,
@@ -1334,7 +1181,7 @@ export default function WorkspacePage() {
     const nodes = Array.isArray(sourceContent.content) ? sourceContent.content : [];
     const editableIndexes = nodes
       .map((node, index) => ({ node, index }))
-      .filter(({ node }) => isEditableDemoBlock(node) && textFromDemoNode(node).trim());
+      .filter(({ node }) => isEditableBlock(node) && textFromNode(node).trim());
 
     if (!editableIndexes.length) {
       setWorkspaceNotice('No editable block is available.');
@@ -1358,7 +1205,7 @@ export default function WorkspacePage() {
     const nextContent = {
       type: sourceContent.type ?? 'doc',
       content: nodes.map((node, index) => {
-        if (!isEditableDemoBlock(node)) return node;
+        if (!isEditableBlock(node)) return node;
         const attrs = { ...(node.attrs ?? {}) };
         let nextNode = node;
 
@@ -1427,10 +1274,6 @@ export default function WorkspacePage() {
 
     if (!documentId || !blockId) {
       setPracticeError('Select a text block before starting practice.');
-      return;
-    }
-    if (documentId.startsWith('demo-')) {
-      setPracticeError('Save this document to the backend before using AI practice.');
       return;
     }
     if (!attemptText) {
@@ -1699,7 +1542,6 @@ export default function WorkspacePage() {
       </article>
     );
   }
-
   function moveMobileRewrite(step) {
     setMobileRewriteIndex((current) => (current + step + rewriteCards.length) % rewriteCards.length);
   }
@@ -2034,11 +1876,16 @@ export default function WorkspacePage() {
   }
 
   if (view === 'workspace') {
-    const documentTitle = selectedDocument?.title ?? 'Assignment 2: article 2';
-    const headerNotice = /document not found/i.test(workspaceNotice) ? '' : workspaceNotice;
-    const recentDocuments = workspaceHistoryDocuments.length
-      ? workspaceHistoryDocuments
-      : workspaceHistoryFallback(selectedDocument);
+    if (!selectedDocument) {
+      return (
+        <main className="document-workspace-page">
+          <p role="status">{workspaceNotice || 'Loading document...'}</p>
+        </main>
+      );
+    }
+
+    const documentTitle = selectedDocument.title || 'Untitled document';
+    const recentDocuments = workspaceHistoryDocuments;
 
     return (
       <main className={`document-workspace-page${workspaceSidebarOpen ? '' : ' is-sidebar-collapsed'}`}>
@@ -2081,7 +1928,6 @@ export default function WorkspacePage() {
 
         <section className="workspace-paper-region" aria-label="Document editor">
           <div className="workspace-paper-header">
-            <button type="button" className="workspace-back-button" onClick={requestWorkspaceBack}>Back</button>
             <div className="workspace-paper-header-main">
               <input
                 className="workspace-title-input"
@@ -2090,9 +1936,6 @@ export default function WorkspacePage() {
                 aria-label="Document title"
               />
             </div>
-            {(headerNotice || workspaceDirty) && (
-              <small>{headerNotice || 'Unsaved changes'}</small>
-            )}
             <button
               ref={mobileOptionsButtonRef}
               type="button"
@@ -2104,6 +1947,15 @@ export default function WorkspacePage() {
               <span />
               <span />
               <span />
+            </button>
+            <button
+              type="button"
+              className="workspace-back-button"
+              onClick={requestWorkspaceBack}
+              aria-label="Leave workspace"
+              title="Leave workspace"
+            >
+              <CloseIcon />
             </button>
           </div>
           <DocumentEditor
