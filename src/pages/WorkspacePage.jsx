@@ -563,6 +563,7 @@ export default function WorkspacePage() {
     flow: true,
   });
   const [blockAnalyses, setBlockAnalyses] = useState({});
+  const [blockAnalysisHighlights, setBlockAnalysisHighlights] = useState({});
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
   const workspaceOwlAnimatorRef = useRef(null);
@@ -602,6 +603,10 @@ export default function WorkspacePage() {
       : ''
   ), [activeEditorBlock?.blockId, activeEditorBlock?.text, selectedAnalysisFilters]);
   const currentBlockAnalysis = currentAnalysisKey ? blockAnalyses[currentAnalysisKey] ?? null : null;
+  const analysisHighlights = useMemo(
+    () => Object.values(blockAnalysisHighlights),
+    [blockAnalysisHighlights],
+  );
   const currentRewriteBlockId = activeEditorBlock?.blockId
     ?? workspaceDraft?.currentProcessingBlockId
     ?? null;
@@ -771,6 +776,7 @@ export default function WorkspacePage() {
     setWorkspaceDirty(false);
     setWorkspaceNotice('');
     setBlockAnalyses({});
+    setBlockAnalysisHighlights({});
     setAnalysisError('');
     setRewriteCardsLocked(false);
     setRewriteAllCompleted(false);
@@ -982,6 +988,9 @@ export default function WorkspacePage() {
     if (analysisBusy) return;
 
     const requestKey = currentAnalysisKey;
+    const requestBlockText = activeEditorBlock?.text
+      ?? workspaceDraft?.blocks?.find((block) => block.id === blockId)?.text
+      ?? '';
     setAnalysisBusy(true);
     setAnalysisError('');
     setWorkspaceNotice('');
@@ -998,6 +1007,14 @@ export default function WorkspacePage() {
       setBlockAnalyses((current) => ({
         ...current,
         [requestKey]: response.analysis,
+      }));
+      setBlockAnalysisHighlights((current) => ({
+        ...current,
+        [blockId]: {
+          blockId,
+          sourceText: requestBlockText,
+          issues: response.analysis?.ai?.issues ?? [],
+        },
       }));
       setWorkspaceNotice(response.cached ? 'Loaded saved block analysis.' : 'Block analysis complete.');
     } catch (error) {
@@ -2106,6 +2123,7 @@ export default function WorkspacePage() {
             onChange={handleEditorChange}
             onBlockStatusChange={handleEditorBlockStatusChange}
             onActiveBlockChange={handleActiveEditorBlockChange}
+            analysisHighlights={analysisHighlights}
             onSave={() => saveWorkspaceDocument()}
             saveDisabled={!workspaceDirty}
             saving={workspaceSaving}

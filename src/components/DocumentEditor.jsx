@@ -17,6 +17,7 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { buildAnalysisPhraseDecorations } from '../lib/analysisPhraseDecorations.js';
 import { DEFAULT_CLUSTER_OPTIONS } from '../lib/clusteringOptions.js';
 import { splitSegmentedTextBlock } from '../lib/editorBlockCommands.js';
 import A4EditorPage from './A4EditorPage.jsx';
@@ -24,6 +25,7 @@ import EditorToolbar from './EditorToolbar.jsx';
 
 const A4_PAGE_HEIGHT_PX = 1123;
 const LEGACY_TRACKED_BLOCK_TYPES = new Set(['paragraph', 'heading']);
+const EMPTY_ANALYSIS_HIGHLIGHTS = Object.freeze([]);
 
 function generateBlockId(prefix) {
   const randomId = globalThis.crypto?.randomUUID?.();
@@ -528,6 +530,23 @@ const BlockSelectionDecoration = Extension.create({
   },
 });
 
+const AnalysisPhraseDecoration = Extension.create({
+  name: 'analysisPhraseDecoration',
+  addStorage() {
+    return { highlights: EMPTY_ANALYSIS_HIGHLIGHTS };
+  },
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('analysisPhraseDecoration'),
+        props: {
+          decorations: (state) => buildAnalysisPhraseDecorations(state, this.storage.highlights),
+        },
+      }),
+    ];
+  },
+});
+
 function collectTrackedBlocks(state) {
   const blocks = [];
   let order = 0;
@@ -832,6 +851,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   onChange,
   onBlockStatusChange,
   onActiveBlockChange,
+  analysisHighlights = EMPTY_ANALYSIS_HIGHLIGHTS,
   onSave,
   saveDisabled = false,
   saving = false,
@@ -865,6 +885,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       BlockSegment,
       BlockSegmentEnter,
       BlockSelectionDecoration,
+      AnalysisPhraseDecoration,
       PageBreak,
       BulletList.configure({ keepMarks: true }),
       OrderedList.configure({ keepMarks: true }),
@@ -929,6 +950,18 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
     onActiveBlockChange?.(info);
   }, [editor, document?.id, onActiveBlockChange]);
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+
+    editor.storage.analysisPhraseDecoration.highlights = Array.isArray(analysisHighlights)
+      ? analysisHighlights
+      : EMPTY_ANALYSIS_HIGHLIGHTS;
+    const transaction = editor.state.tr
+      .setMeta('analysisPhraseDecoration', true)
+      .setMeta('addToHistory', false);
+    editor.view.dispatch(transaction);
+  }, [editor, analysisHighlights]);
 
   useEffect(() => () => {
     clearTimeout(blockPartitionTimerRef.current);

@@ -127,7 +127,9 @@ more important than automatically receiving model updates.
    structured response.
 8. The response returns through the same route to `WorkspacePage.jsx`, which
    displays the metrics, external source check, issues, scores, and practice
-   goals for that block.
+   goals for that block. It also sends each issue's exact `evidence` excerpt to
+   `DocumentEditor.jsx`, where a TipTap decoration draws a red wavy underline
+   beneath the matching phrase.
 
 `activeEditorBlock.blockId` itself is temporary React state. For a saved
 document, its value corresponds to the persistent `document_blocks.id` stored
@@ -435,12 +437,19 @@ The Analyzing panel now:
 7. displays issue counts by filter;
 8. shows MCP/Crossref metadata or an unavailable state when a DOI is detected,
    and hides the external-source card when no DOI is present;
-9. shows evidence, explanations, and suggestions; and
-10. exposes learning goals for the Practice workflow.
+9. shows evidence, explanations, and suggestions;
+10. keeps red wavy evidence underlines visible for every block analyzed during
+    the current workspace session; and
+11. exposes learning goals for the Practice workflow.
 
 Client results are keyed by block id, current block text, and selected filters.
 Changing the selected text or filter set therefore hides a result that no
 longer matches the current view.
+
+Underline data is also tied to the exact block text that was analyzed. Editing
+that block immediately removes its underlines because the saved issue locations
+are stale; analyzing the edited block creates a new matching set. When the same
+evidence excerpt occurs more than once, every exact occurrence is underlined.
 
 Local demo documents cannot call the endpoint because they do not have owned
 PostgreSQL document and block records.
@@ -787,8 +796,10 @@ layouts:
 | `scripts/db/schema.sql` | Defines the AI result tables and their exact cache indexes. |
 | `src/services/documentsApi.js` | Calls the analysis, rewriting, and practice endpoints. |
 | `src/pages/WorkspacePage.jsx` | Saves pending edits, requests AI results, rejects stale results, renders analysis and practice coaching, and applies accepted rewrites. |
-| `src/components/DocumentEditor.jsx` | Reports the currently selected block and its text. |
-| `src/styles/workspace.css` | Styles analysis controls, metrics, scores, issues, goals, loading, errors, and responsive layouts. |
+| `src/components/DocumentEditor.jsx` | Reports the currently selected block and renders analysis-evidence decorations in TipTap. |
+| `src/lib/analysisPhraseDecorations.js` | Matches exact issue evidence to analyzed block text and creates inline TipTap decorations. |
+| `src/lib/analysisPhraseDecorations.test.js` | Tests repeated evidence matching, multi-block decorations, and stale-text invalidation. |
+| `src/styles/workspace.css` | Styles analysis controls, metrics, scores, issue underlines, goals, loading, errors, and responsive layouts. |
 
 ### Supporting documentation
 
@@ -812,8 +823,8 @@ implemented.
 
 ## Verification
 
-The block-analysis, three-tone rewriting, and Practice implementations were
-verified on 2026-07-13 with:
+The block-analysis, three-tone rewriting, Practice, and editor issue-decoration
+implementations were verified through 2026-07-14 with:
 
 ```bash
 npm run db:migrate
@@ -828,12 +839,16 @@ Observed results:
 - product schema migration succeeded;
 - all three AI persistence tables exist in PostgreSQL;
 - server syntax checks passed;
-- all 34 automated tests passed;
+- all 39 automated tests passed;
 - the MCP smoke test retrieved live Crossref metadata through the MCP tool; and
 - the Vite production build succeeded.
 
 The build still reports existing dependency/bundle warnings for `lottie-web`
 and large chunks. These warnings are not produced by the AI integrations.
+
+The database migration and live MCP smoke check were last run on 2026-07-13;
+the 2026-07-14 decoration change required only the test, server-check, and build
+commands.
 
 No paid live OpenAI request was made during automated verification. A final
 manual test requires a valid `OPENAI_API_KEY`, a signed-in browser session, and
@@ -853,6 +868,7 @@ a persisted document.
 - [x] Add analysis persistence and exact cache keys.
 - [x] Add the authenticated block-analysis endpoint.
 - [x] Connect the Analyzing panel to the endpoint.
+- [x] Underline exact issue-evidence phrases in every analyzed editor block.
 - [x] Save unsaved editor text before analysis.
 - [x] Add stale-result protection using the source-text hash and client key.
 - [x] Add analysis rate limiting, timeout, token-usage storage, and safe errors.
@@ -869,6 +885,8 @@ a persisted document.
 
 ### 2026-07-14
 
+- Added exact-evidence red wavy underlines to every analyzed editor block and
+  invalidated them when the analyzed block text changes.
 - Hid the MCP/Crossref external-source card when the selected block contains no
   DOI and the lookup status is `not-needed`.
 

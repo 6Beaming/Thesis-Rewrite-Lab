@@ -17,7 +17,7 @@
     "dev:client": "vite",
     "build": "vite build",
     "check:server": "node --check app.js && node --check scripts/migrate-auth.js && node --check scripts/mcp-smoke.js && node --check server/auth.js && node --check server/ai/blockAnalysis.js && node --check server/ai/blockRewrites.js && node --check server/ai/practiceFeedback.js && node --check server/mcp/academicSources.js && node --check server/models/analyses.js && node --check server/models/rewrites.js && node --check server/models/practice.js && node --check server/models/auth-adapter.js && node --check server/middlewares/requireAuth.js && node --check server/routers/documents.js && node --check server/routers/index.js",
-    "test": "node --test server/ai/blockAnalysis.test.js server/ai/blockRewrites.test.js server/ai/practiceFeedback.test.js server/mcp/academicSources.test.js server/models/auth-adapter.test.js server/models/blocks.test.js scripts/lib/clustering.test.cjs scripts/lib/semanticClustering.test.cjs src/lib/clustering.test.js src/lib/editorBlockCommands.test.js",
+    "test": "node --test server/ai/blockAnalysis.test.js server/ai/blockRewrites.test.js server/ai/practiceFeedback.test.js server/mcp/academicSources.test.js server/models/auth-adapter.test.js server/models/blocks.test.js scripts/lib/clustering.test.cjs scripts/lib/semanticClustering.test.cjs src/lib/analysisPhraseDecorations.test.js src/lib/clustering.test.js src/lib/editorBlockCommands.test.js",
     "mcp:smoke": "node scripts/mcp-smoke.js",
     "start": "node app.js",
     "preview": "vite preview",

@@ -705,6 +705,15 @@
   background: #e0e5e3;
 }
 
+.document-editor-surface .analysis-phrase-issue {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: #c62828;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: none;
+}
+
 .selected-block-frame {
   --selected-frame-border: #23806d;
   --selected-frame-glow: rgba(35, 128, 109, 0.2);
