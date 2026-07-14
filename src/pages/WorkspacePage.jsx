@@ -10,7 +10,10 @@ import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
 import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
 import OwlContainer from '../components/OwlContainer.jsx';
-import { chooseNextUnfinishedBlock } from '../lib/editorBlockCommands.js';
+import {
+  chooseNextUnfinishedBlock,
+  convertLegacyTrackedBlocks,
+} from '../lib/editorBlockCommands.js';
 import { getBlackboardCssVars, getMobileContainerCssVars } from './libraries/animations/containerLayout.js';
 import { useFloatingWindow } from './libraries/useFloatingWindow.js';
 import {
@@ -128,9 +131,28 @@ function CloseIcon() {
 }
 
 function isEditableBlock(node) {
-  if (node?.type === 'blockSegment') return true;
-  if (node?.type !== 'paragraph' && node?.type !== 'heading') return false;
-  return !node.content?.some((child) => child?.type === 'blockSegment');
+  return node?.type === 'blockSegment';
+}
+
+function editableBlocksFromContent(node, blocks = []) {
+  if (!node || typeof node !== 'object') return blocks;
+  if (isEditableBlock(node) && textFromNode(node).trim()) {
+    blocks.push(node);
+  }
+  if (Array.isArray(node.content)) {
+    node.content.forEach((child) => editableBlocksFromContent(child, blocks));
+  }
+  return blocks;
+}
+
+function mapEditableBlocks(node, mapBlock) {
+  if (!node || typeof node !== 'object') return node;
+  if (isEditableBlock(node)) return mapBlock(node);
+  if (!Array.isArray(node.content)) return node;
+  return {
+    ...node,
+    content: node.content.map((child) => mapEditableBlocks(child, mapBlock)),
+  };
 }
 
 function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
@@ -146,6 +168,11 @@ function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
     block.attrs ?? block.tiptap_node?.attrs ?? {},
     styleSettings
   );
+  const storedNode = block.tiptap_node ?? null;
+  const storedContent = Array.isArray(storedNode?.content)
+    && storedNode.content.every((child) => child?.type === 'text' || child?.type === 'hardBreak')
+    ? storedNode.content
+    : (text ? [{ type: 'text', text }] : []);
 
   return {
     id,
@@ -153,7 +180,7 @@ function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
     document_id: block.document_id ?? documentId,
     block_index: index,
     order: typeof block.order === 'number' ? block.order : index,
-    node_type: block.type ?? block.node_type ?? block.tiptap_node?.type ?? 'paragraph',
+    node_type: 'blockSegment',
     text,
     text_content: text,
     status,
@@ -161,10 +188,12 @@ function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
     length: text.length,
     char_length: text.length,
     attrs,
-    tiptap_node: block.tiptap_node ? {
-      ...block.tiptap_node,
+    tiptap_node: {
+      ...(storedNode?.type === 'blockSegment' ? storedNode : {}),
+      type: 'blockSegment',
       attrs,
-    } : null,
+      content: storedContent,
+    },
     contentIndex: block.contentIndex ?? null,
   };
 }
@@ -261,10 +290,14 @@ function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = 
 }
 
 function draftFromDocument(document, styleSettings = {}) {
-  const contentJson = document?.content_json ?? { type: 'doc', content: [] };
+  const documentId = document?.id || 'workspace-document';
+  const contentJson = convertLegacyTrackedBlocks(
+    document?.content_json ?? { type: 'doc', content: [] },
+    (index) => `${documentId}-block-${index + 1}`,
+  );
   const sourceBlocks = Array.isArray(document?.blocks) && document.blocks.length
     ? document.blocks
-    : extractRuntimeBlocksFromContent(document ?? { id: 'workspace-document' }, contentJson, styleSettings);
+    : extractRuntimeBlocksFromContent({ ...(document ?? {}), id: documentId }, contentJson, styleSettings);
 
   return normalizeWorkspaceDraft(
     document,
@@ -1204,66 +1237,57 @@ export default function WorkspacePage() {
     );
     const sourceDocument = normalized.document ?? selectedDocument;
     const sourceContent = normalized.contentJson ?? rawSourceContent;
-    const nodes = Array.isArray(sourceContent.content) ? sourceContent.content : [];
-    const editableIndexes = nodes
-      .map((node, index) => ({ node, index }))
-      .filter(({ node }) => isEditableBlock(node) && textFromNode(node).trim());
+    const editableBlocks = editableBlocksFromContent(sourceContent);
 
-    if (!editableIndexes.length) {
+    if (!editableBlocks.length) {
       setWorkspaceNotice('No editable block is available.');
       return null;
     }
 
     const activeBlockId = activeEditorBlock?.blockId;
     const currentProcessingId = sourceDocument.current_processing_block_id;
-    const target = editableIndexes.find(({ node }) => (
+    const target = editableBlocks.find((node) => (
       activeBlockId
       && node.attrs?.blockId === activeBlockId
       && ['processing', 'unprocessed'].includes(node.attrs?.status)
     ))
-      ?? editableIndexes.find(({ node }) => node.attrs?.blockId === currentProcessingId)
-      ?? editableIndexes.find(({ node }) => node.attrs?.status === 'processing')
-      ?? editableIndexes[0];
-    const nextProcessingIndex = chooseNextUnfinishedBlock(
-      editableIndexes.map(({ node, index }) => ({
+      ?? editableBlocks.find((node) => node.attrs?.blockId === currentProcessingId)
+      ?? editableBlocks.find((node) => node.attrs?.status === 'processing')
+      ?? editableBlocks[0];
+    const nextProcessingBlockId = chooseNextUnfinishedBlock(
+      editableBlocks.map((node) => ({
         blockId: node.attrs?.blockId ?? null,
         status: node.attrs?.status ?? 'unprocessed',
         isEmpty: false,
-        index,
       })),
-      target.node.attrs?.blockId ?? null,
-    )?.index ?? null;
+      target.attrs?.blockId ?? null,
+    )?.blockId ?? null;
 
-    const nextContent = {
-      type: sourceContent.type ?? 'doc',
-      content: nodes.map((node, index) => {
-        if (!isEditableBlock(node)) return node;
-        const attrs = { ...(node.attrs ?? {}) };
-        let nextNode = node;
+    const nextContent = mapEditableBlocks(sourceContent, (node) => {
+      if (!textFromNode(node).trim()) return node;
+      const attrs = { ...(node.attrs ?? {}) };
+      const blockId = attrs.blockId ?? null;
 
-        if (index === target.index) {
-          attrs.status = nextStatus;
-          if (replacementText !== null) {
-            attrs.length = replacementText.length;
-            nextNode = {
-              ...node,
-              attrs,
-              content: [{ type: 'text', text: replacementText }],
-            };
-          } else {
-            nextNode = { ...node, attrs };
-          }
-        } else if (index === nextProcessingIndex) {
-          attrs.status = 'processing';
-          nextNode = { ...node, attrs };
-        } else if (attrs.status === 'processing') {
-          attrs.status = 'unprocessed';
-          nextNode = { ...node, attrs };
+      if (blockId === target.attrs?.blockId) {
+        attrs.status = nextStatus;
+        if (replacementText !== null) {
+          attrs.length = replacementText.length;
+          return {
+            ...node,
+            attrs,
+            content: [{ type: 'text', text: replacementText }],
+          };
         }
-
-        return nextNode;
-      }),
-    };
+        return { ...node, attrs };
+      }
+      if (blockId === nextProcessingBlockId) {
+        return { ...node, attrs: { ...attrs, status: 'processing' } };
+      }
+      if (attrs.status === 'processing') {
+        return { ...node, attrs: { ...attrs, status: 'unprocessed' } };
+      }
+      return node;
+    });
 
     const nextDraft = normalizeWorkspaceDraft(
       sourceDocument,

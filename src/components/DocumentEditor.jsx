@@ -21,6 +21,7 @@ import { buildAnalysisPhraseDecorations } from '../lib/analysisPhraseDecorations
 import { DEFAULT_CLUSTER_OPTIONS } from '../lib/clusteringOptions.js';
 import {
   chooseNextUnfinishedBlock,
+  convertLegacyTrackedBlocks,
   hasUnfinishedBlocks,
   splitSegmentedTextBlock,
 } from '../lib/editorBlockCommands.js';
@@ -28,7 +29,7 @@ import A4EditorPage from './A4EditorPage.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 
 const A4_PAGE_HEIGHT_PX = 1123;
-const LEGACY_TRACKED_BLOCK_TYPES = new Set(['paragraph', 'heading']);
+const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const EMPTY_ANALYSIS_HIGHLIGHTS = Object.freeze([]);
 
 function generateBlockId(prefix) {
@@ -38,10 +39,7 @@ function generateBlockId(prefix) {
 }
 
 function isTrackedTextBlockNode(node) {
-  if (node?.type?.name === 'blockSegment') return true;
-  if (!LEGACY_TRACKED_BLOCK_TYPES.has(node?.type?.name)) return false;
-  if (node.attrs?.blockId) return true;
-  return !node.content?.content?.some((child) => child.type?.name === 'blockSegment');
+  return node?.type?.name === 'blockSegment';
 }
 
 function normalizeBlockStatus(status) {
@@ -72,7 +70,7 @@ function trackedBlockStyle(HTMLAttributes) {
 
 function isStyleableTextNode(node) {
   return node?.type?.name === 'blockSegment'
-    || LEGACY_TRACKED_BLOCK_TYPES.has(node?.type?.name);
+    || STRUCTURAL_TEXT_BLOCK_TYPES.has(node?.type?.name);
 }
 
 function renderTrackedBlock(tag, HTMLAttributes) {
@@ -115,8 +113,6 @@ const AcademicParagraph = Paragraph.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
-      blockId: { default: null },
-      status: { default: 'unprocessed' },
       lineHeight: { default: '2.0' },
       textIndent: { default: '0.5in' },
       textAlign: { default: 'left' },
@@ -125,9 +121,7 @@ const AcademicParagraph = Paragraph.extend({
     };
   },
   renderHTML({ HTMLAttributes }) {
-    return HTMLAttributes.blockId
-      ? renderTrackedBlock('p', HTMLAttributes)
-      : renderAcademicContainer('p', HTMLAttributes);
+    return renderAcademicContainer('p', HTMLAttributes);
   },
 });
 
@@ -135,8 +129,6 @@ const AcademicHeading = Heading.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
-      blockId: { default: null },
-      status: { default: 'unprocessed' },
       lineHeight: { default: '2.0' },
       textIndent: { default: '0.5in' },
       textAlign: { default: 'left' },
@@ -146,9 +138,7 @@ const AcademicHeading = Heading.extend({
   },
   renderHTML({ node, HTMLAttributes }) {
     const level = this.options.levels.includes(node.attrs.level) ? node.attrs.level : this.options.levels[0];
-    return HTMLAttributes.blockId
-      ? renderTrackedBlock(`h${level}`, HTMLAttributes)
-      : renderAcademicContainer(`h${level}`, HTMLAttributes);
+    return renderAcademicContainer(`h${level}`, HTMLAttributes);
   },
 });
 
@@ -156,7 +146,7 @@ const BlockSegment = Node.create({
   name: 'blockSegment',
   group: 'inline',
   inline: true,
-  content: 'text*',
+  content: '(text | hardBreak)*',
   defining: true,
   selectable: false,
   addAttributes() {
@@ -205,7 +195,10 @@ const PageBreak = Node.create({
 });
 
 function fallbackContent(document) {
-  if (document?.content_json) return document.content_json;
+  const createBlockId = () => generateBlockId(`${document?.id || 'document'}-block`);
+  if (document?.content_json) {
+    return convertLegacyTrackedBlocks(document.content_json, createBlockId);
+  }
   if (document?.blocks?.length) {
     const paragraphs = [];
     for (const [index, block] of document.blocks.entries()) {
@@ -251,10 +244,10 @@ function fallbackContent(document) {
       paragraph.content.push(node);
     }
 
-    return {
+    return convertLegacyTrackedBlocks({
       type: 'doc',
       content: paragraphs,
-    };
+    }, createBlockId);
   }
   return {
     type: 'doc',
@@ -375,19 +368,48 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
     pageElement.append(frame);
   }
 
-  const lineRects = Array.from(selectedBlock.getClientRects())
+  const selectedActions = selectedBlock.querySelector('.selected-block-actions');
+  const selectedTextRange = document.createRange();
+  selectedTextRange.selectNodeContents(selectedBlock);
+  if (selectedActions) selectedTextRange.setEndBefore(selectedActions);
+
+  const lineRects = Array.from(selectedTextRange.getClientRects())
     .filter((rect) => rect.width > 0 && rect.height > 0)
-    .sort((a, b) => a.top - b.top || a.left - b.left);
+    .sort((a, b) => a.top - b.top || a.left - b.left)
+    .reduce((lines, rect) => {
+      const currentLine = lines.at(-1);
+      const overlapHeight = currentLine
+        ? Math.min(rect.bottom, currentLine.bottom) - Math.max(rect.top, currentLine.top)
+        : 0;
+      const overlapsCurrentLine = currentLine
+        && overlapHeight > Math.min(rect.height, currentLine.bottom - currentLine.top) / 2;
+      if (!overlapsCurrentLine) {
+        lines.push({
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+        });
+        return lines;
+      }
+
+      currentLine.left = Math.min(currentLine.left, rect.left);
+      currentLine.top = Math.min(currentLine.top, rect.top);
+      currentLine.right = Math.max(currentLine.right, rect.right);
+      currentLine.bottom = Math.max(currentLine.bottom, rect.bottom);
+      return lines;
+    }, []);
   if (!lineRects.length) {
     frame.setAttribute('hidden', '');
     return;
   }
 
   const pageRect = pageElement.getBoundingClientRect();
+  const editorRect = editor.view.dom.getBoundingClientRect();
   const frameGap = 4;
-  const left = Math.min(...lineRects.map((rect) => rect.left)) - frameGap;
+  const left = editorRect.left - frameGap;
   const top = Math.min(...lineRects.map((rect) => rect.top)) - frameGap;
-  const right = Math.max(...lineRects.map((rect) => rect.right)) + frameGap;
+  const right = editorRect.right + frameGap;
   const bottom = Math.max(...lineRects.map((rect) => rect.bottom)) + frameGap;
   const width = right - left;
   const height = bottom - top;
@@ -702,14 +724,33 @@ function reconcileEditorBlocks(editor, previousSnapshot, documentId, { skipEdite
   return editor.getJSON();
 }
 
-function absorbUntrackedEditorText(editor) {
+function normalizeEditorBlockNodes(editor, documentId) {
   if (!editor || editor.isDestroyed) return false;
 
   const replacements = [];
+  let paragraphIndex = 0;
   editor.state.doc.descendants((node, pos) => {
-    if (!LEGACY_TRACKED_BLOCK_TYPES.has(node.type.name)) return;
+    if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type.name)) return;
+    const currentParagraphIndex = paragraphIndex;
+    paragraphIndex += 1;
     const children = Array.from({ length: node.childCount }, (_, index) => node.child(index));
-    if (!children.some((child) => child.type.name === 'blockSegment')) return;
+    if (!children.some((child) => child.type.name === 'blockSegment')) {
+      const text = node.textContent ?? '';
+      if (!text.trim()) return false;
+
+      replacements.push({
+        node,
+        pos,
+        children: [editor.state.schema.nodes.blockSegment.create({
+          ...buildTrackedBlockStyleAttrs(node.attrs),
+          blockId: generateBlockId(`${documentId || 'manual-document'}-block`),
+          status: 'unprocessed',
+          paragraphIndex: currentParagraphIndex,
+          length: text.length,
+        }, node.content)],
+      });
+      return false;
+    }
 
     let changed = false;
     for (let index = 0; index < children.length; index += 1) {
@@ -745,6 +786,7 @@ function absorbUntrackedEditorText(editor) {
     }
 
     if (changed) replacements.push({ node, pos, children });
+    return false;
   });
   if (!replacements.length) return false;
 
@@ -792,17 +834,7 @@ async function splitOversizedEditorBlocks(editor, documentId) {
         }, text ? state.schema.text(text) : null));
       });
 
-      if (block.type === 'blockSegment') {
-        tr.replaceWith(block.pos, block.pos + block.node.nodeSize, inlineBlocks);
-        continue;
-      }
-
-      tr.setNodeMarkup(block.pos, undefined, {
-        ...block.node.attrs,
-        blockId: null,
-        status: 'unprocessed',
-      });
-      tr.replaceWith(block.pos + 1, block.pos + block.node.nodeSize - 1, inlineBlocks);
+      tr.replaceWith(block.pos, block.pos + block.node.nodeSize, inlineBlocks);
     }
 
     tr.setMeta('editorBlockPartition', true);
@@ -915,7 +947,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
         return;
       }
-      absorbUntrackedEditorText(activeEditor);
+      normalizeEditorBlockNodes(activeEditor, document?.id);
       const suppressBlockUiActivation = suppressEditedStatusResetRef.current;
       const skipEditedStatusReset = suppressBlockUiActivation || isHistoryTransaction(transaction);
       const normalizedJson = reconcileEditorBlocks(

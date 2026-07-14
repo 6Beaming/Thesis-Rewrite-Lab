@@ -5,6 +5,7 @@ import Paragraph from '@tiptap/extension-paragraph';
 import StarterKit from '@tiptap/starter-kit';
 import {
   chooseNextUnfinishedBlock,
+  convertLegacyTrackedBlocks,
   hasUnfinishedBlocks,
   splitSegmentedTextBlock,
 } from './editorBlockCommands.js';
@@ -80,6 +81,54 @@ test('segmented Enter command leaves normal paragraphs to the default keymap', (
   assert.equal(editor.getJSON().content.length, 1);
 
   editor.destroy();
+});
+
+test('converts legacy paragraph and heading blocks into block segments', () => {
+  const normalized = convertLegacyTrackedBlocks({
+    type: 'doc',
+    content: [
+      {
+        type: 'paragraph',
+        attrs: {
+          blockId: 'legacy-paragraph',
+          status: 'processing',
+          lineHeight: '1.5',
+        },
+        content: [{ type: 'text', text: 'Legacy paragraph.' }],
+      },
+      {
+        type: 'heading',
+        attrs: { level: 2 },
+        content: [{ type: 'text', text: 'Legacy heading' }],
+      },
+      {
+        type: 'paragraph',
+        content: [{
+          type: 'blockSegment',
+          attrs: { blockId: 'current-block', status: 'processed' },
+          content: [{ type: 'text', text: 'Current block.' }],
+        }],
+      },
+    ],
+  }, (index) => `generated-${index + 1}`);
+
+  const [paragraph, heading, currentParagraph] = normalized.content;
+  assert.equal(paragraph.attrs.blockId, undefined);
+  assert.equal(paragraph.attrs.status, undefined);
+  assert.equal(paragraph.attrs.lineHeight, '1.5');
+  assert.equal(paragraph.content[0].type, 'blockSegment');
+  assert.equal(paragraph.content[0].attrs.blockId, 'legacy-paragraph');
+  assert.equal(paragraph.content[0].attrs.status, 'processing');
+  assert.equal(paragraph.content[0].attrs.length, 17);
+
+  assert.equal(heading.attrs.level, 2);
+  assert.equal(heading.content[0].type, 'blockSegment');
+  assert.equal(heading.content[0].attrs.blockId, 'generated-2');
+  assert.equal(heading.content[0].attrs.paragraphIndex, 1);
+
+  assert.equal(currentParagraph.content[0].type, 'blockSegment');
+  assert.equal(currentParagraph.content[0].attrs.blockId, 'current-block');
+  assert.equal(currentParagraph.content[0].attrs.status, 'processed');
 });
 
 test('next unfinished block wraps from the document end to an earlier block', () => {

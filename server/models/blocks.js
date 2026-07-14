@@ -10,7 +10,7 @@ const DEFAULT_BLOCK_ATTRS = {
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const LEGACY_BLOCK_NODE_TYPES = new Set(['paragraph', 'heading']);
+const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 
 function styleAttrsFromSettings(styleSettings = {}) {
@@ -46,7 +46,6 @@ function normalizeBlockInput(input) {
       text: input,
       attrs: { paragraphIndex: null },
       content: input ? [{ type: 'text', text: input }] : [],
-      nodeType: 'paragraph',
     };
   }
 
@@ -59,7 +58,6 @@ function normalizeBlockInput(input) {
     text,
     attrs: input?.attrs ?? {},
     content,
-    nodeType: input?.sourceType === 'heading' ? 'heading' : 'paragraph',
   };
 }
 
@@ -379,10 +377,11 @@ export async function replaceBlocksFromSnapshot(client, documentId, blocks) {
   }
 }
 
-export async function replaceBlocksFromContentJson(client, documentId, contentJson, styleSettings = {}) {
+export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
   const content = Array.isArray(contentJson?.content) ? contentJson.content : [];
   const styleAttrs = { ...DEFAULT_BLOCK_ATTRS, ...styleAttrsFromSettings(styleSettings) };
   const blockEntries = [];
+  let structuralIndex = 0;
 
   function normalizeTrackedNode(node, paragraphIndex) {
     const textContent = textFromNode(node).trim();
@@ -404,7 +403,7 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     };
     const tiptapNode = {
       ...node,
-      type: node.type === 'blockSegment' ? 'blockSegment' : node.type,
+      type: 'blockSegment',
       attrs,
     };
 
@@ -420,28 +419,63 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     return tiptapNode;
   }
 
-  const normalizedNodes = content.map((node, paragraphIndex) => {
-    if (!LEGACY_BLOCK_NODE_TYPES.has(node?.type)) return node;
+  function legacyBlockSegment(node) {
+    const attrs = node?.attrs ?? {};
+    return {
+      type: 'blockSegment',
+      attrs: {
+        ...(attrs.lineHeight ? { lineHeight: attrs.lineHeight } : {}),
+        ...(attrs.textIndent ? { textIndent: attrs.textIndent } : {}),
+        ...(attrs.textAlign ? { textAlign: attrs.textAlign } : {}),
+        ...(attrs.fontFamily ? { fontFamily: attrs.fontFamily } : {}),
+        ...(attrs.fontSize ? { fontSize: attrs.fontSize } : {}),
+        ...(attrs.blockId ? { blockId: attrs.blockId } : {}),
+        ...(attrs.status ? { status: attrs.status } : {}),
+        ...(Number.isInteger(attrs.paragraphIndex) ? { paragraphIndex: attrs.paragraphIndex } : {}),
+      },
+      content: Array.isArray(node?.content) ? node.content : [],
+    };
+  }
+
+  function normalizeNode(node) {
+    if (!node || typeof node !== 'object') return node;
+    if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type)) {
+      if (!Array.isArray(node.content)) return node;
+      return { ...node, content: node.content.map(normalizeNode) };
+    }
+
+    const paragraphIndex = structuralIndex;
+    structuralIndex += 1;
 
     const nodeContent = Array.isArray(node.content) ? node.content : [];
     const hasInlineBlocks = nodeContent.some((child) => child?.type === 'blockSegment');
-    if (!hasInlineBlocks) {
-      return normalizeTrackedNode(node, paragraphIndex);
-    }
+    const {
+      blockId: _blockId,
+      status: _status,
+      length: _length,
+      paragraphIndex: _paragraphIndex,
+      ...containerAttrs
+    } = node.attrs ?? {};
 
     return {
       ...node,
       attrs: {
         ...styleAttrs,
-        ...(node.attrs ?? {}),
+        ...containerAttrs,
       },
-      content: nodeContent.map((child) => (
-        child?.type === 'blockSegment'
-          ? normalizeTrackedNode(child, paragraphIndex)
-          : child
-      )),
+      content: hasInlineBlocks
+        ? nodeContent.map((child) => (
+          child?.type === 'blockSegment'
+            ? normalizeTrackedNode(child, paragraphIndex)
+            : child
+        ))
+        : (textFromNode(node).trim()
+          ? [normalizeTrackedNode(legacyBlockSegment(node), paragraphIndex)]
+          : nodeContent),
     };
-  });
+  }
+
+  const normalizedNodes = content.map(normalizeNode);
 
   let processingSeen = false;
   for (const entry of blockEntries) {
@@ -470,9 +504,20 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     content: normalizedNodes,
   };
 
+  const currentProcessingBlock = blockEntries.find((entry) => entry.status === 'processing') ?? null;
+  return {
+    contentJson: normalizedContent,
+    blockEntries,
+    currentProcessingBlockId: currentProcessingBlock?.id ?? null,
+  };
+}
+
+export async function replaceBlocksFromContentJson(client, documentId, contentJson, styleSettings = {}) {
+  const normalized = normalizeContentJsonBlocks(contentJson, styleSettings);
+
   await client.query('delete from document_blocks where document_id = $1', [documentId]);
 
-  for (const entry of blockEntries) {
+  for (const entry of normalized.blockEntries) {
     await client.query(
       `
         insert into document_blocks (
@@ -493,9 +538,8 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     );
   }
 
-  const currentProcessingBlock = blockEntries.find((entry) => entry.status === 'processing') ?? null;
   return {
-    contentJson: normalizedContent,
-    currentProcessingBlockId: currentProcessingBlock?.id ?? null,
+    contentJson: normalized.contentJson,
+    currentProcessingBlockId: normalized.currentProcessingBlockId,
   };
 }

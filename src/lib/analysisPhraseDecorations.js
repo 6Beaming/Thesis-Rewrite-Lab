@@ -1,6 +1,5 @@
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 
-const TRACKED_TEXT_BLOCK_TYPES = new Set(['blockSegment', 'paragraph', 'heading']);
 const SEVERITY_RANK = Object.freeze({ low: 1, medium: 2, high: 3 });
 const QUOTE_PAIRS = Object.freeze([
   ['"', '"'],
@@ -97,7 +96,7 @@ export function buildAnalysisPhraseDecorations(state, highlights) {
   const decorations = [];
 
   state.doc.descendants((node, position) => {
-    if (!TRACKED_TEXT_BLOCK_TYPES.has(node.type.name) || !node.attrs?.blockId) return;
+    if (node.type.name !== 'blockSegment' || !node.attrs?.blockId) return;
 
     const highlight = highlightsByBlockId.get(node.attrs.blockId);
     const blockText = node.textContent ?? '';
