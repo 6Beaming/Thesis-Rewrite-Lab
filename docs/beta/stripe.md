@@ -1,110 +1,62 @@
-# Stripe Subscription Implementation
+# Stripe Subscription Workflow
 
-## Scope And Intended Behavior
+The beta offers one monthly Pro subscription through Stripe-hosted Checkout.
+The configured Stripe Price is the amount charged; the struck-through price in
+the UI is display text only. Automatic tax is disabled, and cancellation/resume
+uses no proration. Basic users can access billing APIs but not workspace APIs.
 
-This beta uses Stripe-hosted Checkout for one monthly Pro subscription. The
-subscription page is `src/pages/homepageSubscription.jsx` at `/subscription`.
-It replaces the previous placeholder page and is available to authenticated
-Basic as well as Pro users.
+## Main Files
 
-The actual charge is always the Stripe Price identified by `STRIPE_PRICE_ID`.
-The `$10.00` struck-through price on the page is only a reference/promotion
-display; it does not set the amount charged. The server accepts only an active,
-test-mode, USD, monthly recurring Price associated with `STRIPE_PRODUCT_ID` and
-with a minimum price of $0.50. For the current test setup, that configured
-Price is $0.50 USD per month.
-
-The Basic plan is intentionally unavailable in this beta.
-
-| User state and choice | Result |
+| File | Responsibility |
 | --- | --- |
-| Basic selects Basic | A red unavailability banner is shown; Pro payment is disabled while Basic is selected. Proceed asks for confirmation, and Leave signs the user out. |
-| Basic selects Pro | The Pro banner and Checkout action are enabled. Checkout sends the user to Stripe's hosted page. |
-| Basic completes a payment | The browser returns to `/subscription?checkout=success&session_id=...`. It confirms the owned session with the server and waits for the canonical Pro state, then opens the workspace. |
-| Basic cancels Checkout or leaves without subscribing | The application signs the user out with a short explanatory message on the sign-in screen. |
-| Pro cancels renewal | The server sets `cancel_at_period_end` in Stripe with no proration. Pro remains active through `current_period_end`; the user can resume automatic renewal before then. |
-| Pro selects Basic | The confirmation dialog offers Cancel, Leave with subscription, or Leave with cancellation. The cancellation option preserves current-period Pro access and schedules the next-period downgrade. |
-| A successful full refund is issued by an administrator | The matching configured Stripe subscription is cancelled immediately, local access becomes Basic, and all active sessions receive the downgrade in real time. |
+| `app.js` | Mounts the raw-body webhook before `express.json()`. |
+| `server/routers/index.js` | Mounts `/api/stripe` after authentication but before the Pro-only middleware. |
+| `server/routers/stripe.js` | Creates Checkout/Portal sessions, verifies webhooks, reconciles Stripe objects, and handles cancel/resume/refund flows. |
+| `server/models/subscriptions.js` | Reads and updates the local subscription projection, Checkout attempt, and webhook receipt. |
+| `server/models/migrations/004_stripe_subscriptions.sql` | Adds subscription fields and the idempotent webhook receipt table. |
+| `server/models/migrations/005_stripe_checkout_attempts.sql` | Adds temporary Checkout session and idempotency fields. |
+| `server/middlewares/requireAuth.js` | Returns `403 SUBSCRIPTION_REQUIRED` when a non-Pro user calls a protected product API. |
+| `src/services/subscriptionApi.js` | Browser functions for every authenticated billing endpoint. |
+| `src/pages/homepageSubscription.jsx` | Subscription selection, Checkout return, cancellation, resume, and recovery UI. |
+| `src/components/RequirePro.jsx` | Protects workspace routes in React. |
+| `server/realtime/publisher.js` and `RealtimeProvider.jsx` | Publish and apply `subscription:updated`. |
 
-No automatic tax is added in this beta. The Checkout session explicitly sets
-`automatic_tax.enabled` to `false`, and cancellation/resume updates use
-`proration_behavior: 'none'`. This makes the test subscription suitable for
-repeated subscribe/cancel/refund testing without application-added tax or
-proration.
+## Environment Variables
 
-## Login And Entitlement Flow
-
-1. The user signs in through Google OAuth, handled by Auth.js.
-2. The Google callback returns to `/subscription?entry=auth`, after Auth.js has
-   written the session cookie.
-3. `RealtimeProvider` connects with that session and fetches
-   `GET /api/stripe/subscription` before loading workspace data.
-4. If `hasProAccess` is true, the subscription page redirects to `/`. If it is
-   false, the user stays on `/subscription`.
-5. Both the client and the server enforce the entitlement. `RequirePro` guards
-   React workspace routes, while the Express `requirePro` middleware guards all
-   non-billing `/api` routes. Billing endpoints remain available to an
-   authenticated Basic user so they can subscribe or recover payment.
-
-### What Happens In Common Cases
-
-**If the user cancels a subscription and tries to log in:** a cancellation is
-scheduled for the billing-period end, not an immediate downgrade. Until
-`current_period_end`, the stored access state remains `pro`; the user signs in
-normally and reaches the workspace. Stripe emits the terminal cancellation
-event at the period end, after which the stored state becomes `basic`. A later
-workspace login is blocked and signs the Basic user out; the normal Google
-return path leaves them on the subscription page to subscribe again.
-
-**If the user fails to pay for a subscription:** Stripe's payment-failure event
-sets `access_state` to `payment_failed`, which does not grant Pro access. A
-failed initial Checkout signs the user out with a payment-failure message. A
-failed renewal is redirected to `/subscription`, where the billing-recovery
-button opens the Stripe Customer Portal to update the payment method. Workspace
-API requests remain denied until Stripe reports a paid, active subscription.
-
-**If the user tries to log in without a subscription:** the initial status
-check reports `basic`. The Google return route stays on the subscription page;
-attempting to enter `/` or another protected workspace route triggers the
-entitlement guard and signs the user out with the subscription-required
-message. The Basic user cannot fetch documents, profile data, trash, or
-versions because the Express API applies `requirePro` after the billing router.
-
-## Persistent Subscription Schema
-
-Migrations `004_stripe_subscriptions.sql` and
-`005_stripe_checkout_attempts.sql` extend the product `users` table. Auth.js
-continues to own identity/session tables; the product user row stores the
-application's billing projection.
-
-| Field | Activation and update rule | Deactivation or retention rule |
+| Variable | Use | Exposure |
 | --- | --- | --- |
-| `stripe_customer_id` | Created before the first Checkout with Stripe customer metadata containing the product-user UUID. | Retained for billing ownership and future Checkout/recovery. It is not sent to the browser. |
-| `stripe_subscription_id` | Stored after an owned configured subscription is reconciled by webhook or checkout confirmation. | Retained after terminal cancellation for ownership/audit correlation; it does not itself grant access. |
-| `stripe_price_id` | Set from the configured Price on each reconciled subscription state. | Retained as the last reconciled Price; a Stripe ID alone never grants access. |
-| `stripe_subscription_status` | Mirrors the canonical Stripe subscription status, such as `incomplete`, `active`, `past_due`, or `canceled`. | Terminal states (`canceled`, `incomplete_expired`, `unpaid`, `paused`) derive Basic access. |
-| `latest_invoice_status` | Updated from the subscription's latest invoice during reconciliation. | It remains as billing context; failed/open states can produce `payment_failed`. |
-| `access_state` | One of `basic`, `processing`, `pro`, or `payment_failed`; derived server-side from Stripe status, invoice status, and the event type. | Only `pro` grants workspace access. `processing`, `payment_failed`, and `basic` do not. |
-| `cancel_at_period_end` | True when the user schedules cancellation through Stripe. | False when automatic renewal is resumed or when Stripe returns a normal active state. It can be true while `access_state` is still `pro`. |
-| `current_period_end` | Filled from Stripe's subscription item/current billing period. | Becomes null if Stripe no longer supplies a period; its reached terminal event makes access Basic. |
-| `subscription_updated_at` | Updated whenever the application changes local subscription or Checkout-attempt state. | Audit timestamp only; it does not grant access. |
-| `stripe_checkout_session_id` | Saved when the server creates a Checkout session. It lets the return handler verify the exact owned session. | Cleared when a subscription ID is reconciled or when an unusable attempt is cleared. |
-| `stripe_checkout_session_expires_at` | Saved from Stripe's session expiry. It determines whether an open session can be reused. | Cleared together with the Checkout session state. |
-| `stripe_checkout_attempt_token` | Generated for a new attempt and used as Stripe's idempotency key. Recent attempts may reuse the token. | Cleared when a subscription is reconciled or an attempt is cleared. |
-| `stripe_checkout_attempt_started_at` | Records when the idempotent attempt began. | Cleared with the rest of the Checkout attempt state. |
+| `STRIPE_SECRET_KEY` (`sk_test_...`) | Server authentication for outgoing Stripe API calls. | Server only. |
+| `STRIPE_WEBHOOK_SECRET` (`whsec_...`) | Verifies incoming webhook signatures. It belongs to one Dashboard endpoint or CLI listener. | Server only. |
+| `STRIPE_PRODUCT_ID` | Required Pro product. | Server only in this implementation. |
+| `STRIPE_PRICE_ID` | Required active USD monthly Price. | Server only in this implementation. |
+| `STRIPE_PUBLISHABLE_KEY` (`pk_test_...`) | Intended for browser-side Stripe.js/Elements. | Safe for clients, but currently unused because Checkout is server-created. |
+| `APP_ORIGIN` | Builds Checkout return URLs and defines the allowed browser origin. | Configuration. |
 
-`stripe_webhook_events` is a separate receipt table with `event_id` as its
-primary key, the Stripe event type/time, and the application processing time.
-The transaction claims the event before mutating the user row, so retrying a
-Stripe webhook does not repeat an entitlement change.
+Development rejects a non-test secret key. The configured Price must be active,
+test-mode, USD, monthly, attached to the configured Product, and at least $0.50.
 
-The browser receives only this sanitized subscription projection:
+## Billing APIs
+
+All authenticated billing APIs are under `/api/stripe`. They remain available
+to Basic users so they can subscribe or recover payment.
+
+| API | Purpose |
+| --- | --- |
+| `GET /subscription` | Returns the public local state and reconciles a missed subscription or full refund. |
+| `POST /checkout-session` | Creates or reuses an idempotent Stripe-hosted subscription Checkout session. |
+| `POST /checkout-session/confirm` | Verifies the returned session, customer, subscription, Product, and Price before granting access. |
+| `POST /subscription/cancel` | Sets `cancel_at_period_end: true` with no proration. |
+| `POST /subscription/resume` | Restores renewal before the scheduled period end. |
+| `POST /customer-portal` | Creates a Stripe Customer Portal session for billing recovery. |
+| `POST /api/stripe/webhook` | Receives raw Stripe events. It uses Stripe signature authentication, not the user's session. |
+
+The browser receives only:
 
 ```js
 {
-  plan,                 // 'basic' or 'pro'
-  accessState,          // 'basic' | 'processing' | 'pro' | 'payment_failed'
-  hasProAccess,         // true only for accessState === 'pro'
+  plan,
+  accessState,
+  hasProAccess,
   stripeStatus,
   cancelAtPeriodEnd,
   currentPeriodEnd,
@@ -113,94 +65,65 @@ The browser receives only this sanitized subscription projection:
 }
 ```
 
-Stripe customer IDs, subscription IDs, Checkout IDs/tokens, and raw invoice
-details are intentionally excluded from both REST and Socket.IO payloads.
+Customer IDs, subscription IDs, invoices, Checkout tokens, and secrets stay on
+the server.
 
-## Stripe Dashboard And Environment Setup
+## Access States
 
-Use the Stripe Dashboard in **test mode** for this beta.
+| `accessState` | Meaning |
+| --- | --- |
+| `basic` | No current paid entitlement. |
+| `processing` | Stripe is still resolving the subscription. |
+| `pro` | Workspace access is allowed. |
+| `payment_failed` | Payment recovery is required; workspace access is blocked. |
 
-1. Create one Product and one active **USD, monthly recurring** Price. Set
-   `STRIPE_PRODUCT_ID` and `STRIPE_PRICE_ID` from those objects. The current
-   test Price is $0.50; the backend rejects prices below that value.
-2. Set `STRIPE_SECRET_KEY` to the matching `sk_test_...` secret key. The
-   development configuration rejects a non-test secret key.
-3. Start the application server on port 3001 and forward Stripe CLI events to
-   `http://localhost:3001/api/stripe/webhook`:
+Only `pro` makes `hasProAccess` true. A scheduled cancellation can remain Pro
+until `currentPeriodEnd`.
 
-   ```powershell
-   stripe listen --events checkout.session.completed,invoice.paid,invoice.payment_failed,customer.subscription.created,customer.subscription.updated,customer.subscription.deleted,refund.created,refund.updated --forward-to http://localhost:3001/api/stripe/webhook
-   ```
+## Sign-In and Entitlement Workflow
 
-4. Copy the CLI-provided `whsec_...` signing secret into
-   `STRIPE_WEBHOOK_SECRET`, then restart the server. The CLI secret changes
-   when a new listener is created, so the environment value must match the
-   currently running listener.
-5. Configure the Stripe Customer Portal in the Dashboard before relying on
-   renewal-payment recovery. The application creates a portal session only for
-   the stored Stripe customer and returns the user to `/subscription`.
-
-Required server-only environment variables are:
-
-```dotenv
-STRIPE_SECRET_KEY=sk_test_...
-STRIPE_PRODUCT_ID=prod_...
-STRIPE_PRICE_ID=price_...
-STRIPE_WEBHOOK_SECRET=whsec_...
+```text
+Google sign-in
+  -> Auth.js writes the session cookie
+  -> browser returns to /subscription?entry=auth
+  -> RealtimeProvider calls GET /api/stripe/subscription
+  -> Pro: open workspace
+  -> Basic/payment failure: remain on subscription page
 ```
 
-`APP_ORIGIN` must be the actual frontend origin, such as
-`http://localhost:5173` during Vite development. It determines Stripe's
-success/cancel URLs and is also the allowed CORS and Socket.IO origin.
+`RequirePro` protects React routes, while Express `requirePro` protects profile,
+document, trash, AI, and version APIs. The server check is authoritative; a
+browser redirect alone never grants access.
 
-`STRIPE_PUBLISHABLE_KEY` may be stored locally, but the current implementation
-does **not** consume it. Hosted Checkout is created by the server and opened
-with Stripe's returned URL; the browser does not initialize Stripe.js or
-Elements. If the product later moves to embedded Stripe Elements, expose only a
-Vite-prefixed publishable key to the browser and keep the secret key and webhook
-secret server-only.
+## Checkout Workflow
 
-## Checkout, Webhook, And Refund Implementation
+1. The page calls `createCheckoutSession()`.
+2. `POST /api/stripe/checkout-session` validates the configured Price, creates
+   or reuses the Stripe Customer, reserves an idempotent attempt, and creates
+   hosted Checkout.
+3. The browser opens the returned Stripe URL. Card data goes only to Stripe.
+4. Stripe returns to `/subscription?checkout=success&session_id=...`.
+5. The page calls `POST /api/stripe/checkout-session/confirm`.
+6. The server retrieves canonical Stripe objects and verifies ownership,
+   Product, Price, and paid subscription state.
+7. PostgreSQL is updated, `subscription:updated` is emitted, and the Pro user
+   enters the workspace.
 
-### Server-Created Checkout
+The success URL is not proof of payment. Confirmation and webhooks both verify
+the state with Stripe. A cancelled Checkout signs the Basic user out.
 
-`POST /api/stripe/checkout-session` is authenticated and rate-limited to 12
-requests per ten minutes. The server, not the browser, retrieves and validates
-the configured Price, creates/reuses the Stripe Customer, and creates a
-subscription-mode Checkout session. It passes the product-user UUID in
-`client_reference_id`, Checkout metadata, and subscription metadata so later
-Stripe events can be associated with the correct local user.
+## Webhook Workflow
 
-The Checkout attempt token is used as Stripe's idempotency key. An unexpired
-open Checkout session is reused instead of opening a second payable session.
-The server refuses Checkout when the local user already has Pro or a
-non-terminal configured Stripe subscription still being resolved.
-
-Stripe's success URL is not trusted as evidence of payment. On return,
-`POST /api/stripe/checkout-session/confirm` retrieves the session from Stripe
-and verifies all of the following before updating access:
-
-- the session is complete and in subscription mode;
-- it belongs to the local Stripe customer;
-- its metadata/reference product-user UUID matches the authenticated product
-  user;
-- it matches the locally saved Checkout session, or the already reconciled
-  subscription; and
-- the retrieved canonical Stripe subscription belongs to that customer and
-  contains the configured Product and Price.
-
-The confirm endpoint repairs the small race where the browser returns before a
-webhook has been delivered. `GET /api/stripe/subscription` also reconciles an
-unrecorded customer subscription and re-checks the latest charge for a full
-refund, making the system recover from a missed delivery.
-
-### Signed Webhooks
-
-`app.js` mounts the webhook before `express.json()` and uses `express.raw()`.
-`createStripeWebhookHandler` requires the `Stripe-Signature` header and calls
-`stripe.webhooks.constructEvent(rawBody, signature, STRIPE_WEBHOOK_SECRET)`.
-Unsigned or incorrectly signed requests receive a 400 response and cannot
-change billing state.
+```text
+Stripe or Stripe CLI
+  -> POST /api/stripe/webhook with raw body + Stripe-Signature
+  -> verify with STRIPE_WEBHOOK_SECRET
+  -> retrieve and validate canonical Stripe objects
+  -> claim event ID in stripe_webhook_events
+  -> update PostgreSQL in one transaction
+  -> emit subscription:updated
+  -> return 200
+```
 
 Supported events are:
 
@@ -213,83 +136,57 @@ Supported events are:
 - `refund.created`
 - `refund.updated`
 
-For subscription events, the server retrieves the canonical Stripe subscription
-rather than trusting the payload alone, verifies its configured Price/Product,
-claims the event ID in `stripe_webhook_events`, derives `access_state`, and
-updates PostgreSQL in one transaction.
+Duplicate event IDs do not repeat the state change. Invalid signatures return
+400. Unsupported, unrelated, partial, pending, or failed refund events are
+ignored.
 
-For a refund event, the server acts only when the refund is `succeeded` and the
-associated charge is fully refunded. It traces the charge to its invoice and
-subscription, verifies that subscription is the configured product, cancels the
-Stripe subscription with an idempotency key, then reconciles the local state as
-Basic. Pending, failed, cancelled, partial, unrelated, or unconfigured-product
-refunds are ignored. This is intentionally different from a user cancellation:
-an administrator-issued full refund revokes access immediately.
+## Cancellation, Recovery, and Refunds
 
-## Real-Time Subscription Updates
+- **Cancel:** Stripe schedules cancellation at period end. Access remains Pro
+  until Stripe sends the terminal subscription update.
+- **Resume:** renewal is restored before the period end.
+- **Payment failure:** the local state becomes `payment_failed`; the Customer
+  Portal lets the user update payment details.
+- **Successful full refund:** the server traces the refund through its charge,
+  invoice, and configured subscription, then cancels immediately and changes
+  access to Basic. A partial refund does not revoke access.
 
-Socket.IO authentication uses the existing Auth.js session. Every authenticated
-socket joins a private `billing-user:<authUserId>` room. Pro sockets also join a
-private `user:<authUserId>` room and can subscribe to owned document rooms.
+## Realtime Subscription Updates
 
-After a webhook, checkout confirmation, cancellation, resume, refund, or
-server-side reconciliation changes a subscription, the event publisher emits a
-sanitized `subscription:updated` payload to the billing room. It then updates
-each connected socket's entitlement: a newly Pro socket joins the general user
-room; a downgraded socket leaves the general user room and every document room.
+Every authenticated socket joins `billing-user:{authUserId}`. When billing state
+changes, the server emits the sanitized `subscription:updated` event to this
+room.
 
-On the client, `RealtimeProvider` applies the event immediately. A downgrade
-clears cached profile, document, trash, detail, and version data; an upgrade
-refreshes those resources. On every Socket.IO reconnect, the client fetches the
-canonical subscription state before loading protected data, so a temporary
-socket outage cannot leave a stale entitlement active.
+- On upgrade, connected sockets gain the Pro user room and refresh protected
+  REST data.
+- On downgrade, they leave the Pro/document rooms and clear cached profile,
+  documents, trash, and versions.
+- On reconnect, `RealtimeProvider` fetches `GET /api/stripe/subscription` before
+  protected data, so Socket.IO is never the entitlement source of truth.
 
-## Security Model
+See [Backend and realtime workflow](backend-and-realtime.md) for room and event
+details.
 
-### Security Of The Login System
+## Local Webhook Setup
 
-- Auth.js uses Google as the sole provider. The OAuth flow requires PKCE,
-  `state`, and `nonce`, and accepts a sign-in only when Google reports a
-  verified email address.
-- Auth.js uses database-backed sessions. `AUTH_SECRET` must be at least 32
-  characters in production; development creates a local-only fallback secret.
-- Authentication requests are limited to the configured application origin,
-  and production rejects a non-HTTPS `APP_ORIGIN`.
-- API session checks run before every application router. Responses that load a
-  session use `Cache-Control: no-store`; CORS accepts credentialed requests
-  only from `APP_ORIGIN`; Helmet applies browser security headers.
-- Entitlement is separate from identity. A valid Google session alone cannot
-  access workspace resources without a current server-derived Pro state.
+Each developer running a local server needs their own listener and matching
+signing secret:
 
-### Security Of The Payment System
+```powershell
+stripe login
+stripe listen --events checkout.session.completed,invoice.paid,invoice.payment_failed,customer.subscription.created,customer.subscription.updated,customer.subscription.deleted,refund.created,refund.updated --forward-to http://localhost:3001/api/stripe/webhook
+```
 
-- Card information is collected by Stripe-hosted Checkout. It is never posted
-  to this React application, Express server, or PostgreSQL database.
-- The Stripe secret key and webhook signing secret are server-only `.env` /
-  deployment secrets. They are never returned by an API or Socket.IO event.
-- The browser cannot set the amount, Product, Price, customer, subscription
-  status, or entitlement. The server validates the configured Price and
-  retrieves Stripe objects again before accepting a successful return.
-- Webhook raw-body signature verification, database event receipts, Checkout
-  idempotency, request rate limiting, and customer/subscription ownership checks
-  protect against forged notifications, duplicate attempts, and cross-user
-  session confirmation.
-- Refund revocation verifies the actual fully refunded charge and its invoice
-  subscription before cancelling access; a Stripe Dashboard refund therefore
-  cannot leave a paid entitlement active.
+Copy the printed `whsec_...` into that device's `STRIPE_WEBHOOK_SECRET`, restart
+Express, and keep the listener running. A teammate's CLI secret does not match
+your listener. A deployed public webhook instead uses the signing secret for
+its registered Dashboard endpoint, stored in the deployment secret manager.
 
-### Security Of User Data
+## Security Rules
 
-- The product user is derived from the immutable Auth.js user ID, not from a
-  browser-supplied user ID. Document and version models scope mutations to that
-  user, and Socket.IO checks document ownership before joining a document room.
-- Non-Pro users cannot call document, profile, trash, or version APIs. A
-  downgrade also removes those cached records from the browser and removes
-  document-room membership in real time.
-- REST and Socket.IO publishers whitelist their public fields. Subscription
-  events expose only status needed by the UI, never Stripe IDs, Checkout tokens,
-  invoice details, or secrets.
-- Stripe receives only the billing identity needed to create the Customer
-  (available name/email) and the local product-user UUID as metadata for
-  correlation. Writing content, profile data, document data, and session
-  credentials are not sent to Stripe by this feature.
+- Never expose `STRIPE_SECRET_KEY` or `STRIPE_WEBHOOK_SECRET` to React or Git.
+- Preserve the webhook's raw body for signature verification.
+- Never trust browser-provided prices, Stripe IDs, or entitlement state.
+- Keep Checkout ownership checks, event receipts, idempotency, and rate limits.
+- Treat PostgreSQL's server-derived `access_state` as the application source of
+  truth; Socket.IO only distributes that state.
