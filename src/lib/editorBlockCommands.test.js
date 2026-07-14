@@ -3,7 +3,11 @@ import test from 'node:test';
 import { Editor, Node } from '@tiptap/core';
 import Paragraph from '@tiptap/extension-paragraph';
 import StarterKit from '@tiptap/starter-kit';
-import { splitSegmentedTextBlock } from './editorBlockCommands.js';
+import {
+  chooseNextUnfinishedBlock,
+  hasUnfinishedBlocks,
+  splitSegmentedTextBlock,
+} from './editorBlockCommands.js';
 
 const BlockSegment = Node.create({
   name: 'blockSegment',
@@ -76,4 +80,37 @@ test('segmented Enter command leaves normal paragraphs to the default keymap', (
   assert.equal(editor.getJSON().content.length, 1);
 
   editor.destroy();
+});
+
+test('next unfinished block wraps from the document end to an earlier block', () => {
+  const blocks = [
+    { blockId: 'block-1', status: 'processed', isEmpty: false },
+    { blockId: 'block-2', status: 'skipped', isEmpty: false },
+    { blockId: 'block-3', status: 'unprocessed', isEmpty: false },
+    { blockId: 'block-4', status: 'processed', isEmpty: false },
+    { blockId: 'block-5', status: 'processing', isEmpty: false },
+  ];
+
+  assert.equal(chooseNextUnfinishedBlock(blocks, 'block-5')?.blockId, 'block-3');
+});
+
+test('next unfinished block can return to an existing processing block', () => {
+  const blocks = [
+    { blockId: 'block-1', status: 'processed', isEmpty: false },
+    { blockId: 'block-2', status: 'processing', isEmpty: false },
+    { blockId: 'block-3', status: 'skipped', isEmpty: false },
+    { blockId: 'block-4', status: 'unprocessed', isEmpty: false },
+  ];
+
+  assert.equal(chooseNextUnfinishedBlock(blocks, 'block-4')?.blockId, 'block-2');
+});
+
+test('completed documents have no unfinished block to select', () => {
+  const blocks = [
+    { blockId: 'block-1', status: 'processed', isEmpty: false },
+    { blockId: 'block-2', status: 'skipped', isEmpty: false },
+  ];
+
+  assert.equal(hasUnfinishedBlocks(blocks), false);
+  assert.equal(chooseNextUnfinishedBlock(blocks, 'block-2'), null);
 });

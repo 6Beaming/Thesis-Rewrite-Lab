@@ -19,7 +19,11 @@ import StarterKit from '@tiptap/starter-kit';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { buildAnalysisPhraseDecorations } from '../lib/analysisPhraseDecorations.js';
 import { DEFAULT_CLUSTER_OPTIONS } from '../lib/clusteringOptions.js';
-import { splitSegmentedTextBlock } from '../lib/editorBlockCommands.js';
+import {
+  chooseNextUnfinishedBlock,
+  hasUnfinishedBlocks,
+  splitSegmentedTextBlock,
+} from '../lib/editorBlockCommands.js';
 import A4EditorPage from './A4EditorPage.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 
@@ -306,6 +310,15 @@ function selectedParagraphInfo(editor) {
   if (!editor || editor.isDestroyed) return { blockId: null, status: 'unprocessed' };
 
   const { state } = editor;
+  const blocks = collectTrackedBlocks(state);
+  const blockSelectionActive = editor.storage.blockSelectionDecoration?.active;
+  if (
+    blockSelectionActive === false
+    || (blockSelectionActive == null && !hasUnfinishedBlocks(blocks))
+  ) {
+    return { blockId: null, status: 'unprocessed' };
+  }
+
   const { $from } = state.selection;
   for (let depth = $from.depth; depth > 0; depth -= 1) {
     const node = $from.node(depth);
@@ -339,7 +352,7 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
 
   let frame = pageElement.querySelector(':scope > .selected-block-frame');
   if (!blockId || !editor?.view?.dom) {
-    if (frame) frame.hidden = true;
+    if (frame) frame.setAttribute('hidden', '');
     return;
   }
 
@@ -347,7 +360,7 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
     `.doc-block[data-block-id="${CSS.escape(blockId)}"]`,
   );
   if (!selectedBlock) {
-    if (frame) frame.hidden = true;
+    if (frame) frame.setAttribute('hidden', '');
     return;
   }
 
@@ -366,7 +379,7 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
     .filter((rect) => rect.width > 0 && rect.height > 0)
     .sort((a, b) => a.top - b.top || a.left - b.left);
   if (!lineRects.length) {
-    frame.hidden = true;
+    frame.setAttribute('hidden', '');
     return;
   }
 
@@ -404,7 +417,7 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
 
   const previousBlockId = frame.dataset.blockId;
 
-  frame.hidden = false;
+  frame.removeAttribute('hidden');
   frame.dataset.blockId = blockId;
   frame.dataset.status = 'processing';
   frame.setAttribute('viewBox', `0 0 ${width} ${height}`);
@@ -485,15 +498,25 @@ function createSelectedBlockActions(blockId, hasNextBlock) {
 
 const BlockSelectionDecoration = Extension.create({
   name: 'blockSelectionDecoration',
+  addStorage() {
+    return { active: null };
+  },
   addProseMirrorPlugins() {
     return [
       new Plugin({
         key: new PluginKey('blockSelectionDecoration'),
         props: {
-          decorations(state) {
+          decorations: (state) => {
+            const blocks = collectTrackedBlocks(state).filter((block) => !block.isEmpty);
+            if (
+              this.storage.active === false
+              || (this.storage.active == null && !hasUnfinishedBlocks(blocks))
+            ) {
+              return DecorationSet.empty;
+            }
+
             const range = selectedBlockDecorationRange(state);
             if (!range) return DecorationSet.empty;
-            const blocks = collectTrackedBlocks(state).filter((block) => !block.isEmpty);
             const selected = selectedParagraphFromState(state);
             const selectedIndex = blocks.findIndex((block) => block.blockId === selected?.blockId);
             const hasNextBlock = selectedIndex >= 0 && selectedIndex < blocks.length - 1;
@@ -814,12 +837,6 @@ function selectedParagraphFromState(state) {
   return null;
 }
 
-function chooseLocalNextProcessing(paragraphs, selectedBlockId) {
-  return paragraphs.find((paragraph) => (
-    paragraph.blockId !== selectedBlockId && !paragraph.isEmpty && paragraph.status === 'unprocessed'
-  )) ?? null;
-}
-
 function paragraphTextSnapshot(editor) {
   const snapshot = new Map();
   if (!editor || editor.isDestroyed) return snapshot;
@@ -899,7 +916,8 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         return;
       }
       absorbUntrackedEditorText(activeEditor);
-      const skipEditedStatusReset = suppressEditedStatusResetRef.current || isHistoryTransaction(transaction);
+      const suppressBlockUiActivation = suppressEditedStatusResetRef.current;
+      const skipEditedStatusReset = suppressBlockUiActivation || isHistoryTransaction(transaction);
       const normalizedJson = reconcileEditorBlocks(
         activeEditor,
         paragraphTextSnapshotRef.current,
@@ -907,6 +925,12 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         { skipEditedStatusReset }
       );
       suppressEditedStatusResetRef.current = false;
+      if (
+        !suppressBlockUiActivation
+        && hasUnfinishedBlocks(collectTrackedBlocks(activeEditor.state))
+      ) {
+        activeEditor.storage.blockSelectionDecoration.active = true;
+      }
       const info = selectedParagraphInfo(activeEditor);
       syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
       onChange?.({
@@ -979,20 +1003,37 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   useEffect(() => {
     if (!editor || editor.isDestroyed) return undefined;
 
-    const handleSelectedBlockAction = (event) => {
+    const handleEditorBlockClick = (event) => {
       const button = event.target.closest?.('[data-selected-block-action]');
-      if (!button || button.disabled) return;
+      if (button && !button.disabled) {
+        const action = button.dataset.selectedBlockAction;
+        const targetBlockId = button.dataset.selectedBlockId ?? null;
+        if (action === 'skip') setSelectedBlockStatus('skipped', targetBlockId);
+        if (action === 'complete') setSelectedBlockStatus('processed', targetBlockId);
+        if (action === 'next') selectNextBlock();
+        return;
+      }
 
-      const action = button.dataset.selectedBlockAction;
-      const targetBlockId = button.dataset.selectedBlockId ?? null;
-      if (action === 'skip') setSelectedBlockStatus('skipped', targetBlockId);
-      if (action === 'complete') setSelectedBlockStatus('processed', targetBlockId);
-      if (action === 'next') selectNextBlock();
+      const clickedBlock = event.target.closest?.('.doc-block');
+      const blockSelectionActive = editor.storage.blockSelectionDecoration.active;
+      const blockSelectionExited = blockSelectionActive === false || (
+        blockSelectionActive == null
+        && !hasUnfinishedBlocks(collectTrackedBlocks(editor.state))
+      );
+      if (!clickedBlock || !blockSelectionExited) return;
+
+      editor.storage.blockSelectionDecoration.active = true;
+      editor.view.dispatch(editor.state.tr
+        .setMeta('blockSelectionActivation', true)
+        .setMeta('addToHistory', false));
+      const info = selectedParagraphInfo(editor);
+      syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
+      onActiveBlockChange?.(info);
     };
 
-    editor.view.dom.addEventListener('click', handleSelectedBlockAction);
-    return () => editor.view.dom.removeEventListener('click', handleSelectedBlockAction);
-  }, [editor, onBlockStatusChange]);
+    editor.view.dom.addEventListener('click', handleEditorBlockClick);
+    return () => editor.view.dom.removeEventListener('click', handleEditorBlockClick);
+  }, [editor, onActiveBlockChange, onBlockStatusChange]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
@@ -1117,6 +1158,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       updatedBlockId = target.blockId;
 
       if (status === 'processing') {
+        editor.storage.blockSelectionDecoration.active = true;
         paragraphs.forEach((paragraph) => {
           const nextStatus = paragraph.pos === target.pos ? 'processing' : (
             paragraph.status === 'processing' ? 'unprocessed' : paragraph.status
@@ -1125,8 +1167,9 @@ const DocumentEditor = forwardRef(function DocumentEditor({
           tr.setNodeMarkup(paragraph.pos, undefined, { ...paragraph.node.attrs, status: nextStatus });
         });
       } else if (status === 'processed' || status === 'skipped') {
-        const nextProcessing = chooseLocalNextProcessing(paragraphs, target.blockId);
+        const nextProcessing = chooseNextUnfinishedBlock(paragraphs, target.blockId);
         nextLocalProcessingId = nextProcessing?.blockId ?? null;
+        editor.storage.blockSelectionDecoration.active = Boolean(nextProcessing);
         let replacementRange = null;
         paragraphs.forEach((paragraph) => {
           let nextStatus = paragraph.status;

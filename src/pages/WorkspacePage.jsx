@@ -10,6 +10,7 @@ import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
 import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
 import OwlContainer from '../components/OwlContainer.jsx';
+import { chooseNextUnfinishedBlock } from '../lib/editorBlockCommands.js';
 import { getBlackboardCssVars, getMobileContainerCssVars } from './libraries/animations/containerLayout.js';
 import { useFloatingWindow } from './libraries/useFloatingWindow.js';
 import {
@@ -672,6 +673,10 @@ export default function WorkspacePage() {
 
   const handleActiveEditorBlockChange = useCallback((info) => {
     const nextInfo = info ?? { blockId: null, status: 'unprocessed' };
+    if (nextInfo.blockId) {
+      setRewriteAllCompleted(false);
+      setRewriteCardsLocked(false);
+    }
     setActiveEditorBlock((current) => (
       current?.blockId === nextInfo.blockId
       && current?.status === nextInfo.status
@@ -1219,9 +1224,15 @@ export default function WorkspacePage() {
       ?? editableIndexes.find(({ node }) => node.attrs?.blockId === currentProcessingId)
       ?? editableIndexes.find(({ node }) => node.attrs?.status === 'processing')
       ?? editableIndexes[0];
-    const nextProcessingIndex = editableIndexes
-      .find(({ node }) => node.attrs?.blockId !== target.node.attrs?.blockId && node.attrs?.status === 'unprocessed')
-      ?.index ?? null;
+    const nextProcessingIndex = chooseNextUnfinishedBlock(
+      editableIndexes.map(({ node, index }) => ({
+        blockId: node.attrs?.blockId ?? null,
+        status: node.attrs?.status ?? 'unprocessed',
+        isEmpty: false,
+        index,
+      })),
+      target.node.attrs?.blockId ?? null,
+    )?.index ?? null;
 
     const nextContent = {
       type: sourceContent.type ?? 'doc',
