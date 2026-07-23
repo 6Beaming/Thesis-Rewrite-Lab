@@ -1,36 +1,99 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router';
+import { useLocation, useNavigate, useParams } from 'react-router';
 import blackboardUrl from '../assets/blackboard.png';
 import AcademicStylePanel, {
   DEFAULT_CUSTOM_STYLE,
   TEMPLATE_STYLE_SETTINGS,
 } from '../components/AcademicStylePanel.jsx';
 import DocumentEditor from '../components/DocumentEditor.jsx';
+import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
 import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
 import OwlContainer from '../components/OwlContainer.jsx';
+import {
+  chooseNextUnfinishedBlock,
+  convertLegacyTrackedBlocks,
+} from '../lib/editorBlockCommands.js';
 import { getBlackboardCssVars, getMobileContainerCssVars } from './libraries/animations/containerLayout.js';
 import { useFloatingWindow } from './libraries/useFloatingWindow.js';
 import {
+  acceptDocumentBlockRewrite,
+  analyzeDocumentBlock,
+  generateDocumentBlockRewrites,
   getDocument,
   listDocuments,
+  requestDocumentBlockPracticeFeedback,
   saveDocument,
-  updateDocumentBlockStatus,
   uploadDocument,
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
 
-const PLACEHOLDER_DELAY_MS = 5000;
 const REGEN_COOLDOWN_MS = 10000;
-const DEMO_STORE_KEY = 'project-thesis-rewriter:demo-store:v1';
-const LAST_WORKSPACE_DOCUMENT_KEY = 'project-thesis-rewriter:last-workspace-document:v1';
-const DEMO_BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
-const ANALYSIS_SIGNAL_LABELS = {
-  passive: 'Passive constructions',
-  nominalization: 'Nominalization clusters',
-  hedging: 'Hedging and certainty',
-  transitions: 'Transition gaps',
+const PRACTICE_MAX_CHARS = 4000;
+const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
+const ANALYSIS_FILTER_LABELS = {
+  clarity: 'Clear and understandable',
+  conciseness: 'Concise and direct',
+  'academic-style': 'Academic and precise',
+  flow: 'Logical flow',
 };
+const PRACTICE_SCORE_LABELS = {
+  meaningPreservation: 'Meaning kept',
+  clarity: 'Clarity',
+  academicStyle: 'Academic style',
+  grammar: 'Grammar',
+};
+const REWRITE_TONE_CARDS = Object.freeze([
+  {
+    id: 1,
+    tone: 'formal-academic',
+    title: 'Formal & Academic Tone',
+    bestFor: 'For rigorous academic writing.',
+    focus: 'Precision, objectivity, and research-first language.',
+  },
+  {
+    id: 2,
+    tone: 'persuasive-argumentative',
+    title: 'Persuasive & Argumentative Tone',
+    bestFor: 'For arguments that must persuade.',
+    focus: 'Active verbs, firm reasoning, and clear significance.',
+  },
+  {
+    id: 3,
+    tone: 'accessible-concise',
+    title: 'Accessible & Concise Tone',
+    bestFor: 'For fast, clear communication.',
+    focus: 'Plain language, active voice, and no filler.',
+  },
+]);
+
+function createRewriteCards() {
+  return REWRITE_TONE_CARDS.map((card) => ({
+    ...card,
+    rewriteId: null,
+    response: '',
+    explanation: '',
+    changes: [],
+    warnings: [],
+    meaningPreserved: true,
+    error: '',
+    applyWithExplanation: false,
+  }));
+}
+
+function resetRewriteCard(card) {
+  return {
+    ...card,
+    rewriteId: null,
+    response: '',
+    explanation: '',
+    changes: [],
+    warnings: [],
+    meaningPreserved: true,
+    error: '',
+    applyWithExplanation: false,
+  };
+}
 
 function PanelChevron({ direction }) {
   const isLeft = direction === 'left';
@@ -52,104 +115,64 @@ function UploadDocIcon() {
   );
 }
 
-function workspaceHistoryFallback(selectedDocument) {
-  const now = Date.now();
-  const storedDocuments = readDemoStore()?.documents ?? [];
-  return [
-    ...storedDocuments,
-    {
-      id: 'demo-history-literature-review',
-      title: 'Literature review draft',
-      academic_style: 'MLA',
-      updated_at: new Date(now - 2 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: 'demo-history-methods-notes',
-      title: 'Methods notes',
-      academic_style: 'Chicago',
-      updated_at: new Date(now - 26 * 60 * 60 * 1000).toISOString(),
-    },
-    {
-      id: 'demo-history-article-summary',
-      title: 'Article summary practice',
-      academic_style: 'APA',
-      updated_at: new Date(now - 4 * 24 * 60 * 60 * 1000).toISOString(),
-    },
-    selectedDocument,
-  ].filter((document, index, documents) => (
-    document?.id && documents.findIndex((item) => item?.id === document.id) === index
-  ));
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function readDemoStore() {
-  if (typeof window === 'undefined') return null;
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(DEMO_STORE_KEY) || 'null');
-    if (!parsed || !Array.isArray(parsed.documents)) return null;
-    return {
-      documents: parsed.documents,
-      trashDocuments: Array.isArray(parsed.trashDocuments) ? parsed.trashDocuments : [],
-      hiddenDocumentIds: Array.isArray(parsed.hiddenDocumentIds) ? parsed.hiddenDocumentIds : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-function writeDemoStore(store) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(DEMO_STORE_KEY, JSON.stringify(store));
-}
-
-function readLastWorkspaceDocument() {
-  if (typeof window === 'undefined') return null;
-  try {
-    return JSON.parse(window.sessionStorage.getItem(LAST_WORKSPACE_DOCUMENT_KEY) || 'null');
-  } catch {
-    return null;
-  }
-}
-
-function rememberWorkspaceDocument(document) {
-  if (typeof window === 'undefined' || !document?.id) return;
-  window.sessionStorage.setItem(LAST_WORKSPACE_DOCUMENT_KEY, JSON.stringify({
-    id: document.id,
-    title: document.title,
-    academic_style: document.academic_style,
-    style_settings: document.style_settings,
-  }));
-}
-
-function textFromDemoNode(node) {
+function textFromNode(node) {
   if (!node) return '';
   if (node.type === 'text') return node.text ?? '';
   if (!Array.isArray(node.content)) return '';
-  return node.content.map(textFromDemoNode).join('');
+  return node.content.map(textFromNode).join('');
 }
 
-function isEditableDemoBlock(node) {
-  return node?.type === 'paragraph' || node?.type === 'heading';
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m6 6 12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+function isEditableBlock(node) {
+  return node?.type === 'blockSegment';
+}
+
+function editableBlocksFromContent(node, blocks = []) {
+  if (!node || typeof node !== 'object') return blocks;
+  if (isEditableBlock(node) && textFromNode(node).trim()) {
+    blocks.push(node);
+  }
+  if (Array.isArray(node.content)) {
+    node.content.forEach((child) => editableBlocksFromContent(child, blocks));
+  }
+  return blocks;
+}
+
+function mapEditableBlocks(node, mapBlock) {
+  if (!node || typeof node !== 'object') return node;
+  if (isEditableBlock(node)) return mapBlock(node);
+  if (!Array.isArray(node.content)) return node;
+  return {
+    ...node,
+    content: node.content.map((child) => mapEditableBlocks(child, mapBlock)),
+  };
 }
 
 function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
   const text = block.text ?? block.text_content ?? '';
-  const status = DEMO_BLOCK_STATUSES.has(block.status ?? block.attrs?.status)
+  const status = BLOCK_STATUSES.has(block.status ?? block.attrs?.status)
     ? (block.status ?? block.attrs?.status)
     : 'unprocessed';
   const id = block.id ?? block.blockId ?? block.attrs?.blockId ?? `${documentId}-block-${index + 1}`;
-  const attrs = demoAttrs(
+  const attrs = blockAttrs(
     id,
     status,
     text.length,
     block.attrs ?? block.tiptap_node?.attrs ?? {},
     styleSettings
   );
+  const storedNode = block.tiptap_node ?? null;
+  const storedContent = Array.isArray(storedNode?.content)
+    && storedNode.content.every((child) => child?.type === 'text' || child?.type === 'hardBreak')
+    ? storedNode.content
+    : (text ? [{ type: 'text', text }] : []);
 
   return {
     id,
@@ -157,7 +180,7 @@ function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
     document_id: block.document_id ?? documentId,
     block_index: index,
     order: typeof block.order === 'number' ? block.order : index,
-    node_type: block.type ?? block.node_type ?? block.tiptap_node?.type ?? 'paragraph',
+    node_type: 'blockSegment',
     text,
     text_content: text,
     status,
@@ -165,10 +188,12 @@ function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
     length: text.length,
     char_length: text.length,
     attrs,
-    tiptap_node: block.tiptap_node ? {
-      ...block.tiptap_node,
+    tiptap_node: {
+      ...(storedNode?.type === 'blockSegment' ? storedNode : {}),
+      type: 'blockSegment',
       attrs,
-    } : null,
+      content: storedContent,
+    },
     contentIndex: block.contentIndex ?? null,
   };
 }
@@ -179,11 +204,11 @@ function extractRuntimeBlocksFromContent(document, contentJson, styleSettings = 
 
   function walk(node) {
     if (!node || typeof node !== 'object') return;
-    if (isEditableDemoBlock(node)) {
-      const text = textFromDemoNode(node);
+    if (isEditableBlock(node)) {
+      const text = textFromNode(node);
       const id = node.attrs?.blockId ?? `${document.id}-block-${entries.length + 1}`;
-      const status = DEMO_BLOCK_STATUSES.has(node.attrs?.status) ? node.attrs.status : 'unprocessed';
-      const attrs = demoAttrs(id, status, text.length, node.attrs ?? {}, styleSettings);
+      const status = BLOCK_STATUSES.has(node.attrs?.status) ? node.attrs.status : 'unprocessed';
+      const attrs = blockAttrs(id, status, text.length, node.attrs ?? {}, styleSettings);
       entries.push({
         id,
         blockId: id,
@@ -243,7 +268,7 @@ function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = 
       }
     }
 
-    const attrs = demoAttrs(block.id, status, block.text.length, block.attrs, styleSettings);
+    const attrs = blockAttrs(block.id, status, block.text.length, block.attrs, styleSettings);
     return {
       ...block,
       block_index: index,
@@ -261,15 +286,18 @@ function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = 
     contentJson,
     blocks: nextBlocks,
     currentProcessingBlockId: processingBlockId ?? null,
-    revision: Date.now(),
   };
 }
 
 function draftFromDocument(document, styleSettings = {}) {
-  const contentJson = document?.content_json ?? fallbackWorkspaceContent(document, styleSettings);
+  const documentId = document?.id || 'workspace-document';
+  const contentJson = convertLegacyTrackedBlocks(
+    document?.content_json ?? { type: 'doc', content: [] },
+    (index) => `${documentId}-block-${index + 1}`,
+  );
   const sourceBlocks = Array.isArray(document?.blocks) && document.blocks.length
     ? document.blocks
-    : extractRuntimeBlocksFromContent(document ?? { id: 'workspace-document' }, contentJson, styleSettings);
+    : extractRuntimeBlocksFromContent({ ...(document ?? {}), id: documentId }, contentJson, styleSettings);
 
   return normalizeWorkspaceDraft(
     document,
@@ -280,7 +308,7 @@ function draftFromDocument(document, styleSettings = {}) {
   );
 }
 
-function demoAttrs(blockId, status, length, existingAttrs = {}, styleSettings = {}) {
+function blockAttrs(blockId, status, length, existingAttrs = {}, styleSettings = {}) {
   return {
     lineHeight: styleSettings.spacing || styleSettings.lineHeight || existingAttrs.lineHeight || '2.0',
     textIndent: styleSettings.indentation || styleSettings.textIndent || existingAttrs.textIndent || '0.5in',
@@ -320,7 +348,7 @@ function documentFromWorkspaceDraft(document, draft, styleName, styleSettings) {
   };
 }
 
-function demoDocumentFromContent(document, contentJson, styleName, styleSettings, blockSnapshots = null, preferredProcessingBlockId = null) {
+function documentFromContent(document, contentJson, styleName, styleSettings, blockSnapshots = null, preferredProcessingBlockId = null) {
   const draft = normalizeWorkspaceDraft(
     document,
     contentJson,
@@ -348,122 +376,22 @@ function normalizeWorkspaceContent(document, contentJson, styleName, styleSettin
   };
 }
 
-function upsertDemoDocumentInStore(document) {
-  const store = readDemoStore() ?? {
-    documents: [],
-    trashDocuments: [],
-    hiddenDocumentIds: [],
-  };
-  const nextDocuments = [
-    document,
-    ...store.documents.filter((item) => item.id !== document.id),
-  ];
-  writeDemoStore({
-    ...store,
-    documents: nextDocuments,
-  });
-}
-
-function fallbackWorkspaceContent(document, styleSettings = {}) {
-  const documentId = document?.id || 'workspace-document';
-  const title = document?.title || 'Untitled document';
-  const paragraphs = [
-    `${title}. This local workspace draft is ready for editing.`,
-    'Use the rewriting cards to test applying a replacement sentence, then press Save to keep the changes.',
-  ];
-
-  return {
-    type: 'doc',
-    content: paragraphs.map((text, index) => ({
-      type: 'paragraph',
-      attrs: demoAttrs(
-        `${documentId}-block-${index + 1}`,
-        index === 0 ? 'processing' : 'unprocessed',
-        text.length,
-        {},
-        styleSettings,
-      ),
-      content: [{ type: 'text', text }],
-    })),
-  };
-}
-
-function contentFromPlainText(document, text, styleSettings = {}) {
-  const documentId = document?.id || 'workspace-document';
-  const sentences = String(text || '')
-    .split(/(?<=\.)\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const paragraphs = sentences.length ? sentences : ['Start writing your document.'];
-
-  return {
-    type: 'doc',
-    content: paragraphs.map((paragraph, index) => ({
-      type: 'paragraph',
-      attrs: demoAttrs(
-        `${documentId}-block-${index + 1}`,
-        index === 0 ? 'processing' : 'unprocessed',
-        paragraph.length,
-        {},
-        styleSettings,
-      ),
-      content: [{ type: 'text', text: paragraph }],
-    })),
-  };
-}
-
-function createWorkspaceUploadDocument({ title, text, filename }, styleName = 'APA', styleSettings = TEMPLATE_STYLE_SETTINGS.APA) {
-  const id = `demo-upload-${Date.now()}`;
-  const baseDocument = {
-    id,
-    title: title || filename?.replace(/\.[^.]+$/, '') || 'Uploaded document',
-    academic_style: styleName,
-    style_settings: styleSettings,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  return demoDocumentFromContent(
-    baseDocument,
-    contentFromPlainText(baseDocument, text, styleSettings),
-    styleName,
-    styleSettings,
-  );
-}
-
 function hydrateWorkspaceDocument(document) {
   if (!document) return null;
-
-  const storeDocument = readDemoStore()?.documents?.find((item) => item.id === document.id);
-  const source = storeDocument ?? document;
-  if (source.content_json || source.blocks?.length) {
-    return source;
-  }
-
-  const nextStyleName = source.academic_style || 'APA';
-  const nextStyleSettings = {
-    ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
-    ...(source.style_settings ?? {}),
-  };
-
-  return demoDocumentFromContent(
-    {
-      ...source,
-      title: source.title || 'Untitled document',
-      academic_style: nextStyleName,
-      style_settings: nextStyleSettings,
-    },
-    fallbackWorkspaceContent(source, nextStyleSettings),
-    nextStyleName,
-    nextStyleSettings,
-  );
+  return document;
 }
 
 export default function WorkspacePage() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { documentId } = useParams();
+  const {
+    state: realtimeState,
+    applyDocument,
+    subscribeDocument,
+  } = useRealtime();
   const [view, setView] = useState(() => (
-    location.pathname === '/worksapce' ? 'workspace' : 'home'
+    documentId ? 'workspace' : 'home'
   ));
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [workspaceNotice, setWorkspaceNotice] = useState('');
@@ -481,18 +409,16 @@ export default function WorkspacePage() {
   const [styleSettings, setStyleSettings] = useState(TEMPLATE_STYLE_SETTINGS.APA);
   const [editorContent, setEditorContent] = useState(null);
   const [activeEditorBlock, setActiveEditorBlock] = useState({ blockId: null, status: 'unprocessed' });
-  const [rewriteCards, setRewriteCards] = useState([
-    { id: 1, title: 'Rewriting Card 1', response: '', error: '', skipped: false, applyWithExplanation: false },
-    { id: 2, title: 'Rewriting Card 2', response: '', error: '', skipped: false, applyWithExplanation: false },
-    { id: 3, title: 'Rewriting Card 3', response: '', error: '', skipped: false, applyWithExplanation: false },
-  ]);
+  const [rewriteCards, setRewriteCards] = useState(createRewriteCards);
   const [rewriteCardsLocked, setRewriteCardsLocked] = useState(false);
   const [rewriteAllCompleted, setRewriteAllCompleted] = useState(false);
   const [rewriteBusy, setRewriteBusy] = useState(false);
+  const [rewriteError, setRewriteError] = useState('');
   const [rewriteCooldownUntil, setRewriteCooldownUntil] = useState(0);
   const [practiceInput, setPracticeInput] = useState('');
-  const [practiceResponse, setPracticeResponse] = useState('');
+  const [practiceFeedback, setPracticeFeedback] = useState(null);
   const [practiceBusy, setPracticeBusy] = useState(false);
+  const [practiceError, setPracticeError] = useState('');
   const [mobileOwlOpen, setMobileOwlOpen] = useState(false);
   const [mobilePanelMode, setMobilePanelMode] = useState('rewriting');
   const [mobileRewriteIndex, setMobileRewriteIndex] = useState(0);
@@ -501,21 +427,29 @@ export default function WorkspacePage() {
   const [mobileOptionsTab, setMobileOptionsTab] = useState('setup');
   const [workspaceHistoryDocuments, setWorkspaceHistoryDocuments] = useState([]);
   const [workspaceHistoryExpanded, setWorkspaceHistoryExpanded] = useState(false);
-  const [analysisSignals, setAnalysisSignals] = useState({
-    passive: true,
-    nominalization: true,
-    hedging: false,
-    transitions: false,
+  const [analysisFilters, setAnalysisFilters] = useState({
+    clarity: true,
+    conciseness: true,
+    'academic-style': true,
+    flow: true,
   });
+  const [blockAnalyses, setBlockAnalyses] = useState({});
+  const [blockAnalysisHighlights, setBlockAnalysisHighlights] = useState({});
+  const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
   const workspaceOwlAnimatorRef = useRef(null);
   const mobileWorkspaceOwlAnimatorRef = useRef(null);
   const documentEditorRef = useRef(null);
   const mobileDragEndedAtRef = useRef(0);
   const rewriteRefreshTimerRef = useRef(null);
+  const rewriteContextKeyRef = useRef('');
+  const practiceContextKeyRef = useRef('');
   const wandHoverTimerRef = useRef(null);
   const workspaceUploadInputRef = useRef(null);
   const mobileOptionsPanelRef = useRef(null);
   const mobileOptionsButtonRef = useRef(null);
+  const pendingDocumentMutationsRef = useRef(new Set());
+  const localDocumentRevisionsRef = useRef(new Map());
   const blackboardStyle = getBlackboardCssVars();
   const {
     windowRef: mobileOwlRef,
@@ -530,6 +464,52 @@ export default function WorkspacePage() {
     top: `${mobileOwlPosition.top}px`,
   }), [mobileOwlMetrics, mobileOwlPosition]);
   const styleSettingsSignature = useMemo(() => JSON.stringify(styleSettings ?? {}), [styleSettings]);
+  const selectedAnalysisFilters = useMemo(() => (
+    Object.entries(analysisFilters)
+      .filter(([, enabled]) => enabled)
+      .map(([filter]) => filter)
+      .sort()
+  ), [analysisFilters]);
+  const currentAnalysisKey = useMemo(() => (
+    activeEditorBlock?.blockId
+      ? `${activeEditorBlock.blockId}|${activeEditorBlock.text ?? ''}|${selectedAnalysisFilters.join(',')}`
+      : ''
+  ), [activeEditorBlock?.blockId, activeEditorBlock?.text, selectedAnalysisFilters]);
+  const currentBlockAnalysis = currentAnalysisKey ? blockAnalyses[currentAnalysisKey] ?? null : null;
+  const analysisHighlights = useMemo(
+    () => Object.values(blockAnalysisHighlights),
+    [blockAnalysisHighlights],
+  );
+  const currentRewriteBlockId = activeEditorBlock?.blockId
+    ?? workspaceDraft?.currentProcessingBlockId
+    ?? null;
+  const currentRewriteBlock = workspaceDraft?.blocks?.find((block) => block.id === currentRewriteBlockId)
+    ?? null;
+  const currentRewriteKey = selectedDocument?.id && currentRewriteBlockId
+    ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}`
+    : '';
+  rewriteContextKeyRef.current = currentRewriteKey;
+  const currentPracticeKey = selectedDocument?.id && activeEditorBlock?.blockId
+    ? `${selectedDocument.id}|${activeEditorBlock.blockId}|${activeEditorBlock.text ?? ''}`
+    : '';
+  const currentPracticeRequestKey = `${currentPracticeKey}|${practiceInput}`;
+  practiceContextKeyRef.current = currentPracticeRequestKey;
+
+  useEffect(() => {
+    setAnalysisError('');
+  }, [currentAnalysisKey]);
+
+  useEffect(() => {
+    setRewriteError('');
+    setRewriteCards(createRewriteCards());
+  }, [currentRewriteKey]);
+
+  useEffect(() => {
+    setPracticeInput('');
+    setPracticeFeedback(null);
+    setPracticeError('');
+    setMobilePracticeIndex(0);
+  }, [currentPracticeKey]);
 
   useEffect(() => () => {
     if (rewriteRefreshTimerRef.current) {
@@ -541,36 +521,63 @@ export default function WorkspacePage() {
   }, []);
 
   useEffect(() => {
-    if (location.pathname !== '/worksapce') {
+    if (!documentId) {
       setView('home');
+      setSelectedDocument(null);
       return undefined;
     }
 
     setView('workspace');
-    if (selectedDocument) return undefined;
-
-    const rememberedDocument = readLastWorkspaceDocument();
-    if (rememberedDocument) {
-      openWorkspace(rememberedDocument, { updateRoute: false });
-      return undefined;
-    }
-
     let alive = true;
-    listDocuments({ sort: 'most_recent' })
-      .then((data) => {
+    setWorkspaceNotice('Loading document...');
+    getDocument(documentId)
+      .then(({ document }) => {
         if (!alive) return;
-        const document = data.documents?.[0] ?? workspaceHistoryFallback(null)[0];
+        applyDocument('document:updated', document, { force: true });
         openWorkspace(document, { updateRoute: false });
       })
-      .catch(() => {
+      .catch((error) => {
         if (!alive) return;
-        openWorkspace(workspaceHistoryFallback(null)[0], { updateRoute: false });
+        setSelectedDocument(null);
+        setWorkspaceNotice(error.message || 'Could not load the document.');
       });
 
     return () => {
       alive = false;
     };
-  }, [location.pathname]);
+  }, [applyDocument, documentId]);
+
+  useEffect(() => {
+    if (view !== 'workspace' || !documentId) return undefined;
+    return subscribeDocument(documentId);
+  }, [documentId, subscribeDocument, view]);
+
+  useEffect(() => {
+    if (!documentId || selectedDocument?.id !== documentId) return;
+    if (
+      realtimeState.trashDocuments.some((document) => document.id === documentId)
+      || realtimeState.deletedDocumentIds.some((document) => document.id === documentId)
+    ) {
+      setWorkspaceDirty(false);
+      setWorkspaceNotice('This document was removed from the workspace in another session.');
+      setView('home');
+      navigate('/');
+      return;
+    }
+
+    const remoteDocument = realtimeState.documentDetails[documentId];
+    if (
+      remoteDocument
+      && Number(remoteDocument.revision) > Number(selectedDocument.revision ?? 0)
+      && Number(remoteDocument.revision) > (localDocumentRevisionsRef.current.get(documentId) ?? 0)
+      && !pendingDocumentMutationsRef.current.has(documentId)
+    ) {
+      // A keyed editor remount loads this canonical document as initial state, so
+      // Tiptap does not emit an onUpdate/save cycle for a remote replacement.
+      openWorkspace(remoteDocument, { updateRoute: false });
+      setWorkspaceNotice('Updated from another session.');
+    }
+  }, [documentId, navigate, realtimeState.deletedDocumentIds, realtimeState.documentDetails, realtimeState.trashDocuments, selectedDocument?.id, selectedDocument?.revision, view]);
 
   useEffect(() => {
     if (!mobileOptionsOpen) return undefined;
@@ -592,37 +599,6 @@ export default function WorkspacePage() {
   }, [mobileOptionsOpen]);
 
   useEffect(() => {
-    if (view !== 'workspace' || !selectedDocument?.id || selectedDocument.id.startsWith('demo-')) {
-      return undefined;
-    }
-
-    let alive = true;
-    getDocument(selectedDocument.id)
-      .then(({ document }) => {
-        if (!alive) return;
-        const nextStyleName = document.academic_style || 'APA';
-        const nextStyleSettings = {
-          ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
-          ...(document.style_settings ?? {}),
-        };
-        const nextDraft = draftFromDocument(document, nextStyleSettings);
-        setWorkspaceDraft(nextDraft);
-        setSelectedDocument(documentFromWorkspaceDraft(document, nextDraft, nextStyleName, nextStyleSettings));
-        setStyleName(nextStyleName);
-        setStyleSettings(nextStyleSettings);
-        setEditorContent(nextDraft.contentJson);
-        setEditorReloadKey((value) => value + 1);
-      })
-      .catch(() => {
-        if (alive) setWorkspaceNotice('');
-      });
-
-    return () => {
-      alive = false;
-    };
-  }, [view, selectedDocument?.id]);
-
-  useEffect(() => {
     if (view !== 'workspace') {
       return undefined;
     }
@@ -635,9 +611,10 @@ export default function WorkspacePage() {
           document.id !== selectedDocument?.id
         )));
       })
-      .catch(() => {
+      .catch((error) => {
         if (!alive) return;
-        setWorkspaceHistoryDocuments(workspaceHistoryFallback(selectedDocument));
+        setWorkspaceHistoryDocuments([]);
+        setWorkspaceNotice(error.message || 'Could not load recent documents.');
       });
 
     return () => {
@@ -668,20 +645,22 @@ export default function WorkspacePage() {
     setStyleSettings(nextStyleSettings);
     setWorkspaceDirty(false);
     setWorkspaceNotice('');
+    setBlockAnalyses({});
+    setBlockAnalysisHighlights({});
+    setAnalysisError('');
     setRewriteCardsLocked(false);
     setRewriteAllCompleted(false);
-    setRewriteCards((cards) => cards.map((card) => ({
-      ...card,
-      response: '',
-      error: '',
-      skipped: false,
-      applyWithExplanation: false,
-    })));
+    setRewriteCards((cards) => cards.map(resetRewriteCard));
+    setRewriteError('');
+    setPracticeInput('');
+    setPracticeFeedback(null);
+    setPracticeError('');
+    setMobilePracticeIndex(0);
     setWorkspaceHistoryExpanded(false);
-    rememberWorkspaceDocument(hydratedDocument);
     setView('workspace');
-    if (updateRoute && location.pathname !== '/worksapce') {
-      navigate('/worksapce');
+    const targetPath = `/workspace/${hydratedDocument.id}`;
+    if (updateRoute && location.pathname !== targetPath) {
+      navigate(targetPath);
     }
   }
 
@@ -727,8 +706,15 @@ export default function WorkspacePage() {
 
   const handleActiveEditorBlockChange = useCallback((info) => {
     const nextInfo = info ?? { blockId: null, status: 'unprocessed' };
+    if (nextInfo.blockId) {
+      setRewriteAllCompleted(false);
+      setRewriteCardsLocked(false);
+    }
     setActiveEditorBlock((current) => (
-      current?.blockId === nextInfo.blockId && current?.status === nextInfo.status
+      current?.blockId === nextInfo.blockId
+      && current?.status === nextInfo.status
+      && current?.originalStatus === nextInfo.originalStatus
+      && current?.text === nextInfo.text
         ? current
         : nextInfo
     ));
@@ -743,36 +729,60 @@ export default function WorkspacePage() {
     return documentFromWorkspaceDraft(selectedDocument, fallbackDraft, styleName, styleSettings);
   }
 
+  async function persistWorkspaceDocument(document, versionLabel) {
+    if (!document?.id) throw new Error('No persisted document is open.');
+
+    pendingDocumentMutationsRef.current.add(document.id);
+    try {
+      const result = await saveDocument(document.id, {
+        title: document.title,
+        academicStyle: styleName,
+        styleSettings,
+        contentJson: document.content_json,
+        createVersion: true,
+        versionLabel,
+      });
+      const persistedDocument = result.document ?? document;
+      const persistedStyleName = persistedDocument.academic_style || styleName;
+      const persistedStyleSettings = {
+        ...(TEMPLATE_STYLE_SETTINGS[persistedStyleName] ?? DEFAULT_CUSTOM_STYLE),
+        ...(persistedDocument.style_settings ?? styleSettings),
+      };
+      const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
+      setWorkspaceDraft(persistedDraft);
+      setSelectedDocument(documentFromWorkspaceDraft(
+        persistedDocument,
+        persistedDraft,
+        persistedStyleName,
+        persistedStyleSettings,
+      ));
+      setEditorContent(persistedDraft.contentJson ?? document.content_json);
+      setActiveEditorBlock({
+        blockId: persistedDraft.currentProcessingBlockId ?? null,
+        status: persistedDraft.currentProcessingBlockId ? 'processing' : 'unprocessed',
+      });
+      setStyleName(persistedStyleName);
+      setStyleSettings(persistedStyleSettings);
+      setWorkspaceDirty(false);
+      const revision = Number(persistedDocument.revision);
+      if (Number.isFinite(revision)) {
+        localDocumentRevisionsRef.current.set(persistedDocument.id, revision);
+      }
+      applyDocument('document:updated', persistedDocument);
+      return persistedDocument;
+    } finally {
+      pendingDocumentMutationsRef.current.delete(document.id);
+    }
+  }
+
   async function saveWorkspaceDocument({ leaveAfterSave = false } = {}) {
     const document = normalizedWorkspaceDocument();
     if (!document?.id) return false;
 
     setWorkspaceSaving(true);
     try {
-      if (document.id.startsWith('demo-')) {
-        upsertDemoDocumentInStore(document);
-        setSelectedDocument(document);
-        setEditorContent(document.content_json);
-        setWorkspaceDraft(draftFromDocument(document, styleSettings));
-        setWorkspaceNotice('Saved locally');
-      } else {
-        const result = await saveDocument(document.id, {
-          title: document.title,
-          academicStyle: styleName,
-          styleSettings,
-          contentJson: document.content_json,
-          createVersion: true,
-          versionLabel: 'Manual save',
-        });
-        const persistedDocument = result.document ?? document;
-        const persistedDraft = draftFromDocument(persistedDocument, styleSettings);
-        setWorkspaceDraft(persistedDraft);
-        setSelectedDocument(documentFromWorkspaceDraft(persistedDocument, persistedDraft, styleName, styleSettings));
-        setEditorContent(persistedDraft.contentJson ?? document.content_json);
-        setWorkspaceNotice('Saved');
-      }
-
-      setWorkspaceDirty(false);
+      await persistWorkspaceDocument(document, 'Manual save');
+      setWorkspaceNotice('Saved');
       setShowUnsavedBackPrompt(false);
       if (leaveAfterSave) {
         setView('home');
@@ -780,7 +790,7 @@ export default function WorkspacePage() {
       }
       return true;
     } catch (error) {
-      setWorkspaceNotice(error.message || 'Save is waiting for the local API.');
+      setWorkspaceNotice(error.message || 'Could not save the document.');
       return false;
     } finally {
       setWorkspaceSaving(false);
@@ -798,6 +808,10 @@ export default function WorkspacePage() {
 
   function leaveWorkspaceWithoutSaving() {
     setShowUnsavedBackPrompt(false);
+    setSelectedDocument(null);
+    setWorkspaceDraft(null);
+    setEditorContent(null);
+    setActiveEditorBlock({ blockId: null, status: 'unprocessed' });
     setWorkspaceDirty(false);
     setView('home');
     navigate('/');
@@ -824,13 +838,8 @@ export default function WorkspacePage() {
 
     setRewriteAllCompleted(false);
     setRewriteCardsLocked(false);
-    setRewriteCards((cards) => cards.map((card) => ({
-      ...card,
-      response: '',
-      error: '',
-      skipped: false,
-      applyWithExplanation: false,
-    })));
+    setRewriteCards((cards) => cards.map(resetRewriteCard));
+    setRewriteError('');
     if (notice) setWorkspaceNotice(notice);
   }
 
@@ -844,29 +853,79 @@ export default function WorkspacePage() {
 
     try {
       const result = await uploadDocument(file, styleName);
+      applyDocument('document:created', result.document);
       openWorkspace(result.document);
       setWorkspaceNotice(`${file.name} uploaded as a new document.`);
     } catch (error) {
-      if (/\.(txt|md)$/i.test(file.name)) {
-        const text = await file.text();
-        const document = createWorkspaceUploadDocument({
-          title: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '),
-          text,
-          filename: file.name,
-        }, styleName, styleSettings);
-        upsertDemoDocumentInStore(document);
-        openWorkspace(document);
-        setWorkspaceNotice(`${file.name} opened as a local demo upload.`);
-        return;
+      setWorkspaceNotice(error.message || 'Could not upload the document.');
+    }
+  }
+
+  async function analyzeActiveBlock() {
+    const documentId = selectedDocument?.id;
+    const blockId = activeEditorBlock?.blockId;
+    if (!documentId || !blockId) {
+      setAnalysisError('Select a text block to analyze.');
+      return;
+    }
+    if (!selectedAnalysisFilters.length) {
+      setAnalysisError('Select at least one analysis filter.');
+      return;
+    }
+    if (analysisBusy) return;
+
+    const requestKey = currentAnalysisKey;
+    const requestBlockText = activeEditorBlock?.text
+      ?? workspaceDraft?.blocks?.find((block) => block.id === blockId)?.text
+      ?? '';
+    setAnalysisBusy(true);
+    setAnalysisError('');
+    setWorkspaceNotice('');
+    setWorkspaceOwlError(false);
+    setWorkspaceOwlLoading(true);
+
+    try {
+      if (workspaceDirty) {
+        const saved = await saveWorkspaceDocument();
+        if (!saved) return;
       }
-      setWorkspaceNotice(error.message || '.docx parsing needs the local upload API.');
+
+      const response = await analyzeDocumentBlock(documentId, blockId, selectedAnalysisFilters);
+      setBlockAnalyses((current) => ({
+        ...current,
+        [requestKey]: response.analysis,
+      }));
+      setBlockAnalysisHighlights((current) => ({
+        ...current,
+        [blockId]: {
+          blockId,
+          sourceText: requestBlockText,
+          issues: response.analysis?.ai?.issues ?? [],
+        },
+      }));
+      setWorkspaceNotice(response.cached ? 'Loaded saved block analysis.' : 'Block analysis complete.');
+    } catch (error) {
+      setAnalysisError(error.message || 'AI analysis is temporarily unavailable.');
+      triggerWorkspaceError();
+    } finally {
+      setAnalysisBusy(false);
+      setWorkspaceOwlLoading(false);
     }
   }
 
   async function handleEditorBlockStatusChange({ blockId, status }) {
     const payload = arguments[0] ?? {};
+
+    // Rewrites are saved from the complete editor snapshot after the replacement
+    // is applied. A separate status-only request here could publish the old block
+    // text and overwrite the local rewrite before that save finishes.
+    if (payload.replacementText !== null && payload.replacementText !== undefined) {
+      setWorkspaceDirty(true);
+      return;
+    }
+
     const nextDocument = payload.contentJson && selectedDocument
-      ? demoDocumentFromContent(
+      ? documentFromContent(
         selectedDocument,
         payload.contentJson,
         styleName,
@@ -889,10 +948,16 @@ export default function WorkspacePage() {
       setWorkspaceDraft(nextDraft);
       setSelectedDocument(nextDocument);
       setEditorContent(nextDocument.content_json);
-      refreshRewriteCardsFromDocument(nextDocument);
+      const hasRemainingBlocks = nextDocument.blocks?.some((block) => (
+        block.status === 'processing' || block.status === 'unprocessed'
+      ));
+      const actionNotice = status === 'skipped'
+        ? 'Skipped block. Moved to the next block.'
+        : 'Completed block. Moved to the next block.';
+      refreshRewriteCardsFromDocument(nextDocument, hasRemainingBlocks ? actionNotice : '');
     }
 
-    if (!selectedDocument?.id || selectedDocument.id.startsWith('demo-')) {
+    if (!selectedDocument?.id) {
       if (status !== 'processing') {
         setWorkspaceNotice(`Marked block as ${status}.`);
       } else {
@@ -902,13 +967,16 @@ export default function WorkspacePage() {
       return;
     }
 
+    if (!nextDocument) {
+      setWorkspaceNotice('Could not save the block status from the editor.');
+      return;
+    }
+
     try {
-      await updateDocumentBlockStatus(selectedDocument.id, blockId, status);
-      if (status !== 'processing') {
-        setWorkspaceNotice(`Marked block as ${status}.`);
-      }
+      const versionLabel = status === 'skipped' ? 'Skipped block' : 'Completed block';
+      await persistWorkspaceDocument(nextDocument, versionLabel);
     } catch (error) {
-      setWorkspaceNotice(error.message || 'Block status is waiting for the local API.');
+      setWorkspaceNotice(error.message || 'Could not update the block status.');
     }
   }
 
@@ -1003,10 +1071,58 @@ export default function WorkspacePage() {
     }, 5600);
   }
 
-  async function regenerateRewriteCard(cardId) {
-    if (rewriteCardsLocked || rewriteAllCompleted) {
+  async function generateRewrites({ tone, force = false }) {
+    const documentId = selectedDocument?.id;
+    const blockId = currentRewriteBlockId;
+    if (!documentId || !blockId) {
+      setRewriteError('Select a text block to rewrite.');
       return;
     }
+    if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy) return;
+
+    const requestKey = currentRewriteKey;
+    setRewriteBusy(true);
+    setRewriteError('');
+    setWorkspaceNotice('');
+    setWorkspaceOwlError(false);
+    setWorkspaceOwlLoading(true);
+
+    try {
+      if (workspaceDirty) {
+        const saved = await saveWorkspaceDocument();
+        if (!saved) return;
+      }
+
+      const response = await generateDocumentBlockRewrites(documentId, blockId, { tone, force });
+      if (rewriteContextKeyRef.current !== requestKey) return;
+
+      setRewriteCards((cards) => cards.map((card) => {
+        const option = response.rewrites.find((rewrite) => rewrite.tone === card.tone);
+        if (!option) return card;
+        return {
+          ...card,
+          rewriteId: option.id,
+          response: option.rewrittenText,
+          explanation: option.explanation,
+          changes: option.changes ?? [],
+          warnings: option.warnings ?? [],
+          meaningPreserved: option.meaningPreserved,
+          error: '',
+          applyWithExplanation: false,
+        };
+      }));
+      setWorkspaceNotice(response.cached ? 'Loaded the saved rewrite.' : 'Rewrite is ready.');
+    } catch (error) {
+      setRewriteError(error.message || 'AI rewriting is temporarily unavailable.');
+      triggerWorkspaceError();
+    } finally {
+      setWorkspaceOwlLoading(false);
+      setRewriteBusy(false);
+    }
+  }
+
+  async function regenerateRewriteCard(cardId) {
+    if (rewriteCardsLocked || rewriteAllCompleted) return;
     const now = Date.now();
     if (now < rewriteCooldownUntil) {
       setWorkspaceNotice('Regeneration is cooling down. Please wait a moment.');
@@ -1016,36 +1132,39 @@ export default function WorkspacePage() {
       setWorkspaceNotice('A regeneration is already running.');
       return;
     }
-
-    setRewriteBusy(true);
+    const card = rewriteCards.find((item) => item.id === cardId);
+    if (!card) return;
     setRewriteCooldownUntil(now + REGEN_COOLDOWN_MS);
-    setWorkspaceNotice('');
-    setWorkspaceOwlError(false);
-    setWorkspaceOwlLoading(true);
-    await sleep(PLACEHOLDER_DELAY_MS);
-
-    if (cardId === 2) {
-      setRewriteCards((cards) => cards.map((card) => (
-        card.id === cardId ? { ...card, error: 'Network Problems', response: '' } : card
-      )));
-      triggerWorkspaceError();
-      setRewriteBusy(false);
-      return;
-    }
-
-    setRewriteCards((cards) => cards.map((card) => (
-      card.id === cardId
-        ? { ...card, response: `This is placeholder response of Rewriting Card ${cardId}.`, error: '' }
-        : card
-    )));
-    setWorkspaceOwlLoading(false);
-    setRewriteBusy(false);
+    await generateRewrites({ tone: card.tone, force: Boolean(card.response) });
   }
 
   async function handleRewriteCardClick(card, event) {
-    if (rewriteCardsLocked || rewriteAllCompleted || card.error || card.skipped) return;
-    await runWorkspaceMagic(event.currentTarget);
-    applyRewriteCard(card);
+    if (
+      rewriteCardsLocked
+      || rewriteAllCompleted
+      || rewriteBusy
+      || !card.rewriteId
+      || !card.response
+      || !card.meaningPreserved
+    ) return;
+    const animationTarget = event.currentTarget;
+    setRewriteBusy(true);
+    setRewriteError('');
+    try {
+      await acceptDocumentBlockRewrite(selectedDocument.id, currentRewriteBlockId, card.rewriteId);
+      const document = applyRewriteCard(card);
+      if (!document) {
+        throw new Error('The selected block could not be updated. Please select it and try again.');
+      }
+      await persistWorkspaceDocument(document, `Accepted ${card.title} rewrite`);
+      void runWorkspaceMagic(animationTarget).catch(() => {});
+    } catch (error) {
+      setRewriteError(error.message || 'The rewrite could not be applied.');
+      triggerWorkspaceError();
+    } finally {
+      setWorkspaceOwlLoading(false);
+      setRewriteBusy(false);
+    }
   }
 
   function resetRewriteCardsForNextBlock(nextNotice = 'Cards refreshed for the next processing block.') {
@@ -1054,13 +1173,8 @@ export default function WorkspacePage() {
     }
 
     rewriteRefreshTimerRef.current = setTimeout(() => {
-      setRewriteCards((cards) => cards.map((card) => ({
-        ...card,
-        response: '',
-        error: '',
-        skipped: false,
-        applyWithExplanation: false,
-      })));
+      setRewriteCards((cards) => cards.map(resetRewriteCard));
+      setRewriteError('');
       setRewriteCardsLocked(false);
       setWorkspaceNotice(nextNotice);
     }, 650);
@@ -1081,13 +1195,13 @@ export default function WorkspacePage() {
     resetRewriteCardsForNextBlock(nextNotice);
   }
 
-  function applyStatusToCurrentProcessingBlock(nextStatus, replacementText = null) {
+  function applyStatusToSelectedBlock(nextStatus, replacementText = null) {
     if (!selectedDocument) return null;
 
     const nextSnapshot = documentEditorRef.current?.applyCurrentBlockStatus({
       status: nextStatus,
       replacementText,
-      targetBlockId: workspaceDraft?.currentProcessingBlockId ?? activeEditorBlock?.blockId ?? null,
+      targetBlockId: activeEditorBlock?.blockId ?? workspaceDraft?.currentProcessingBlockId ?? null,
     });
     if (nextSnapshot?.contentJson) {
       const normalized = normalizeWorkspaceContent(
@@ -1112,7 +1226,7 @@ export default function WorkspacePage() {
 
     const rawSourceContent = editorContent
       ?? selectedDocument.content_json
-      ?? fallbackWorkspaceContent(selectedDocument, styleSettings);
+      ?? { type: 'doc', content: [] };
     const normalized = normalizeWorkspaceContent(
       selectedDocument,
       rawSourceContent,
@@ -1123,60 +1237,57 @@ export default function WorkspacePage() {
     );
     const sourceDocument = normalized.document ?? selectedDocument;
     const sourceContent = normalized.contentJson ?? rawSourceContent;
-    const nodes = Array.isArray(sourceContent.content) ? sourceContent.content : [];
-    const editableIndexes = nodes
-      .map((node, index) => ({ node, index }))
-      .filter(({ node }) => isEditableDemoBlock(node) && textFromDemoNode(node).trim());
+    const editableBlocks = editableBlocksFromContent(sourceContent);
 
-    if (!editableIndexes.length) {
+    if (!editableBlocks.length) {
       setWorkspaceNotice('No editable block is available.');
       return null;
     }
 
     const activeBlockId = activeEditorBlock?.blockId;
     const currentProcessingId = sourceDocument.current_processing_block_id;
-    const target = editableIndexes.find(({ node }) => (
+    const target = editableBlocks.find((node) => (
       activeBlockId
       && node.attrs?.blockId === activeBlockId
       && ['processing', 'unprocessed'].includes(node.attrs?.status)
     ))
-      ?? editableIndexes.find(({ node }) => node.attrs?.blockId === currentProcessingId)
-      ?? editableIndexes.find(({ node }) => node.attrs?.status === 'processing')
-      ?? editableIndexes[0];
-    const nextProcessingIndex = editableIndexes
-      .find(({ node }) => node.attrs?.blockId !== target.node.attrs?.blockId && node.attrs?.status === 'unprocessed')
-      ?.index ?? null;
+      ?? editableBlocks.find((node) => node.attrs?.blockId === currentProcessingId)
+      ?? editableBlocks.find((node) => node.attrs?.status === 'processing')
+      ?? editableBlocks[0];
+    const nextProcessingBlockId = chooseNextUnfinishedBlock(
+      editableBlocks.map((node) => ({
+        blockId: node.attrs?.blockId ?? null,
+        status: node.attrs?.status ?? 'unprocessed',
+        isEmpty: false,
+      })),
+      target.attrs?.blockId ?? null,
+    )?.blockId ?? null;
 
-    const nextContent = {
-      type: sourceContent.type ?? 'doc',
-      content: nodes.map((node, index) => {
-        if (!isEditableDemoBlock(node)) return node;
-        const attrs = { ...(node.attrs ?? {}) };
-        let nextNode = node;
+    const nextContent = mapEditableBlocks(sourceContent, (node) => {
+      if (!textFromNode(node).trim()) return node;
+      const attrs = { ...(node.attrs ?? {}) };
+      const blockId = attrs.blockId ?? null;
 
-        if (index === target.index) {
-          attrs.status = nextStatus;
-          if (replacementText !== null) {
-            attrs.length = replacementText.length;
-            nextNode = {
-              ...node,
-              attrs,
-              content: [{ type: 'text', text: replacementText }],
-            };
-          } else {
-            nextNode = { ...node, attrs };
-          }
-        } else if (index === nextProcessingIndex) {
-          attrs.status = 'processing';
-          nextNode = { ...node, attrs };
-        } else if (attrs.status === 'processing') {
-          attrs.status = 'unprocessed';
-          nextNode = { ...node, attrs };
+      if (blockId === target.attrs?.blockId) {
+        attrs.status = nextStatus;
+        if (replacementText !== null) {
+          attrs.length = replacementText.length;
+          return {
+            ...node,
+            attrs,
+            content: [{ type: 'text', text: replacementText }],
+          };
         }
-
-        return nextNode;
-      }),
-    };
+        return { ...node, attrs };
+      }
+      if (blockId === nextProcessingBlockId) {
+        return { ...node, attrs: { ...attrs, status: 'processing' } };
+      }
+      if (attrs.status === 'processing') {
+        return { ...node, attrs: { ...attrs, status: 'unprocessed' } };
+      }
+      return node;
+    });
 
     const nextDraft = normalizeWorkspaceDraft(
       sourceDocument,
@@ -1198,12 +1309,12 @@ export default function WorkspacePage() {
   }
 
   function applyRewriteCard(card) {
-    const replacement = card.response || `This is placeholder response of Rewriting Card ${card.id}.`;
-    const replacementText = replacement;
-    const document = applyStatusToCurrentProcessingBlock('processed', replacementText);
+    if (!card.response) return null;
+    const document = applyStatusToSelectedBlock('processed', card.response);
     if (document) {
       lockOrCompleteRewriteCards(document, `${card.title} applied. Cards refreshed for the next block.`);
     }
+    return document;
   }
 
   function toggleRewriteExplanation(cardId) {
@@ -1212,38 +1323,219 @@ export default function WorkspacePage() {
     )));
   }
 
-  function disableCurrentRewriteBlock() {
-    if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy) return;
-    const document = applyStatusToCurrentProcessingBlock('skipped');
-    if (document) {
-      lockOrCompleteRewriteCards(document, 'Current block skipped. Cards refreshed for the next block.');
+  async function tryPracticeResponse(event, { showMobileFeedback = false } = {}) {
+    const target = event.currentTarget;
+    const documentId = selectedDocument?.id;
+    const blockId = activeEditorBlock?.blockId;
+    const attemptText = practiceInput.trim();
+
+    if (!documentId || !blockId) {
+      setPracticeError('Select a text block before starting practice.');
+      return;
+    }
+    if (!attemptText) {
+      setPracticeError('Write your own revision before requesting feedback.');
+      return;
+    }
+    if (practiceBusy) return;
+
+    const requestKey = currentPracticeRequestKey;
+    setPracticeBusy(true);
+    setPracticeFeedback(null);
+    setPracticeError('');
+    setWorkspaceNotice('');
+    setWorkspaceOwlError(false);
+    setWorkspaceOwlLoading(true);
+    if (showMobileFeedback) setMobilePracticeIndex(1);
+    void runWorkspaceMagic(target);
+
+    try {
+      if (workspaceDirty) {
+        const saved = await saveWorkspaceDocument();
+        if (!saved) {
+          setPracticeError('Save the current document before requesting AI feedback.');
+          return;
+        }
+      }
+
+      const response = await requestDocumentBlockPracticeFeedback(documentId, blockId, attemptText);
+      if (practiceContextKeyRef.current !== requestKey) return;
+
+      setPracticeFeedback(response.practice);
+      setWorkspaceNotice(response.cached ? 'Loaded saved practice feedback.' : 'Practice feedback is ready.');
+    } catch (error) {
+      if (practiceContextKeyRef.current !== requestKey) return;
+      setPracticeError(error.message || 'AI practice feedback is temporarily unavailable.');
+      triggerWorkspaceError();
+    } finally {
+      setWorkspaceOwlLoading(false);
+      setPracticeBusy(false);
     }
   }
 
-  async function tryPracticeResponse(event) {
-    const target = event.currentTarget;
-    if (practiceBusy) return;
-    setPracticeBusy(true);
-    setPracticeResponse('');
-    setWorkspaceOwlLoading(true);
-    runWorkspaceMagic(target);
-    await sleep(PLACEHOLDER_DELAY_MS);
-    setPracticeResponse(`This is placeholder practice response for: ${practiceInput || 'the selected sentence'}.`);
-    setWorkspaceOwlLoading(false);
-    setPracticeBusy(false);
+  function handlePracticeInputChange(event) {
+    setPracticeInput(event.target.value);
+    setPracticeFeedback(null);
+    setPracticeError('');
+  }
+
+  function renderPracticeComposer({ mobile = false } = {}) {
+    const learningGoals = currentBlockAnalysis?.ai?.learningGoals ?? [];
+
+    return (
+      <article
+        className="practice-card practice-card--composer"
+        data-workspace-wand-target="true"
+        onMouseEnter={holdWorkspaceWand}
+        onPointerEnter={holdWorkspaceWand}
+        onFocus={holdWorkspaceWand}
+      >
+        <div className="practice-card-heading">
+          <strong>Your revision</strong>
+          <span>{practiceInput.length} / {PRACTICE_MAX_CHARS}</span>
+        </div>
+        <div className="practice-goals">
+          <strong>Practice goals from analysis</strong>
+          <ul>
+            {learningGoals.length
+              ? learningGoals.map((goal) => <li key={goal}>{goal}</li>)
+              : <li>Analyze this block first to get targeted practice goals.</li>}
+          </ul>
+        </div>
+        <textarea
+          value={practiceInput}
+          onChange={handlePracticeInputChange}
+          maxLength={PRACTICE_MAX_CHARS}
+          aria-label="Your practice revision"
+          placeholder="Rewrite the selected block in your own words..."
+        />
+        {practiceError ? <p className="practice-error" role="alert">{practiceError}</p> : null}
+        <button
+          type="button"
+          onMouseEnter={holdWorkspaceWand}
+          onClick={mobile ? handleMobilePracticeTry : tryPracticeResponse}
+          disabled={practiceBusy || !activeEditorBlock?.blockId || !practiceInput.trim()}
+        >
+          {practiceBusy ? 'Reviewing...' : 'Get AI feedback'}
+        </button>
+      </article>
+    );
+  }
+
+  function renderPracticeFeedback({ mobile = false } = {}) {
+    const feedback = practiceFeedback;
+    const originalScores = feedback?.scores?.original ?? {};
+    const revisionScores = feedback?.scores?.revision ?? {};
+
+    return (
+      <article
+        className={`practice-card practice-card--response${feedback?.readyToApply ? ' is-ready' : ''}`}
+        data-workspace-wand-target="true"
+        onMouseEnter={holdWorkspaceWand}
+        onPointerEnter={holdWorkspaceWand}
+        onFocus={holdWorkspaceWand}
+        aria-live="polite"
+      >
+        <div className="practice-card-heading">
+          <strong>AI coaching</strong>
+          {feedback ? (
+            <span className={feedback.readyToApply ? 'is-ready' : 'needs-revision'}>
+              {feedback.readyToApply ? 'Ready for review' : 'Revise and retry'}
+            </span>
+          ) : null}
+        </div>
+        {practiceBusy ? <p className="practice-feedback-empty">Reviewing your revision...</p> : null}
+        {!practiceBusy && mobile && practiceError ? <p className="practice-error" role="alert">{practiceError}</p> : null}
+        {!practiceBusy && !practiceError && !feedback ? (
+          <p className="practice-feedback-empty">Submit your own revision to receive coaching.</p>
+        ) : null}
+        {feedback ? (
+          <>
+            <p className="practice-feedback-summary">{feedback.summary}</p>
+            <div className="practice-score-table">
+              <table aria-label="Original and revision score comparison">
+                <thead>
+                  <tr>
+                    <th scope="col">Measure</th>
+                    <th scope="col">Original</th>
+                    <th scope="col">Yours</th>
+                    <th scope="col">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(PRACTICE_SCORE_LABELS).map(([key, label]) => {
+                    const originalScore = originalScores[key] ?? 0;
+                    const revisionScore = revisionScores[key] ?? 0;
+                    const difference = revisionScore - originalScore;
+                    const changeClass = difference > 0
+                      ? 'is-improved'
+                      : difference < 0 ? 'is-lower' : 'is-same';
+
+                    return (
+                      <tr key={key}>
+                        <th scope="row">{label}</th>
+                        <td>{originalScore}</td>
+                        <td>{revisionScore}</td>
+                        <td className={`practice-score-change ${changeClass}`}>
+                          {difference > 0 ? `+${difference}` : difference}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <section className="practice-feedback-section">
+              <h3>What you did well</h3>
+              {feedback.strengths?.length ? (
+                <ul>
+                  {feedback.strengths.map((strength) => <li key={strength}>{strength}</li>)}
+                </ul>
+              ) : (
+                <p>No clear improvement from the original yet.</p>
+              )}
+            </section>
+            <section className="practice-feedback-section">
+              <h3>Hints for your next revision</h3>
+              {feedback.hints?.length ? (
+                <div className="practice-hint-list">
+                  {feedback.hints.map((hint, index) => (
+                    <article className={`practice-hint priority-${hint.priority}`} key={`${hint.issue}-${index}`}>
+                      <div>
+                        <strong>{hint.issue}</strong>
+                        <span>{hint.priority}</span>
+                      </div>
+                      <p>{hint.explanation}</p>
+                      <p className="practice-try"><strong>Try:</strong> <q>{hint.suggestedPhrase}</q></p>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p>No substantial issues were identified.</p>
+              )}
+            </section>
+            <div className="practice-next-step">
+              <strong>Next step</strong>
+              <p>{feedback.nextStep}</p>
+            </div>
+            {mobile ? (
+              <button type="button" onClick={() => setMobilePracticeIndex(0)}>Revise my attempt</button>
+            ) : null}
+          </>
+        ) : null}
+      </article>
+    );
   }
 
   function renderRewriteCard(card) {
     return (
       <article
         key={card.id}
-        className={`rewrite-card${card.error ? ' has-error' : ''}${rewriteCardsLocked ? ' is-locked' : ''}`}
+        className={`rewrite-card${card.error ? ' has-error' : ''}${rewriteCardsLocked ? ' is-locked' : ''}${card.meaningPreserved === false ? ' is-unsafe' : ''}`}
         data-workspace-wand-target="true"
         onMouseEnter={holdWorkspaceWand}
         onPointerEnter={holdWorkspaceWand}
         onFocus={holdWorkspaceWand}
-        onClick={(event) => handleRewriteCardClick(card, event)}
-        tabIndex={0}
       >
         <div className="rewrite-card-header">
           <strong>{card.title}</strong>
@@ -1255,10 +1547,46 @@ export default function WorkspacePage() {
             }}
             disabled={rewriteBusy || rewriteCardsLocked || rewriteAllCompleted}
           >
-            Regenerate
+            {card.response ? 'Regenerate' : 'Generate'}
           </button>
         </div>
-        <p>{card.error || card.response || 'Hover for wand, click to use magic, or regenerate a placeholder response.'}</p>
+        <p className="rewrite-card-best-for">{card.bestFor}</p>
+        <p className="rewrite-card-focus"><strong>Focus:</strong> {card.focus}</p>
+        {card.error ? <p className="rewrite-card-error">{card.error}</p> : null}
+        {card.response ? (
+          <>
+            <p className="rewrite-card-response">{card.response}</p>
+            {card.warnings.length ? (
+              <ul className="rewrite-card-warnings">
+                {card.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            ) : null}
+            <div className="rewrite-card-actions">
+              <button type="button" onClick={() => toggleRewriteExplanation(card.id)}>
+                {card.applyWithExplanation ? 'Hide explanation' : 'Why this works'}
+              </button>
+              <button
+                type="button"
+                className="rewrite-card-apply"
+                onClick={(event) => handleRewriteCardClick(card, event)}
+                disabled={rewriteBusy || rewriteCardsLocked || !card.meaningPreserved}
+              >
+                Use this rewrite
+              </button>
+            </div>
+            {card.applyWithExplanation ? (
+              <div className="rewrite-card-explanation">
+                <p>{card.explanation}</p>
+                <ul>
+                  {card.changes.map((change) => <li key={change}>{change}</li>)}
+                </ul>
+              </div>
+            ) : null}
+            {!card.meaningPreserved ? (
+              <p className="rewrite-card-safety">This option is disabled because the model could not preserve the original meaning safely.</p>
+            ) : null}
+          </>
+        ) : null}
       </article>
     );
   }
@@ -1271,7 +1599,6 @@ export default function WorkspacePage() {
       </article>
     );
   }
-
   function moveMobileRewrite(step) {
     setMobileRewriteIndex((current) => (current + step + rewriteCards.length) % rewriteCards.length);
   }
@@ -1281,8 +1608,7 @@ export default function WorkspacePage() {
   }
 
   function handleMobilePracticeTry(event) {
-    setMobilePracticeIndex(1);
-    tryPracticeResponse(event);
+    tryPracticeResponse(event, { showMobileFeedback: true });
   }
 
   function handleMobileOwlPointerUp(event) {
@@ -1332,15 +1658,8 @@ export default function WorkspacePage() {
                     <PanelChevron direction="right" />
                   </button>
                 </div>
+                {rewriteError ? <p className="rewrite-panel-error" role="alert">{rewriteError}</p> : null}
                 {currentRewriteCard ? renderRewriteCard(currentRewriteCard) : null}
-                <button
-                  type="button"
-                  className="rewrite-disable-current"
-                  onClick={disableCurrentRewriteBlock}
-                  disabled={rewriteCardsLocked || rewriteBusy}
-                >
-                  Disable Current Block
-                </button>
               </>
             )}
           </div>
@@ -1355,36 +1674,9 @@ export default function WorkspacePage() {
                 <PanelChevron direction="right" />
               </button>
             </div>
-            {mobilePracticeIndex === 0 ? (
-              <article
-                className="practice-card"
-                data-workspace-wand-target="true"
-                onMouseEnter={holdWorkspaceWand}
-                onPointerEnter={holdWorkspaceWand}
-                onFocus={holdWorkspaceWand}
-              >
-                <p>Write a replacement sentence and try a local placeholder response.</p>
-                <textarea
-                  value={practiceInput}
-                  onChange={(event) => setPracticeInput(event.target.value)}
-                  placeholder="Type your replacement sentence..."
-                />
-                <button type="button" onMouseEnter={holdWorkspaceWand} onClick={handleMobilePracticeTry} disabled={practiceBusy}>
-                  {practiceBusy ? 'Thinking...' : 'Try Response'}
-                </button>
-              </article>
-            ) : (
-              <article
-                className="practice-card practice-card--response"
-                data-workspace-wand-target="true"
-                onMouseEnter={holdWorkspaceWand}
-                onPointerEnter={holdWorkspaceWand}
-                onFocus={holdWorkspaceWand}
-              >
-                <span>View only</span>
-                <p>{practiceResponse || 'Responses will appear here after the 5s placeholder delay.'}</p>
-              </article>
-            )}
+            {mobilePracticeIndex === 0
+              ? renderPracticeComposer({ mobile: true })
+              : renderPracticeFeedback({ mobile: true })}
           </div>
         )}
       </section>
@@ -1392,89 +1684,147 @@ export default function WorkspacePage() {
   }
 
   function renderAnalysisStats() {
-    const blocks = selectedDocument?.blocks ?? [];
-    const documentText = blocks.map((block) => block?.text_content ?? '').join(' ').trim();
-    const words = documentText ? documentText.split(/\s+/) : [];
-    const totalBlocks = blocks.length;
-    const activeSignals = Object.entries(analysisSignals).filter(([, enabled]) => enabled).length;
-    const completion = Math.round(Number(selectedDocument?.completed_rate ?? 0) * 100);
-    const avgSentenceLength = totalBlocks ? (words.length / Math.max(totalBlocks, 1)).toFixed(1) : '0.0';
-    const passivePercent = Math.min(48, Math.max(12, 12 + totalBlocks * 5));
-    const nominalPercent = Math.min(52, Math.max(18, 14 + Math.round(words.length / 12)));
-    const cohesionScore = Math.min(0.99, Math.max(0.31, 0.41 + completion / 220)).toFixed(2);
-    const toneFit = Math.min(96, Math.max(34, completion || 34));
-    const compression = Math.min(90, Math.max(22, 22 + totalBlocks * 9));
-    const rewritePriority = Math.min(92, Math.max(28, 28 + activeSignals * 14 + Math.max(0, 3 - totalBlocks) * 4));
-    const signalCounts = {
-      passive: Math.max(1, Math.round(totalBlocks * 1.5) || 1),
-      nominalization: Math.max(2, Math.round(words.length / 7) || 2),
-      hedging: Math.max(1, Math.round(totalBlocks / 2) || 1),
-      transitions: Math.max(1, totalBlocks - 1 || 1),
-    };
+    const analysis = currentBlockAnalysis;
+    const metrics = analysis?.deterministic;
+    const ai = analysis?.ai;
+    const sourceLookup = ai?.sourceLookup;
+    const filterCounts = Object.fromEntries(Object.keys(ANALYSIS_FILTER_LABELS).map((key) => [
+      key,
+      ai?.issues?.filter((issue) => issue.type === key).length ?? null,
+    ]));
 
     return (
       <>
-        <div className="analysis-stat-grid">
-          <div className="analysis-stat-card">
-            <strong>{avgSentenceLength}</strong>
-            <span>Avg. sentence length</span>
-          </div>
-          <div className="analysis-stat-card">
-            <strong>{passivePercent}%</strong>
-            <span>Passive voice</span>
-          </div>
-          <div className="analysis-stat-card">
-            <strong>{nominalPercent}%</strong>
-            <span>Nominal density</span>
-          </div>
-          <div className="analysis-stat-card">
-            <strong>{cohesionScore}</strong>
-            <span>Cohesion score</span>
-          </div>
-        </div>
-
         <div className="analysis-filter-list">
-          {Object.entries(ANALYSIS_SIGNAL_LABELS).map(([key, label]) => (
+          {Object.entries(ANALYSIS_FILTER_LABELS).map(([key, label]) => (
             <label key={key} className="analysis-filter-row">
               <input
                 type="checkbox"
-                checked={analysisSignals[key]}
+                checked={analysisFilters[key]}
                 onChange={() => {
-                  setAnalysisSignals((current) => ({
+                  setAnalysisFilters((current) => ({
                     ...current,
                     [key]: !current[key],
                   }));
                 }}
               />
               <span>{label}</span>
-              <span className="analysis-filter-count">{signalCounts[key]}</span>
+              <span className="analysis-filter-count">{filterCounts[key] ?? '—'}</span>
             </label>
           ))}
         </div>
 
-        <dl className="analysis-stats">
-          <div>
-            <dt>Academic tone fit</dt>
-            <dd>{toneFit}%</dd>
+        <button
+          type="button"
+          className="analysis-run-button"
+          onClick={analyzeActiveBlock}
+          disabled={analysisBusy || !activeEditorBlock?.blockId || !selectedAnalysisFilters.length}
+        >
+          {analysisBusy ? 'Analyzing block...' : analysis ? 'Analyze again' : 'Analyze selected block'}
+        </button>
+
+        {analysisError ? <p className="analysis-error" role="alert">{analysisError}</p> : null}
+
+        {analysis ? (
+          <>
+            <div className="analysis-result-heading">
+              <strong>{ai.summary}</strong>
+              <span>{ai.purpose} · {analysis.model}</span>
+            </div>
+
+            <div className="analysis-stat-grid">
+              <div className="analysis-stat-card">
+                <strong>{metrics.wordCount}</strong>
+                <span>Words</span>
+              </div>
+              <div className="analysis-stat-card">
+                <strong>{metrics.averageSentenceLength}</strong>
+                <span>Avg. sentence length</span>
+              </div>
+              <div className="analysis-stat-card">
+                <strong>{metrics.sentenceCount}</strong>
+                <span>Sentences</span>
+              </div>
+              <div className="analysis-stat-card">
+                <strong>{metrics.characterCount}</strong>
+                <span>Characters</span>
+              </div>
+            </div>
+
+            {sourceLookup && sourceLookup.status !== 'not-needed' ? (
+              <section className="analysis-source-lookup">
+                <div className="analysis-source-lookup-heading">
+                  <h3>External source check</h3>
+                  <span>MCP · Crossref</span>
+                </div>
+
+                {sourceLookup.items?.length ? (
+                  <ul>
+                    {sourceLookup.items.map((source) => (
+                      <li key={source.doi}>
+                        <strong>{source.title}</strong>
+                        <span>
+                          {[
+                            source.authors?.join(', '),
+                            source.publishedYear,
+                            source.containerTitle,
+                          ].filter(Boolean).join(' · ') || 'Bibliographic metadata'}
+                        </span>
+                        <code>{source.doi}</code>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>Crossref could not be reached. Analysis continued without external metadata.</p>
+                )}
+
+                {sourceLookup.status === 'partial' ? (
+                  <small>Some DOI records could not be retrieved.</small>
+                ) : null}
+              </section>
+            ) : null}
+
+            <dl className="analysis-stats">
+              {Object.entries(ai.scores).map(([label, score], index) => (
+                <div className="analysis-score-row" key={label}>
+                  <div>
+                    <dt>{label}</dt>
+                    <dd>{score}%</dd>
+                  </div>
+                  <div className="analysis-bar-track">
+                    <div
+                      className={`analysis-bar-fill${index === 0 ? ' analysis-bar-fill--green' : ''}`}
+                      style={{ width: `${score}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </dl>
+
+            <div className="analysis-issue-list">
+              <h3>Coaching notes</h3>
+              {ai.issues.length ? ai.issues.map((issue, index) => (
+                <article key={`${issue.type}-${index}`} className={`analysis-issue analysis-issue--${issue.severity}`}>
+                  <div><strong>{ANALYSIS_FILTER_LABELS[issue.type]}</strong><span>{issue.severity}</span></div>
+                  <q>{issue.evidence}</q>
+                  <p>{issue.explanation}</p>
+                  <small>{issue.suggestion}</small>
+                </article>
+              )) : <p>No selected issues were found in this block.</p>}
+            </div>
+
+            <div className="analysis-learning-goals">
+              <h3>Practice goals</h3>
+              <ul>
+                {ai.learningGoals.map((goal) => <li key={goal}>{goal}</li>)}
+              </ul>
+            </div>
+          </>
+        ) : (
+          <div className="analysis-empty-result">
+            Analysis uses this block and its immediate neighbors. The full paper is not sent.
           </div>
-          <div className="analysis-bar-track">
-            <div className="analysis-bar-fill analysis-bar-fill--green" style={{ width: `${toneFit}%` }} />
-          </div>
-          <div>
-            <dt>Context compression</dt>
-            <dd>{compression}%</dd>
-          </div>
-          <div className="analysis-bar-track">
-            <div className="analysis-bar-fill" style={{ width: `${compression}%` }} />
-          </div>
-          <div>
-            <dt>Rewrite priority</dt>
-            <dd>{rewritePriority}%</dd>
-          </div>
-          <div className="analysis-bar-track">
-            <div className="analysis-bar-fill analysis-bar-fill--amber" style={{ width: `${rewritePriority}%` }} />
-          </div>
-        </dl>
+        )}
       </>
     );
   }
@@ -1532,8 +1882,9 @@ export default function WorkspacePage() {
           ) : null}
           {mobileOptionsTab === 'analyzing' ? (
             <section className="workspace-mode-card workspace-mode-card--interactive">
-              <h2>Analyzing</h2>
-              <p>Local writing signals and style-fit grades stay editable here.</p>
+              {!currentBlockAnalysis ? (
+                <p>Select a block, choose your goals, and learn with our AI coach.</p>
+              ) : null}
               {renderAnalysisStats()}
             </section>
           ) : null}
@@ -1546,8 +1897,9 @@ export default function WorkspacePage() {
     if (workspaceMode === 'analyzing') {
       return (
         <section className="workspace-mode-card workspace-mode-card--interactive">
-          <h2>Analyzing</h2>
-          <p>Local writing signals and style-fit grades stay editable here.</p>
+          {!currentBlockAnalysis ? (
+            <p>Select a block, choose your goals, and learn with our AI coach.</p>
+          ) : null}
           {renderAnalysisStats()}
         </section>
       );
@@ -1556,19 +1908,7 @@ export default function WorkspacePage() {
     if (workspaceMode === 'rewriting') {
       return (
         <section className="workspace-mode-card workspace-mode-card--interactive">
-          <div className="workspace-mode-card-title-row">
-            <h2>Rewriting</h2>
-            {!rewriteAllCompleted ? (
-              <button
-                type="button"
-                className="rewrite-disable-current"
-                onClick={disableCurrentRewriteBlock}
-                disabled={rewriteCardsLocked || rewriteBusy}
-              >
-                Disable Current Block
-              </button>
-            ) : null}
-          </div>
+          {rewriteError ? <p className="rewrite-panel-error" role="alert">{rewriteError}</p> : null}
           <div className="rewrite-card-list">
             {rewriteAllCompleted ? renderRewriteCompleteCard() : rewriteCards.map((card) => renderRewriteCard(card))}
           </div>
@@ -1578,34 +1918,8 @@ export default function WorkspacePage() {
 
     return (
       <section className="workspace-mode-card workspace-mode-card--interactive">
-        <h2>Practicing</h2>
-        <article
-          className="practice-card"
-          data-workspace-wand-target="true"
-          onMouseEnter={holdWorkspaceWand}
-          onPointerEnter={holdWorkspaceWand}
-          onFocus={holdWorkspaceWand}
-        >
-          <p>Write a replacement sentence and try a local placeholder response.</p>
-          <textarea
-            value={practiceInput}
-            onChange={(event) => setPracticeInput(event.target.value)}
-            placeholder="Type your replacement sentence..."
-          />
-          <button type="button" onMouseEnter={holdWorkspaceWand} onClick={tryPracticeResponse} disabled={practiceBusy}>
-            {practiceBusy ? 'Thinking...' : 'Try Response'}
-          </button>
-        </article>
-        <article
-          className="practice-card practice-card--response"
-          data-workspace-wand-target="true"
-          onMouseEnter={holdWorkspaceWand}
-          onPointerEnter={holdWorkspaceWand}
-          onFocus={holdWorkspaceWand}
-        >
-          <span>View only</span>
-          <p>{practiceResponse || 'Responses will appear here after the 5s placeholder delay.'}</p>
-        </article>
+        {renderPracticeComposer()}
+        {renderPracticeFeedback()}
       </section>
     );
   }
@@ -1619,11 +1933,16 @@ export default function WorkspacePage() {
   }
 
   if (view === 'workspace') {
-    const documentTitle = selectedDocument?.title ?? 'Assignment 2: article 2';
-    const headerNotice = /document not found/i.test(workspaceNotice) ? '' : workspaceNotice;
-    const recentDocuments = workspaceHistoryDocuments.length
-      ? workspaceHistoryDocuments
-      : workspaceHistoryFallback(selectedDocument);
+    if (!selectedDocument) {
+      return (
+        <main className="document-workspace-page">
+          <p role="status">{workspaceNotice || 'Loading document...'}</p>
+        </main>
+      );
+    }
+
+    const documentTitle = selectedDocument.title || 'Untitled document';
+    const recentDocuments = workspaceHistoryDocuments;
 
     return (
       <main className={`document-workspace-page${workspaceSidebarOpen ? '' : ' is-sidebar-collapsed'}`}>
@@ -1666,7 +1985,6 @@ export default function WorkspacePage() {
 
         <section className="workspace-paper-region" aria-label="Document editor">
           <div className="workspace-paper-header">
-            <button type="button" className="workspace-back-button" onClick={requestWorkspaceBack}>Back</button>
             <div className="workspace-paper-header-main">
               <input
                 className="workspace-title-input"
@@ -1675,9 +1993,6 @@ export default function WorkspacePage() {
                 aria-label="Document title"
               />
             </div>
-            {(headerNotice || workspaceDirty) && (
-              <small>{headerNotice || 'Unsaved changes'}</small>
-            )}
             <button
               ref={mobileOptionsButtonRef}
               type="button"
@@ -1690,6 +2005,15 @@ export default function WorkspacePage() {
               <span />
               <span />
             </button>
+            <button
+              type="button"
+              className="workspace-back-button"
+              onClick={requestWorkspaceBack}
+              aria-label="Leave workspace"
+              title="Leave workspace"
+            >
+              <CloseIcon />
+            </button>
           </div>
           <DocumentEditor
             ref={documentEditorRef}
@@ -1699,6 +2023,7 @@ export default function WorkspacePage() {
             onChange={handleEditorChange}
             onBlockStatusChange={handleEditorBlockStatusChange}
             onActiveBlockChange={handleActiveEditorBlockChange}
+            analysisHighlights={analysisHighlights}
             onSave={() => saveWorkspaceDocument()}
             saveDisabled={!workspaceDirty}
             saving={workspaceSaving}

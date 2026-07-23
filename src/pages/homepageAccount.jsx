@@ -1,5 +1,5 @@
 import lottie from 'lottie-web';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import owlUrl from '../assets/owl.svg';
 import streakAnimation from '../assets/streak_lottie.json';
 
@@ -16,10 +16,9 @@ function UploadIcon() {
 export default function HomepageAccount({ user, onClose, onLogout, onUploadProfile }) {
   const inputRef = useRef(null);
   const streakRef = useRef(null);
-  const [localPreview, setLocalPreview] = useState('');
   const streakDays = Math.max(1, Number(user?.stats?.streak_day_count ?? 1));
-  const avatarSrc = localPreview || user?.profilePictureUrl || (user?.hasProfilePicture ? '/api/users/me/profile-picture' : owlUrl);
-  const hasCustomAvatar = Boolean(localPreview || user?.profilePictureUrl || user?.hasProfilePicture);
+  const avatarSrc = user?.profilePictureUrl || (user?.hasProfilePicture ? '/api/users/me/profile-picture' : owlUrl);
+  const hasCustomAvatar = Boolean(user?.profilePictureUrl || user?.hasProfilePicture);
 
   useEffect(() => {
     if (!streakRef.current) return undefined;
@@ -37,11 +36,10 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
     };
   }, []);
 
-  function handleFileChange(event) {
+  async function handleFileChange(event) {
     const file = event.target.files?.[0];
     if (!file) return;
-    setLocalPreview(URL.createObjectURL(file));
-    onUploadProfile?.(file);
+    await onUploadProfile?.(file);
     event.target.value = '';
   }
 

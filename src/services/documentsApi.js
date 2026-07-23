@@ -20,10 +20,11 @@ export function saveDocument(documentId, payload) {
   });
 }
 
-export function uploadDocument(file, academicStyle = 'APA') {
+export function uploadDocument(file, academicStyle = 'APA', partitionMode = 'semantic') {
   const formData = new FormData();
   formData.append('file', file);
   formData.append('academicStyle', academicStyle);
+  formData.append('partitionMode', partitionMode);
   return requestJson('/documents/upload', {
     method: 'POST',
     body: formData,
@@ -38,5 +39,32 @@ export function updateDocumentBlockStatus(documentId, blockId, status) {
   return requestJson(`/documents/${documentId}/blocks/${blockId}`, {
     method: 'PATCH',
     body: JSON.stringify({ status }),
+  });
+}
+
+export function analyzeDocumentBlock(documentId, blockId, filters) {
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/analyze`, {
+    method: 'POST',
+    body: JSON.stringify({ filters }),
+  });
+}
+
+export function generateDocumentBlockRewrites(documentId, blockId, { tone, force = false }) {
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/rewrites`, {
+    method: 'POST',
+    body: JSON.stringify({ tone, force }),
+  });
+}
+
+export function acceptDocumentBlockRewrite(documentId, blockId, rewriteId) {
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/rewrites/${rewriteId}/accept`, {
+    method: 'POST',
+  });
+}
+
+export function requestDocumentBlockPracticeFeedback(documentId, blockId, attemptText) {
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/practice-feedback`, {
+    method: 'POST',
+    body: JSON.stringify({ attemptText }),
   });
 }

@@ -10,7 +10,7 @@ const DEFAULT_BLOCK_ATTRS = {
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const BLOCK_NODE_TYPES = new Set(['paragraph', 'heading']);
+const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 
 function styleAttrsFromSettings(styleSettings = {}) {
@@ -44,7 +44,7 @@ function normalizeBlockInput(input) {
   if (typeof input === 'string') {
     return {
       text: input,
-      attrs: {},
+      attrs: { paragraphIndex: null },
       content: input ? [{ type: 'text', text: input }] : [],
     };
   }
@@ -70,6 +70,9 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
     const attrs = {
       ...mergedAttrs,
       ...normalized.attrs,
+      paragraphIndex: Number.isInteger(normalized.attrs.paragraphIndex)
+        ? normalized.attrs.paragraphIndex
+        : index,
       blockId: id,
       status,
       length: normalized.text.length,
@@ -83,7 +86,7 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
       charLength: normalized.text.length,
       attrs,
       tiptapNode: {
-        type: 'paragraph',
+        type: 'blockSegment',
         attrs,
         content: normalized.content,
       },
@@ -92,9 +95,39 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
 }
 
 export function createContentJson(blocks) {
+  const paragraphs = [];
+
+  for (const block of blocks) {
+    const paragraphIndex = block.attrs.paragraphIndex;
+    let paragraph = paragraphs.at(-1);
+    if (!paragraph || paragraph.paragraphIndex !== paragraphIndex) {
+      paragraph = {
+        paragraphIndex,
+        attrs: {
+          lineHeight: block.attrs.lineHeight,
+          textIndent: block.attrs.textIndent,
+          textAlign: block.attrs.textAlign,
+          fontFamily: block.attrs.fontFamily,
+          fontSize: block.attrs.fontSize,
+        },
+        content: [],
+      };
+      paragraphs.push(paragraph);
+    }
+
+    if (paragraph.content.length) {
+      paragraph.content.push({ type: 'text', text: ' ' });
+    }
+    paragraph.content.push(block.tiptapNode);
+  }
+
   return {
     type: 'doc',
-    content: blocks.map((block) => block.tiptapNode),
+    content: paragraphs.map((paragraph) => ({
+      type: 'paragraph',
+      attrs: paragraph.attrs,
+      content: paragraph.content,
+    })),
   };
 }
 
@@ -161,29 +194,40 @@ export async function recalculateDocumentProgress(client, documentId) {
     [documentId, totalChars, completedChars, completedRate]
   );
 
+  const owner = await client.query('select user_id from documents where id = $1', [documentId]);
+  if (owner.rows[0]) {
+    await recalculateUserProgress(client, owner.rows[0].user_id);
+  }
+
+  return { totalChars, completedChars, completedRate };
+}
+
+export async function recalculateUserProgress(client, userId) {
+  const result = await client.query(
+    `
+      select
+        coalesce(sum(total_chars), 0)::int as total_chars,
+        coalesce(sum(completed_chars), 0)::int as completed_chars
+      from documents
+      where user_id = $1
+        and trashed = false
+    `,
+    [userId]
+  );
+  const totalChars = Number(result.rows[0]?.total_chars ?? 0);
+  const completedChars = Number(result.rows[0]?.completed_chars ?? 0);
+  const completedRate = totalChars > 0 ? completedChars / totalChars : 0;
+
   await client.query(
     `
       update user_stats
-      set total_chars = stats.total_chars,
-          completed_chars = stats.completed_chars,
-          completed_rate = case
-            when stats.total_chars > 0 then stats.completed_chars::numeric / stats.total_chars
-            else 0
-          end,
+      set total_chars = $2,
+          completed_chars = $3,
+          completed_rate = $4,
           updated_at = now()
-      from (
-        select
-          user_id,
-          coalesce(sum(total_chars), 0)::int as total_chars,
-          coalesce(sum(completed_chars), 0)::int as completed_chars
-        from documents
-        where trashed = false
-        group by user_id
-      ) stats
-      where user_stats.user_id = stats.user_id
-        and stats.user_id = (select user_id from documents where id = $1)
+      where user_id = $1
     `,
-    [documentId]
+    [userId, totalChars, completedChars, completedRate]
   );
 
   return { totalChars, completedChars, completedRate };
@@ -249,6 +293,20 @@ export async function chooseNextProcessingBlock(client, documentId, fromBlockId 
 }
 
 export async function updateBlockStatus(client, { documentId, blockId, status }) {
+  const target = await client.query(
+    `
+      select id
+      from document_blocks
+      where document_id = $1
+        and id = $2
+      for update
+    `,
+    [documentId, blockId]
+  );
+  if (!target.rows[0]) {
+    return { found: false, next: null };
+  }
+
   if (status === 'processing') {
     await client.query(
       `
@@ -291,7 +349,7 @@ export async function updateBlockStatus(client, { documentId, blockId, status })
   }
 
   await recalculateDocumentProgress(client, documentId);
-  return next;
+  return { found: true, next };
 }
 
 export async function replaceBlocksFromSnapshot(client, documentId, blocks) {
@@ -319,17 +377,15 @@ export async function replaceBlocksFromSnapshot(client, documentId, blocks) {
   }
 }
 
-export async function replaceBlocksFromContentJson(client, documentId, contentJson, styleSettings = {}) {
+export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
   const content = Array.isArray(contentJson?.content) ? contentJson.content : [];
   const styleAttrs = { ...DEFAULT_BLOCK_ATTRS, ...styleAttrsFromSettings(styleSettings) };
   const blockEntries = [];
-  const entryByIndex = new Map();
+  let structuralIndex = 0;
 
-  content.forEach((node, index) => {
-    if (!BLOCK_NODE_TYPES.has(node?.type)) return;
-
+  function normalizeTrackedNode(node, paragraphIndex) {
     const textContent = textFromNode(node).trim();
-    if (!textContent) return;
+    if (!textContent) return node;
 
     const existingAttrs = node.attrs ?? {};
     const blockId = validBlockId(existingAttrs.blockId) ? existingAttrs.blockId : randomUUID();
@@ -338,27 +394,88 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     const attrs = {
       ...styleAttrs,
       ...existingAttrs,
+      paragraphIndex: Number.isInteger(existingAttrs.paragraphIndex)
+        ? existingAttrs.paragraphIndex
+        : paragraphIndex,
       blockId,
       status,
       length: textContent.length,
     };
-    const entry = {
+    const tiptapNode = {
+      ...node,
+      type: 'blockSegment',
+      attrs,
+    };
+
+    blockEntries.push({
       id: blockId,
       index: blockEntries.length,
-      contentIndex: index,
       textContent,
       status,
       charLength: textContent.length,
       attrs,
-      tiptapNode: {
-        ...node,
-        attrs,
-      },
-    };
+      tiptapNode,
+    });
+    return tiptapNode;
+  }
 
-    blockEntries.push(entry);
-    entryByIndex.set(index, entry);
-  });
+  function legacyBlockSegment(node) {
+    const attrs = node?.attrs ?? {};
+    return {
+      type: 'blockSegment',
+      attrs: {
+        ...(attrs.lineHeight ? { lineHeight: attrs.lineHeight } : {}),
+        ...(attrs.textIndent ? { textIndent: attrs.textIndent } : {}),
+        ...(attrs.textAlign ? { textAlign: attrs.textAlign } : {}),
+        ...(attrs.fontFamily ? { fontFamily: attrs.fontFamily } : {}),
+        ...(attrs.fontSize ? { fontSize: attrs.fontSize } : {}),
+        ...(attrs.blockId ? { blockId: attrs.blockId } : {}),
+        ...(attrs.status ? { status: attrs.status } : {}),
+        ...(Number.isInteger(attrs.paragraphIndex) ? { paragraphIndex: attrs.paragraphIndex } : {}),
+      },
+      content: Array.isArray(node?.content) ? node.content : [],
+    };
+  }
+
+  function normalizeNode(node) {
+    if (!node || typeof node !== 'object') return node;
+    if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type)) {
+      if (!Array.isArray(node.content)) return node;
+      return { ...node, content: node.content.map(normalizeNode) };
+    }
+
+    const paragraphIndex = structuralIndex;
+    structuralIndex += 1;
+
+    const nodeContent = Array.isArray(node.content) ? node.content : [];
+    const hasInlineBlocks = nodeContent.some((child) => child?.type === 'blockSegment');
+    const {
+      blockId: _blockId,
+      status: _status,
+      length: _length,
+      paragraphIndex: _paragraphIndex,
+      ...containerAttrs
+    } = node.attrs ?? {};
+
+    return {
+      ...node,
+      attrs: {
+        ...styleAttrs,
+        ...containerAttrs,
+      },
+      content: hasInlineBlocks
+        ? nodeContent.map((child) => (
+          child?.type === 'blockSegment'
+            ? normalizeTrackedNode(child, paragraphIndex)
+            : child
+        ))
+        : (textFromNode(node).trim()
+          ? [normalizeTrackedNode(legacyBlockSegment(node), paragraphIndex)]
+          : nodeContent),
+    };
+  }
+
+  const normalizedNodes = content.map(normalizeNode);
 
   let processingSeen = false;
   for (const entry of blockEntries) {
@@ -384,12 +501,23 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
   const normalizedContent = {
     ...contentJson,
     type: contentJson?.type ?? 'doc',
-    content: content.map((node, index) => entryByIndex.get(index)?.tiptapNode ?? node),
+    content: normalizedNodes,
   };
+
+  const currentProcessingBlock = blockEntries.find((entry) => entry.status === 'processing') ?? null;
+  return {
+    contentJson: normalizedContent,
+    blockEntries,
+    currentProcessingBlockId: currentProcessingBlock?.id ?? null,
+  };
+}
+
+export async function replaceBlocksFromContentJson(client, documentId, contentJson, styleSettings = {}) {
+  const normalized = normalizeContentJsonBlocks(contentJson, styleSettings);
 
   await client.query('delete from document_blocks where document_id = $1', [documentId]);
 
-  for (const entry of blockEntries) {
+  for (const entry of normalized.blockEntries) {
     await client.query(
       `
         insert into document_blocks (
@@ -410,9 +538,8 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     );
   }
 
-  const currentProcessingBlock = blockEntries.find((entry) => entry.status === 'processing') ?? null;
   return {
-    contentJson: normalizedContent,
-    currentProcessingBlockId: currentProcessingBlock?.id ?? null,
+    contentJson: normalized.contentJson,
+    currentProcessingBlockId: normalized.currentProcessingBlockId,
   };
 }

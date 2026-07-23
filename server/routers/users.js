@@ -35,13 +35,23 @@ router.post('/me/profile-picture', upload.single('file'), async (req, res) => {
   }
 
   const user = await getOrCreateUserFromSession(res.locals.session.user);
-  const updated = await updateProfilePicture({
+  await updateProfilePicture({
     userId: user.id,
     buffer: req.file.buffer,
     mimeType: req.file.mimetype,
   });
 
-  res.json(updated);
+  const profile = await getCurrentUserProfile(res.locals.session.user);
+  const mutationId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    .test(String(req.get('x-mutation-id') ?? ''))
+    ? req.get('x-mutation-id')
+    : null;
+  req.app.get('eventPublisher')?.publishProfile({
+    authUserId: res.locals.session.user.id,
+    profile,
+    mutationId,
+  });
+  res.json(profile);
 });
 
 export default router;

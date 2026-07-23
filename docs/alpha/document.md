@@ -85,7 +85,9 @@ Semantics:
 
 - `contentJson` is the full TipTap JSON after normalization.
 - `blocks` is the frontend block inventory in document order.
-- `currentProcessingBlockId` is the single block that should be highlighted as `processing`.
+- `currentProcessingBlockId` is the single persisted processing pointer. The
+  currently selected block also receives a temporary processing outline without
+  changing this value.
 - `revision` is currently `Date.now()` and works like a cheap version stamp for rerender/sync, not a durable version.
 
 ### 3. `activeEditorBlock`
@@ -95,11 +97,17 @@ This tracks the block currently under the cursor/selection.
 ```js
 {
   blockId: string | null,
-  status: 'unprocessed' | 'processing' | 'processed' | 'skipped',
+  status: 'processing',
+  originalStatus: 'unprocessed' | 'processing' | 'processed' | 'skipped',
+  text: string,
 }
 ```
 
-It is updated from TipTap selection changes and is used as a hint when deciding which block rewrite actions should apply to.
+It is updated from TipTap selection changes and is the primary target for
+analysis, rewriting, Skip, and Complete actions. `status` is UI-only: selecting
+a block makes it appear processing, while `originalStatus` remains unchanged.
+Moving to another block removes the temporary outline and reveals the previous
+block's original status.
 
 ### 4. `editorContent`
 
@@ -281,42 +289,43 @@ Manual typing flows like this:
 
 Rewrite replacement flows differently:
 
-1. user clicks a rewriting card
-2. `handleRewriteCardClick()` runs magic animation, then calls `applyRewriteCard(card)`
-3. `applyRewriteCard()` calls `applyStatusToCurrentProcessingBlock('processed', replacementText)`
+1. user clicks **Use this rewrite**
+2. `handleRewriteCardClick()` records the accepted option and runs the magic animation
+3. `applyRewriteCard()` calls `applyStatusToSelectedBlock('processed', replacementText)`
 4. that calls `documentEditorRef.current.applyCurrentBlockStatus(...)`
 5. `DocumentEditor.applyCurrentBlockStatus()` mutates the live editor transaction:
    - marks target block `processed`
-   - replaces target text with placeholder response
+   - replaces target text with the selected AI rewrite
    - promotes the next non-empty `unprocessed` block to `processing`
    - moves selection near the next processing block when available
 6. returned snapshot is normalized again in `WorkspacePage`
 7. `workspaceDraft`, `selectedDocument`, `editorContent`, and `activeEditorBlock` are updated
 8. rewrite cards are locked briefly, then reset for the next block or replaced by the congratulations card
 
-## Change Flow For Status Dropdown / Disable
+## Change Flow For Selected-Block Actions
 
 Manual status actions use the same editor imperative API.
 
-### Dropdown
+Selecting a block does not mutate its stored status. `DocumentEditor` displays
+the selected block as temporarily processing and inserts **Skip**, **Complete**,
+and **Next block** controls at the end of its text. The controls are a ProseMirror
+widget, so they wrap after the words instead of floating over them.
 
-`EditorToolbar` calls `onBlockStatusChange(status)`.
+**Next block** changes only the TipTap selection. The block being left immediately
+returns to its stored `originalStatus`; the newly selected block receives the one
+temporary processing highlight. While a different block is selected, the stored
+processing pointer keeps its data status but uses the unprocessed presentation,
+preventing two blocks from appearing to be actively processing.
 
-That reaches:
+Clicking either button reaches:
 
 - `DocumentEditor.setSelectedBlockStatus()`
-- `DocumentEditor.applyCurrentBlockStatus({ status })`
+- `DocumentEditor.applyCurrentBlockStatus({ status, targetBlockId })`
 - `WorkspacePage.handleEditorBlockStatusChange(...)`
 
-### Disable current block
-
-`disableCurrentRewriteBlock()` calls:
-
-```js
-applyStatusToCurrentProcessingBlock('skipped')
-```
-
-That marks the current processing block as `skipped`, advances processing to the next available block, and refreshes the rewriting cards.
+The adjacent **Skip** action marks the selected block as `skipped`, advances the
+persisted processing pointer to the next available block, and refreshes the
+rewriting cards.
 
 ## How `applyCurrentBlockStatus()` Works
 

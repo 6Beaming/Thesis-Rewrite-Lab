@@ -39,3 +39,12 @@
     display: block;
   }
 }
+
+/* The workspace uses a fixed viewport, but the subscription cards must retain
+ * normal document scrolling on every viewport size. */
+html.subscription-page-active,
+body.subscription-page-active {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+}

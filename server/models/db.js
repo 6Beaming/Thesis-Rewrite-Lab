@@ -12,6 +12,10 @@ export function query(text, params) {
   return pool.query(text, params);
 }
 
+export function closeDatabase() {
+  return pool.end();
+}
+
 export async function withTransaction(callback) {
   const client = await pool.connect();
   try {

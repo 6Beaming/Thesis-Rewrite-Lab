@@ -22,10 +22,16 @@ const authErrorMessages = {
 };
 
 function getInitialAuthError() {
-  const code = new URLSearchParams(window.location.search).get('error');
-  return code
-    ? authErrorMessages[code] || 'Authentication could not be completed.'
-    : '';
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('error');
+  if (code) return authErrorMessages[code] || 'Authentication could not be completed.';
+  const reason = params.get('reason');
+  const reasonMessages = {
+    'subscription-required': 'A Pro subscription is required to enter the workspace.',
+    'checkout-cancelled': 'Checkout was cancelled. Sign in again when you are ready to subscribe.',
+    'payment-failed': 'Your payment was not completed. Sign in again to try Checkout.',
+  };
+  return reasonMessages[reason] || '';
 }
 
 export function AuthProvider({ children }) {
@@ -51,6 +57,16 @@ export function AuthProvider({ children }) {
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    function handleExpiredSession() {
+      setSession(null);
+      setError('Your session expired. Sign in with Google again.');
+    }
+
+    window.addEventListener('app:auth-expired', handleExpiredSession);
+    return () => window.removeEventListener('app:auth-expired', handleExpiredSession);
+  }, []);
+
   async function runAuthAction(action) {
     setError('');
     setIsSubmitting(true);
@@ -67,8 +83,8 @@ export function AuthProvider({ children }) {
     return runAuthAction(() => signInWithGoogle(returnTo));
   }
 
-  function signOut() {
-    return runAuthAction(() => submitSignOut(`${window.location.origin}/`));
+  function signOut(returnTo = `${window.location.origin}/`) {
+    return runAuthAction(() => submitSignOut(returnTo));
   }
 
   return (

@@ -4,6 +4,7 @@ import {
   createContentJson,
   insertBlocks,
   recalculateDocumentProgress,
+  recalculateUserProgress,
   replaceBlocksFromContentJson,
   updateBlockStatus,
 } from './blocks.js';
@@ -15,6 +16,34 @@ const SORT_MAP = {
   most_completed: 'completed_rate desc, updated_at desc',
   least_completed: 'completed_rate asc, updated_at desc',
 };
+
+async function loadDocument(runQuery, documentId, userId) {
+  const documentResult = await runQuery(
+    `
+      select id, user_id, title, academic_style, style_settings, content_json,
+             original_filename, original_mime, completed_chars, total_chars,
+             completed_rate, current_processing_block_id, revision, trashed,
+             trashed_at, created_at, updated_at
+      from documents
+      where id = $1
+        and user_id = $2
+    `,
+    [documentId, userId]
+  );
+  const document = documentResult.rows[0];
+  if (!document) return null;
+
+  const blocks = await runQuery(
+    `
+      select id, document_id, block_index, text_content, status, char_length, attrs, tiptap_node, created_at, updated_at
+      from document_blocks
+      where document_id = $1
+      order by block_index asc
+    `,
+    [documentId]
+  );
+  return { ...document, blocks: blocks.rows };
+}
 
 export async function listDocuments({ userId, q = '', sort = 'most_recent', trashed = false }) {
   const sortSql = SORT_MAP[sort] ?? SORT_MAP.most_recent;
@@ -28,6 +57,7 @@ export async function listDocuments({ userId, q = '', sort = 'most_recent', tras
         d.total_chars,
         d.completed_rate,
         d.current_processing_block_id,
+        d.revision,
         d.original_filename,
         d.trashed,
         d.trashed_at,
@@ -55,37 +85,13 @@ export async function listDocuments({ userId, q = '', sort = 'most_recent', tras
 }
 
 export async function getDocument(documentId, userId) {
-  const documentResult = await query(
-    `
-      select *
-      from documents
-      where id = $1
-        and user_id = $2
-    `,
-    [documentId, userId]
-  );
-  const document = documentResult.rows[0];
-  if (!document) {
-    return null;
-  }
-
-  const blocks = await query(
-    `
-      select id, document_id, block_index, text_content, status, char_length, attrs, tiptap_node, created_at, updated_at
-      from document_blocks
-      where document_id = $1
-      order by block_index asc
-    `,
-    [documentId]
-  );
-
-  return { ...document, blocks: blocks.rows };
+  return loadDocument(query, documentId, userId);
 }
 
 export async function getDocumentRate(documentId, userId) {
   const result = await query(
     `
-      select completed_chars, total_chars, completed_rate
+      select completed_chars, total_chars, completed_rate, revision
       from documents
       where id = $1
         and user_id = $2
@@ -104,13 +110,14 @@ export async function createDocumentWithBlocks({
   originalFile = null,
   originalFilename = null,
   originalMime = null,
+  returnMutation = false,
 }) {
   const safeBlocks = textBlocks.length ? textBlocks : ['Start writing your document.'];
   const blocks = createBlockRecords(safeBlocks, styleSettings);
   const contentJson = createContentJson(blocks);
   const processingBlock = blocks.find((block) => block.status === 'processing') ?? null;
 
-  const documentId = await withTransaction(async (client) => {
+  const mutation = await withTransaction(async (client) => {
     const inserted = await client.query(
       `
         insert into documents (
@@ -136,30 +143,32 @@ export async function createDocumentWithBlocks({
     const document = inserted.rows[0];
     await insertBlocks(client, document.id, blocks);
     await recalculateDocumentProgress(client, document.id);
-    await appendDocumentVersion(client, document.id, 'Initial import');
-
-    return document.id;
+    const version = await appendDocumentVersion(client, document.id, 'Initial import');
+    const committedDocument = await loadDocument(client.query.bind(client), document.id, userId);
+    return { document: committedDocument, version };
   });
 
-  return getDocument(documentId, userId);
+  return returnMutation ? mutation : mutation.document;
 }
 
-export async function createBlankDocument(userId) {
+export async function createBlankDocument(userId, options = {}) {
   return createDocumentWithBlocks({
     userId,
     title: 'Untitled document',
     textBlocks: ['Start writing your document.'],
+    returnMutation: Boolean(options.returnMutation),
   });
 }
 
-export async function saveDocument(documentId, userId, payload) {
-  return withTransaction(async (client) => {
+export async function saveDocument(documentId, userId, payload, options = {}) {
+  const mutation = await withTransaction(async (client) => {
     const existing = await client.query(
       `
-        select id
+        select id, revision
         from documents
         where id = $1
           and user_id = $2
+          and trashed = false
         for update
       `,
       [documentId, userId]
@@ -191,7 +200,8 @@ export async function saveDocument(documentId, userId, payload) {
             current_processing_block_id = case
               when $7::boolean then $8::uuid
               else current_processing_block_id
-            end
+            end,
+            revision = revision + 1
         where id = $1
           and user_id = $2
         returning *
@@ -215,79 +225,128 @@ export async function saveDocument(documentId, userId, payload) {
       await recalculateDocumentProgress(client, documentId);
     }
 
-    if (payload.createVersion) {
-      await appendDocumentVersion(client, documentId, payload.versionLabel || 'Editor auto-save');
-    }
-
-    return document;
+    const version = payload.createVersion
+      ? await appendDocumentVersion(client, documentId, payload.versionLabel || 'Editor auto-save')
+      : null;
+    return {
+      document: await loadDocument(client.query.bind(client), documentId, userId),
+      version,
+    };
   });
+  if (!mutation) return null;
+  return options.returnMutation ? mutation : mutation.document;
+}
+
+export async function userOwnsActiveDocument(documentId, userId) {
+  const result = await query(
+    `
+      select 1
+      from documents
+      where id = $1
+        and user_id = $2
+        and trashed = false
+    `,
+    [documentId, userId]
+  );
+  return Boolean(result.rows[0]);
 }
 
 export async function moveDocumentToTrash(documentId, userId) {
-  const result = await query(
-    `
-      update documents
-      set trashed = true,
-          trashed_at = now()
-      where id = $1
-        and user_id = $2
-      returning id, title, trashed, trashed_at
-    `,
-    [documentId, userId]
-  );
-  return result.rows[0] ?? null;
+  return withTransaction(async (client) => {
+    const result = await client.query(
+      `
+        update documents
+        set trashed = true,
+            trashed_at = now(),
+            revision = revision + 1
+        where id = $1
+          and user_id = $2
+          and trashed = false
+        returning id, title, trashed, trashed_at, revision, updated_at
+      `,
+      [documentId, userId]
+    );
+    if (!result.rows[0]) return null;
+    await recalculateUserProgress(client, userId);
+    return result.rows[0];
+  });
 }
 
 export async function restoreDocument(documentId, userId) {
-  const result = await query(
-    `
-      update documents
-      set trashed = false,
-          trashed_at = null
-      where id = $1
-        and user_id = $2
-      returning id, title, trashed, updated_at
-    `,
-    [documentId, userId]
-  );
-  return result.rows[0] ?? null;
+  return withTransaction(async (client) => {
+    const result = await client.query(
+      `
+        update documents
+        set trashed = false,
+            trashed_at = null,
+            revision = revision + 1
+        where id = $1
+          and user_id = $2
+          and trashed = true
+        returning id, title, trashed, trashed_at, revision, updated_at
+      `,
+      [documentId, userId]
+    );
+    if (!result.rows[0]) return null;
+    await recalculateUserProgress(client, userId);
+    return result.rows[0];
+  });
 }
 
 export async function deleteDocumentForever(documentId, userId) {
-  const result = await query(
-    `
-      delete from documents
-      where id = $1
-        and user_id = $2
-      returning id, title
-    `,
-    [documentId, userId]
-  );
-  return result.rows[0] ?? null;
+  return withTransaction(async (client) => {
+    const existing = await client.query(
+      `
+        select id, title, revision
+        from documents
+        where id = $1
+          and user_id = $2
+          and trashed = true
+        for update
+      `,
+      [documentId, userId]
+    );
+    if (!existing.rows[0]) return null;
+
+    await client.query('delete from documents where id = $1', [documentId]);
+    await recalculateUserProgress(client, userId);
+    return {
+      id: existing.rows[0].id,
+      title: existing.rows[0].title,
+      revision: Number(existing.rows[0].revision) + 1,
+      deleted: true,
+    };
+  });
 }
 
 export async function checkExpiredTrash(userId) {
-  const result = await query(
-    `
-      delete from documents
-      where user_id = $1
-        and trashed = true
-        and trashed_at < now() - interval '30 days'
-      returning id, title
-    `,
-    [userId]
-  );
-  return result.rows;
+  return withTransaction(async (client) => {
+    const result = await client.query(
+      `
+        delete from documents
+        where user_id = $1
+          and trashed = true
+          and trashed_at < now() - interval '30 days'
+        returning id, title, revision + 1 as revision
+      `,
+      [userId]
+    );
+    if (result.rowCount) {
+      await recalculateUserProgress(client, userId);
+    }
+    return result.rows.map((document) => ({ ...document, deleted: true }));
+  });
 }
 
 export async function updateDocumentBlockStatus({ documentId, userId, blockId, status }) {
   return withTransaction(async (client) => {
     const ownedDocument = await client.query(
       `
-        select id
+        select id, revision
         from documents
         where id = $1
           and user_id = $2
+          and trashed = false
         for update
       `,
       [documentId, userId]
@@ -297,8 +356,23 @@ export async function updateDocumentBlockStatus({ documentId, userId, blockId, s
       return null;
     }
 
-    const next = await updateBlockStatus(client, { documentId, blockId, status });
-    await appendDocumentVersion(client, documentId, `Block ${status}`);
-    return next;
+    const blockUpdate = await updateBlockStatus(client, { documentId, blockId, status });
+    if (!blockUpdate.found) {
+      return null;
+    }
+    const revision = await client.query(
+      `update documents
+       set revision = revision + 1
+       where id = $1
+       returning revision`,
+      [documentId]
+    );
+    const version = await appendDocumentVersion(client, documentId, `Block ${status}`);
+    return {
+      nextProcessingBlock: blockUpdate.next,
+      revision: Number(revision.rows[0].revision),
+      document: await loadDocument(client.query.bind(client), documentId, userId),
+      version,
+    };
   });
 }

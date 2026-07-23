@@ -23,6 +23,25 @@ function editedText(value) {
   return `Edited ${Math.floor(hours / 24)} days ago`;
 }
 
+function textFromContent(node) {
+  if (!node) return '';
+  if (node.type === 'text') return node.text ?? '';
+  if (!Array.isArray(node.content)) return '';
+  return node.content.map(textFromContent).join(' ');
+}
+
+function documentPreview(document) {
+  const blockText = Array.isArray(document.blocks)
+    ? document.blocks.map((block) => block.text_content ?? block.text ?? '').join(' ')
+    : '';
+  const contentText = textFromContent(document.content_json);
+  const source = blockText || contentText || document.snippet || document.secondarySnippet || '';
+  const normalized = String(source).replace(/\s+/g, ' ').trim();
+
+  if (!normalized) return 'No content yet.';
+  return normalized.length > 100 ? `${normalized.slice(0, 100).trimEnd()}...` : normalized;
+}
+
 function DocIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -34,26 +53,38 @@ function DocIcon() {
   );
 }
 
-export default function DocumentCard({ document, onOpen, onDelete }) {
+export default function DocumentCard({
+  document,
+  onOpen,
+  onDelete,
+  showMenu = true,
+  selected = false,
+}) {
   const completedRate = Math.max(0, Math.min(100, Math.round(Number(document.completed_rate ?? 0) * 100)));
+  const preview = documentPreview(document);
 
   return (
-    <article className="document-card" onClick={() => onOpen?.(document)} tabIndex={0}>
+    <article
+      className={`document-card${selected ? ' is-selected' : ''}`}
+      onClick={() => onOpen?.(document)}
+      tabIndex={0}
+    >
       <span className="document-age">{formatAge(document.updated_at)}</span>
       <span className="document-completion-hover">{completedRate}% completed</span>
-      <DocumentMenu onDelete={(event) => {
-        event?.stopPropagation?.();
-        onDelete?.(document);
-      }} />
+      {showMenu ? (
+        <DocumentMenu onDelete={(event) => {
+          event?.stopPropagation?.();
+          onDelete?.(document);
+        }} />
+      ) : null}
 
       <div className="document-icon">
         <DocIcon />
       </div>
       <div className="document-content">
         <span className="document-style">{document.academic_style || 'APA'}</span>
-        <h3>{document.title || 'Assignment 2: article 2'}</h3>
-        <p>{document.snippet || 'Assignment 2: article 2'}</p>
-        <p>{document.secondarySnippet || '(cognitive behavioral therapy)...'}</p>
+        <h3>{document.title || 'Untitled document'}</h3>
+        <p className="document-preview" title={preview}>{preview}</p>
         <time>{editedText(document.updated_at)}</time>
       </div>
     </article>
