@@ -193,11 +193,11 @@ export function cacheStageElements(stage) {
   };
 }
 
-export function clearStageModes(stage, headGroup) {
+export function clearStageModes(stage, headGroup, options = {}) {
   if (!stage) {
     return;
   }
-  stage.classList.remove(
+  const modes = [
     'mode-head-shake-left',
     'mode-head-shake-right',
     'mode-error-shake',
@@ -206,12 +206,17 @@ export function clearStageModes(stage, headGroup) {
     'right-wing-lifting',
     'right-wing-lifted',
     'right-wing-tremor',
-    'left-wing-clench',
-    'left-wing-wand-ready',
-    'wand-tremor-active',
     'eye-closed',
     'eye-surprise-active',
-  );
+  ];
+  if (!options.preserveWand) {
+    modes.push(
+      'left-wing-clench',
+      'left-wing-wand-ready',
+      'wand-tremor-active',
+    );
+  }
+  stage.classList.remove(...modes);
   if (headGroup) {
     headGroup.style.transform = '';
     headGroup.style.transition = '';

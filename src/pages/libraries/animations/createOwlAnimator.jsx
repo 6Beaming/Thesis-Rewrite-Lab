@@ -219,11 +219,9 @@ function createWandController(ctx) {
     els,
     random: randomValue,
     clearTimer,
-    clearIntervalsTracked,
     requestFrame,
     setTimeoutTracked,
     wait,
-    clearVariantTimers,
   } = ctx;
   let magicPriorityPromise = null;
 
@@ -326,20 +324,11 @@ function createWandController(ctx) {
   }
 
   function keepWandPoseActive(options = {}) {
-    const preserveIntervals = Boolean(options.preserveIntervals);
-    const preserveVariantTimers = Boolean(options.preserveVariantTimers);
     const resumeTremor = Boolean(options.resumeTremor);
     const refreshPin = Boolean(options.refreshPin);
     state.wand = 'ready';
     stopWandTremorNow();
     clearTremorTransforms();
-    if (!preserveIntervals) {
-      clearIntervalsTracked?.();
-    }
-    if (!preserveVariantTimers) {
-      clearVariantTimers?.();
-      state.activeVariant = null;
-    }
     els.stage?.classList.remove('left-wing-clench');
     els.stage?.classList.add('left-wing-wand-ready');
     const wand = getMagicWand();
@@ -477,7 +466,12 @@ function createWandController(ctx) {
       return;
     }
     state.wandSuppressUntil = 0;
-    if (state.wand === 'showing' || state.wand === 'ready' || state.wand === 'tremor') {
+    if (state.wand === 'showing') {
+      state.pendingWandShow = false;
+      refreshRetractionTimer();
+      return;
+    }
+    if (state.wand === 'ready' || state.wand === 'tremor') {
       state.pendingWandShow = false;
       keepWandPoseActive({ refreshPin: true });
       if (state.wand === 'ready' && !state.wandTremorActive) {
@@ -495,9 +489,6 @@ function createWandController(ctx) {
 
     state.pendingWandShow = false;
     state.wand = 'showing';
-    clearIntervalsTracked?.();
-    clearVariantTimers?.();
-    state.activeVariant = null;
     wand.classList.remove('is-retracting');
     snapWandPaths('intermediate');
     refreshRetractionTimer();
@@ -609,8 +600,8 @@ export function createOwlAnimator(stageRoot) {
     setIndicator(name, visible) {
       setIndicator(els, name, visible);
     },
-    clearStageModes() {
-      clearStageModes(els.stage, els.headGroup);
+    clearStageModes(options) {
+      clearStageModes(els.stage, els.headGroup, options);
     },
   };
 

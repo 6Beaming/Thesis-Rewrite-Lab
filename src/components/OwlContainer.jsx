@@ -37,6 +37,10 @@ function createOwlMarkup() {
   return svgWithId.replace('<g id="left_wing_group">', `<g id="left_wing_group">${createMagicWandMarkup()}`);
 }
 
+const OWL_INNER_HTML = Object.freeze({
+  __html: createOwlMarkup(),
+});
+
 export default function OwlContainer({
   variant = 'desktop',
   className = '',
@@ -67,7 +71,7 @@ export default function OwlContainer({
           <div
             className="owl-wrap"
             id="owl-wrap"
-            dangerouslySetInnerHTML={{ __html: createOwlMarkup() }}
+            dangerouslySetInnerHTML={OWL_INNER_HTML}
           />
           <div id="particle-layer" className="particle-layer" aria-hidden="true" />
         </section>
