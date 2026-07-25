@@ -1,7 +1,12 @@
 import { requestJson } from './request.js';
 
 export function getMe() {
-  return requestJson('/users/me');
+  return requestJson('/users/me/activity', {
+    method: 'POST',
+    body: JSON.stringify({
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    }),
+  });
 }
 
 export function uploadProfilePicture(file) {

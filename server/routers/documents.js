@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
-import { createRequire } from 'module';
 import path from 'path';
 import { upload } from '../middlewares/upload.js';
 import { resolveDocumentUpload } from '../../src/services/documentResolver.js';
+import { segmentText } from '../../src/lib/blockSegmentation/index.js';
 import { getOrCreateUserFromSession, getUserStats } from '../models/users.js';
 import {
   checkExpiredTrash,
@@ -55,9 +55,16 @@ import {
   savePracticeFeedback,
 } from '../models/practice.js';
 import { lookupAcademicSourcesViaMcp } from '../mcp/academicSources.js';
-
-const require = createRequire(import.meta.url);
-const { characterBalancedRanges } = require('../../scripts/lib/clustering.cjs');
+import {
+  correlationIdFromRequest,
+  logAiStage,
+  mapAiError,
+  publicAiError,
+} from '../ai/errors.js';
+import {
+  enqueueRewriteWindow,
+  getRewriteIdentityState,
+} from '../models/rewriteJobs.js';
 
 const router = Router();
 const aiRateLimiter = rateLimit({
@@ -80,6 +87,37 @@ function invalidInput(message) {
 function mutationIdFromRequest(req) {
   const value = String(req.get('x-mutation-id') ?? '');
   return UUID_PATTERN_LOWERCASE.test(value) ? value : null;
+}
+
+function aiRoute(handler) {
+  return async (req, res) => {
+    const correlationId = correlationIdFromRequest(req);
+    res.set('X-Correlation-Id', correlationId);
+    let currentStage = 'context-lookup';
+    const details = {
+      correlationId,
+      documentId: req.params.id,
+      blockId: req.params.blockId,
+    };
+    const ai = {
+      correlationId,
+      stage(stage, extra = {}) {
+        currentStage = stage;
+        logAiStage({ ...details, ...extra, stage });
+      },
+    };
+    try {
+      await handler(req, res, ai);
+    } catch (cause) {
+      logAiStage({
+        ...details,
+        stage: currentStage,
+        outcome: 'failed',
+        error: cause,
+      });
+      throw mapAiError(cause, { stage: currentStage, correlationId });
+    }
+  };
 }
 
 async function publishProgress(req, user, document, mutationId) {
@@ -187,33 +225,35 @@ function titleFromFilename(filename) {
   return path.basename(filename, path.extname(filename)).replace(/[_-]+/g, ' ') || 'Untitled document';
 }
 
-function sliceFormattedContent(content = [], start, end) {
+export function sliceFormattedContent(content = [], start, end) {
   const result = [];
   let offset = 0;
 
   for (const node of content) {
-    const text = node.text ?? '';
+    const isHardBreak = node.type === 'hardBreak';
+    const text = isHardBreak ? '\n' : node.text ?? '';
     const nodeEnd = offset + text.length;
     const sliceStart = Math.max(start, offset);
     const sliceEnd = Math.min(end, nodeEnd);
 
     if (sliceStart < sliceEnd) {
-      result.push({
-        ...node,
-        text: text.slice(sliceStart - offset, sliceEnd - offset),
-      });
+      result.push(isHardBreak
+        ? { ...node }
+        : {
+          ...node,
+          text: text.slice(sliceStart - offset, sliceEnd - offset),
+        });
     }
     offset = nodeEnd;
   }
 
-  return result.filter((node) => node.text);
+  return result.filter((node) => node.type === 'hardBreak' || node.text);
 }
 
-function partitionResolvedBlocks(blocks, partitionMode) {
+export function partitionResolvedBlocks(blocks, partitionMode = 'character-balanced') {
   return blocks.flatMap((block, paragraphIndex) => {
-    const ranges = characterBalancedRanges(block.text, {
-      paragraphBreak: 'blank-line',
-      partitionMode,
+    const ranges = segmentText(block.text, {
+      strategy: partitionMode === 'character' ? 'character-balanced' : partitionMode,
     });
 
     return ranges.map((range) => ({
@@ -263,9 +303,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     return;
   }
 
-  const partitionMode = req.body.partitionMode ?? process.env.DOCUMENT_PARTITION_MODE ?? 'semantic';
-  if (!['character', 'semantic'].includes(partitionMode)) {
-    res.status(400).json({ error: 'Partition mode must be character or semantic' });
+  const partitionMode = req.body.partitionMode ?? process.env.DOCUMENT_PARTITION_MODE ?? 'character';
+  if (partitionMode !== 'character') {
+    res.status(400).json({ error: 'Partition mode must be character' });
     return;
   }
 
@@ -383,7 +423,7 @@ router.patch('/:id/blocks/:blockId', async (req, res) => {
   res.json(result);
 });
 
-router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
+router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, aiRoute(async (req, res, ai) => {
   requireUuid(req.params.id, 'Document ID');
   requireUuid(req.params.blockId, 'Block ID');
   const requestedFilters = req.body?.filters;
@@ -402,6 +442,7 @@ router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
   }
 
   const user = await getOrCreateUserFromSession(res.locals.session.user);
+  ai.stage('context-lookup');
   const context = await getOwnedBlockContext({
     documentId: req.params.id,
     blockId: req.params.blockId,
@@ -415,6 +456,7 @@ router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
   const sourceTextHash = hashBlockText(context.text_content);
   const filterSignature = analysisFilterSignature(filters);
   const model = process.env.OPENAI_ANALYSIS_MODEL || 'gpt-5.4-mini';
+  ai.stage('cache-lookup', { sourceTextHash });
   const cached = await findCachedBlockAnalysis({
     documentId: context.document_id,
     blockId: context.id,
@@ -424,13 +466,19 @@ router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
     promptVersion: BLOCK_ANALYSIS_PROMPT_VERSION,
   });
   if (cached) {
-    res.json({ analysis: formatBlockAnalysis(cached), cached: true });
+    res.json({
+      analysis: formatBlockAnalysis(cached),
+      cached: true,
+      correlationId: ai.correlationId,
+    });
     return;
   }
 
   const deterministicMetrics = computeDeterministicMetrics(context.text_content);
   const sourceLookup = await lookupAcademicSourcesViaMcp(context.text_content);
+  ai.stage('provider-request', { sourceTextHash });
   const generated = await generateBlockAnalysis({ context, filters, sourceLookup });
+  ai.stage('persistence', { sourceTextHash });
   const saved = await saveBlockAnalysis({
     documentId: context.document_id,
     blockId: context.id,
@@ -444,10 +492,73 @@ router.post('/:id/blocks/:blockId/analyze', aiRateLimiter, async (req, res) => {
     promptVersion: BLOCK_ANALYSIS_PROMPT_VERSION,
   });
 
-  res.status(201).json({ analysis: formatBlockAnalysis(saved), cached: false });
-});
+  res.status(201).json({
+    analysis: formatBlockAnalysis(saved),
+    cached: false,
+    correlationId: ai.correlationId,
+  });
+}));
 
-router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => {
+router.get('/:id/blocks/:blockId/rewrites', aiRoute(async (req, res, ai) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.blockId, 'Block ID');
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  ai.stage('cache-lookup', { sourceTextHash: req.query.sourceTextHash ?? null });
+  const state = await getRewriteIdentityState({
+    documentId: req.params.id,
+    userId: user.id,
+    blockId: req.params.blockId,
+    sourceTextHash: String(req.query.sourceTextHash ?? ''),
+  });
+  if (!state) {
+    res.status(404).json({ error: 'Document block not found' });
+    return;
+  }
+  res.json({
+    ...state,
+    rewrites: state.rewrites.map(formatBlockRewrite),
+    jobs: state.jobs.map((job) => ({
+      id: job.id,
+      blockId: job.block_id,
+      sourceTextHash: job.source_text_hash,
+      partitionGeneration: Number(job.partition_generation),
+      requestedTones: job.requested_tones,
+      model: job.model,
+      promptVersion: job.prompt_version,
+      status: job.status,
+      attemptCount: Number(job.attempt_count),
+      errorCode: job.safe_error_code,
+      createdAt: job.created_at,
+      updatedAt: job.updated_at,
+    })),
+    correlationId: ai.correlationId,
+  });
+}));
+
+router.post('/:id/blocks/:blockId/rewrites/prewarm', aiRoute(async (req, res, ai) => {
+  requireUuid(req.params.id, 'Document ID');
+  requireUuid(req.params.blockId, 'Block ID');
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  ai.stage('context-lookup');
+  const context = await getOwnedBlockContext({
+    documentId: req.params.id,
+    blockId: req.params.blockId,
+    userId: user.id,
+  });
+  if (!context) {
+    res.status(404).json({ error: 'Document block not found' });
+    return;
+  }
+  ai.stage('queue-enqueue', { sourceTextHash: hashBlockText(context.text_content) });
+  const jobs = await enqueueRewriteWindow({
+    documentId: req.params.id,
+    userId: user.id,
+    blockId: req.params.blockId,
+  });
+  res.status(202).json({ jobs, correlationId: ai.correlationId });
+}));
+
+router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, aiRoute(async (req, res, ai) => {
   requireUuid(req.params.id, 'Document ID');
   requireUuid(req.params.blockId, 'Block ID');
   const tone = normalizeRewriteTone(req.body?.tone);
@@ -459,6 +570,7 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => 
   }
 
   const user = await getOrCreateUserFromSession(res.locals.session.user);
+  ai.stage('context-lookup');
   const context = await getOwnedBlockContext({
     documentId: req.params.id,
     blockId: req.params.blockId,
@@ -472,8 +584,19 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => 
   const tones = [tone];
   const sourceTextHash = hashBlockText(context.text_content);
   const model = process.env.OPENAI_REWRITE_MODEL || 'gpt-5.4-mini';
+  const identity = {
+    documentId: context.document_id,
+    blockId: context.id,
+    sourceTextHash,
+    promptVersion: BLOCK_ANALYSIS_PROMPT_VERSION,
+    partitionGeneration: Number(context.partition_generation) || 0,
+    tone,
+    model,
+    promptVersion: BLOCK_REWRITE_PROMPT_VERSION,
+  };
 
   if (!force) {
+    ai.stage('cache-lookup', { sourceTextHash });
     const cached = await findCachedBlockRewrites({
       documentId: context.document_id,
       blockId: context.id,
@@ -485,12 +608,35 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => 
     if (cached.length === tones.length) {
       const order = new Map(tones.map((item, index) => [item, index]));
       cached.sort((a, b) => order.get(a.tone) - order.get(b.tone));
-      res.json({ rewrites: cached.map(formatBlockRewrite), cached: true });
+      res.json({
+        rewrites: cached.map(formatBlockRewrite),
+        cached: true,
+        identity,
+        correlationId: ai.correlationId,
+      });
       return;
     }
   }
 
+  ai.stage('provider-request', { sourceTextHash });
   const generated = await generateBlockRewrites({ context, tone });
+  ai.stage('context-recheck', { sourceTextHash });
+  const freshContext = await getOwnedBlockContext({
+    documentId: req.params.id,
+    blockId: req.params.blockId,
+    userId: user.id,
+  });
+  if (
+    !freshContext
+    || hashBlockText(freshContext.text_content) !== sourceTextHash
+    || Number(freshContext.partition_generation) !== identity.partitionGeneration
+  ) {
+    throw publicAiError('STALE_BLOCK_CONTEXT', {
+      statusCode: 409,
+      correlationId: ai.correlationId,
+    });
+  }
+  ai.stage('persistence', { sourceTextHash });
   const saved = await Promise.all(generated.options.map((option) => saveBlockRewrite({
     documentId: context.document_id,
     blockId: context.id,
@@ -501,8 +647,13 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, async (req, res) => 
     promptVersion: BLOCK_REWRITE_PROMPT_VERSION,
   })));
 
-  res.status(201).json({ rewrites: saved.map(formatBlockRewrite), cached: false });
-});
+  res.status(201).json({
+    rewrites: saved.map(formatBlockRewrite),
+    cached: false,
+    identity,
+    correlationId: ai.correlationId,
+  });
+}));
 
 router.post('/:id/blocks/:blockId/rewrites/:rewriteId/accept', async (req, res) => {
   requireUuid(req.params.id, 'Document ID');
@@ -523,7 +674,7 @@ router.post('/:id/blocks/:blockId/rewrites/:rewriteId/accept', async (req, res) 
   res.json({ rewrite: formatBlockRewrite(accepted) });
 });
 
-router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req, res) => {
+router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, aiRoute(async (req, res, ai) => {
   requireUuid(req.params.id, 'Document ID');
   requireUuid(req.params.blockId, 'Block ID');
   const attemptText = normalizePracticeAttempt(req.body?.attemptText);
@@ -533,6 +684,7 @@ router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req,
   }
 
   const user = await getOrCreateUserFromSession(res.locals.session.user);
+  ai.stage('context-lookup');
   const context = await getOwnedBlockContext({
     documentId: req.params.id,
     blockId: req.params.blockId,
@@ -550,8 +702,15 @@ router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req,
     blockId: context.id,
     sourceTextHash,
   });
+  if (!latestAnalysis) {
+    throw publicAiError('ANALYSIS_REQUIRED', {
+      statusCode: 409,
+      correlationId: ai.correlationId,
+    });
+  }
   const analysisContextKey = latestAnalysis?.id ?? 'none';
   const model = process.env.OPENAI_PRACTICE_MODEL || 'gpt-5.4-mini';
+  ai.stage('cache-lookup', { sourceTextHash });
   const cached = await findCachedPracticeFeedback({
     documentId: context.document_id,
     blockId: context.id,
@@ -562,15 +721,47 @@ router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req,
     promptVersion: PRACTICE_FEEDBACK_PROMPT_VERSION,
   });
   if (cached) {
-    res.json({ practice: formatPracticeFeedback(cached), cached: true });
+    res.json({
+      practice: formatPracticeFeedback(cached),
+      cached: true,
+      identity: {
+        documentId: context.document_id,
+        blockId: context.id,
+        sourceTextHash,
+        partitionGeneration: Number(context.partition_generation) || 0,
+        attemptTextHash,
+        analysisContextKey,
+        model,
+        promptVersion: PRACTICE_FEEDBACK_PROMPT_VERSION,
+      },
+      correlationId: ai.correlationId,
+    });
     return;
   }
 
+  ai.stage('provider-request', { sourceTextHash });
   const generated = await generatePracticeFeedback({
     context,
     attemptText,
     analysis: latestAnalysis ? formatBlockAnalysis(latestAnalysis) : null,
   });
+  ai.stage('context-recheck', { sourceTextHash });
+  const freshContext = await getOwnedBlockContext({
+    documentId: req.params.id,
+    blockId: req.params.blockId,
+    userId: user.id,
+  });
+  if (
+    !freshContext
+    || hashBlockText(freshContext.text_content) !== sourceTextHash
+    || Number(freshContext.partition_generation) !== Number(context.partition_generation)
+  ) {
+    throw publicAiError('STALE_BLOCK_CONTEXT', {
+      statusCode: 409,
+      correlationId: ai.correlationId,
+    });
+  }
+  ai.stage('persistence', { sourceTextHash });
   const saved = await savePracticeFeedback({
     documentId: context.document_id,
     blockId: context.id,
@@ -584,8 +775,22 @@ router.post('/:id/blocks/:blockId/practice-feedback', aiRateLimiter, async (req,
     promptVersion: PRACTICE_FEEDBACK_PROMPT_VERSION,
   });
 
-  res.status(201).json({ practice: formatPracticeFeedback(saved), cached: false });
-});
+  res.status(201).json({
+    practice: formatPracticeFeedback(saved),
+    cached: false,
+    identity: {
+      documentId: context.document_id,
+      blockId: context.id,
+      sourceTextHash,
+      partitionGeneration: Number(context.partition_generation) || 0,
+      attemptTextHash,
+      analysisContextKey,
+      model,
+      promptVersion: PRACTICE_FEEDBACK_PROMPT_VERSION,
+    },
+    correlationId: ai.correlationId,
+  });
+}));
 
 router.post('/:id/blocks/:blockId/skip', async (req, res) => {
   requireUuid(req.params.id, 'Document ID');

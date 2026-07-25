@@ -192,6 +192,30 @@ export function createEventPublisher(io, { now = () => new Date(), nextId = rand
         data: { profile: safeProfile },
       });
     },
+    publishAiJob({ authUserId, documentId, job }) {
+      return emit({
+        authUserId,
+        type: 'ai-job:updated',
+        resourceId: job.id,
+        data: {
+          job: {
+            id: job.id,
+            documentId: job.document_id,
+            blockId: job.block_id,
+            sourceTextHash: job.source_text_hash,
+            partitionGeneration: Number(job.partition_generation),
+            requestedTones: job.requested_tones,
+            model: job.model,
+            promptVersion: job.prompt_version,
+            status: job.status,
+            attemptCount: Number(job.attempt_count),
+            errorCode: job.safe_error_code,
+            updatedAt: job.updated_at,
+          },
+        },
+        documentId,
+      });
+    },
     publishSubscription({ authUserId, productUserId, subscription }) {
       const safeSubscription = publicSubscription(subscription);
       const event = emit({

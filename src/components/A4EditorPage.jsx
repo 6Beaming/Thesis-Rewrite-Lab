@@ -6,36 +6,23 @@ const A4EditorPage = forwardRef(function A4EditorPage({
   pageNumberPosition = 'Bottom center',
   style,
 }, ref) {
-  const pages = Array.from({ length: Math.max(1, pageCount) }, (_item, index) => index + 1);
-  const pageNumberClass = pageNumberPosition === 'Top right' ? ' is-page-number-top' : '';
+  const pages = Math.max(1, pageCount);
+  const pageNumberClass = pageNumberPosition === 'Top right'
+    ? ' is-page-number-top'
+    : pageNumberPosition === 'Bottom right'
+      ? ' is-page-number-bottom-right'
+      : ' is-page-number-bottom-center';
+  const edgePageNumber = pageNumberPosition === 'Top right' ? 1 : pages;
 
   return (
     <section
       ref={ref}
       className={`a4-editor-page${pageNumberClass}`}
-      aria-label={`${pages.length} A4 editor pages`}
+      aria-label={`${pages} A4 editor pages`}
       style={style}
     >
       {children}
-      <div className="a4-page-markers" aria-hidden="true">
-        {pages.map((pageNumber) => (
-          <span
-            key={pageNumber}
-            className="a4-page-number"
-            style={{ '--page-index': pageNumber - 1 }}
-          >
-            {pageNumber}
-          </span>
-        ))}
-      </div>
-      {pages.slice(1).map((pageNumber) => (
-        <span
-          key={`break-${pageNumber}`}
-          className="a4-page-boundary"
-          style={{ '--page-index': pageNumber - 1 }}
-          aria-hidden="true"
-        />
-      ))}
+      <span className="a4-page-edge-number" aria-hidden="true">{edgePageNumber}</span>
     </section>
   );
 });

@@ -14,21 +14,35 @@ import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
 } from '../lib/editorBlockCommands.js';
+import { countCharacters } from '../lib/blockSegmentation/index.js';
+import {
+  activeBlockInfoFromDraft,
+  cachePracticeResponse,
+  cacheRewriteResponse,
+  hashAiSourceText,
+  rewriteIdentityMatchesVisible,
+} from '../lib/aiResultIdentity.js';
+import {
+  normalizeBlockStatus,
+  normalizeChangeSource,
+  normalizeResumeStatus,
+} from '../lib/blockState.js';
 import { getBlackboardCssVars, getMobileContainerCssVars } from './libraries/animations/containerLayout.js';
 import { useFloatingWindow } from './libraries/useFloatingWindow.js';
 import {
   acceptDocumentBlockRewrite,
   analyzeDocumentBlock,
   generateDocumentBlockRewrites,
+  getDocumentBlockRewrites,
   getDocument,
   listDocuments,
   requestDocumentBlockPracticeFeedback,
+  prewarmDocumentBlockRewrites,
   saveDocument,
   uploadDocument,
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
 
-const REGEN_COOLDOWN_MS = 10000;
 const PRACTICE_MAX_CHARS = 4000;
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 const ANALYSIS_FILTER_LABELS = {
@@ -77,6 +91,7 @@ function createRewriteCards() {
     warnings: [],
     meaningPreserved: true,
     error: '',
+    state: 'idle',
     applyWithExplanation: false,
   }));
 }
@@ -91,6 +106,7 @@ function resetRewriteCard(card) {
     warnings: [],
     meaningPreserved: true,
     error: '',
+    state: 'idle',
     applyWithExplanation: false,
   };
 }
@@ -118,6 +134,7 @@ function UploadDocIcon() {
 function textFromNode(node) {
   if (!node) return '';
   if (node.type === 'text') return node.text ?? '';
+  if (node.type === 'hardBreak') return '\n';
   if (!Array.isArray(node.content)) return '';
   return node.content.map(textFromNode).join('');
 }
@@ -157,15 +174,26 @@ function mapEditableBlocks(node, mapBlock) {
 
 function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
   const text = block.text ?? block.text_content ?? '';
-  const status = BLOCK_STATUSES.has(block.status ?? block.attrs?.status)
-    ? (block.status ?? block.attrs?.status)
-    : 'unprocessed';
+  const status = normalizeBlockStatus(block.status ?? block.attrs?.status);
   const id = block.id ?? block.blockId ?? block.attrs?.blockId ?? `${documentId}-block-${index + 1}`;
+  const length = countCharacters(text);
+  const storedAttrs = block.attrs ?? block.tiptap_node?.attrs ?? {};
   const attrs = blockAttrs(
     id,
     status,
-    text.length,
-    block.attrs ?? block.tiptap_node?.attrs ?? {},
+    length,
+    {
+      ...storedAttrs,
+      resumeStatus: block.resume_status ?? storedAttrs.resumeStatus ?? null,
+      processingBaselineText: block.processing_baseline_text
+        ?? storedAttrs.processingBaselineText
+        ?? null,
+      changeSource: block.change_source ?? storedAttrs.changeSource ?? 'none',
+      partitionGeneration: block.partition_generation
+        ?? storedAttrs.partitionGeneration
+        ?? 0,
+      formatOverrides: block.format_overrides ?? storedAttrs.formatOverrides ?? [],
+    },
     styleSettings
   );
   const storedNode = block.tiptap_node ?? null;
@@ -185,8 +213,13 @@ function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
     text_content: text,
     status,
     isEmpty: typeof block.isEmpty === 'boolean' ? block.isEmpty : !text.trim(),
-    length: text.length,
-    char_length: text.length,
+    length,
+    char_length: length,
+    resume_status: attrs.resumeStatus,
+    processing_baseline_text: attrs.processingBaselineText,
+    change_source: attrs.changeSource,
+    partition_generation: attrs.partitionGeneration,
+    format_overrides: attrs.formatOverrides,
     attrs,
     tiptap_node: {
       ...(storedNode?.type === 'blockSegment' ? storedNode : {}),
@@ -208,7 +241,8 @@ function extractRuntimeBlocksFromContent(document, contentJson, styleSettings = 
       const text = textFromNode(node);
       const id = node.attrs?.blockId ?? `${document.id}-block-${entries.length + 1}`;
       const status = BLOCK_STATUSES.has(node.attrs?.status) ? node.attrs.status : 'unprocessed';
-      const attrs = blockAttrs(id, status, text.length, node.attrs ?? {}, styleSettings);
+      const length = countCharacters(text);
+      const attrs = blockAttrs(id, status, length, node.attrs ?? {}, styleSettings);
       entries.push({
         id,
         blockId: id,
@@ -220,8 +254,8 @@ function extractRuntimeBlocksFromContent(document, contentJson, styleSettings = 
         text_content: text,
         status,
         isEmpty: !text.trim(),
-        length: text.length,
-        char_length: text.length,
+        length,
+        char_length: length,
         attrs,
         tiptap_node: {
           ...node,
@@ -251,29 +285,50 @@ function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = 
     ? preferredProcessingBlockId
     : eligibleBlocks.find((block) => block.status === 'processing')?.id ?? null;
 
-  if (!processingBlockId) {
-    processingBlockId = eligibleBlocks.find((block) => block.status === 'unprocessed')?.id ?? null;
-  }
-
   const nextBlocks = normalizedBlocks.map((block, index) => {
     let status = block.status;
+    let resumeStatus = block.attrs.resumeStatus ?? null;
+    let processingBaselineText = block.attrs.processingBaselineText ?? null;
+    let changeSource = normalizeChangeSource(block.attrs.changeSource);
     if (block.isEmpty && status === 'processing') {
-      status = 'unprocessed';
+      status = normalizeResumeStatus(resumeStatus);
+      resumeStatus = null;
+      processingBaselineText = null;
+      changeSource = 'none';
     }
     if (!block.isEmpty) {
       if (processingBlockId && block.id === processingBlockId) {
+        if (status !== 'processing') {
+          resumeStatus = normalizeResumeStatus(status);
+          processingBaselineText = block.text;
+          changeSource = 'none';
+        }
         status = 'processing';
       } else if (status === 'processing') {
-        status = 'unprocessed';
+        const unchanged = block.text === String(processingBaselineText ?? block.text);
+        status = unchanged ? normalizeResumeStatus(resumeStatus) : 'unprocessed';
+        resumeStatus = null;
+        processingBaselineText = null;
+        changeSource = unchanged ? 'none' : 'manual';
       }
     }
 
-    const attrs = blockAttrs(block.id, status, block.text.length, block.attrs, styleSettings);
+    const attrs = blockAttrs(block.id, status, countCharacters(block.text), {
+      ...block.attrs,
+      resumeStatus,
+      processingBaselineText,
+      changeSource,
+    }, styleSettings);
     return {
       ...block,
       block_index: index,
       order: typeof block.order === 'number' ? block.order : index,
       status,
+      resume_status: attrs.resumeStatus,
+      processing_baseline_text: attrs.processingBaselineText,
+      change_source: attrs.changeSource,
+      partition_generation: attrs.partitionGeneration,
+      format_overrides: attrs.formatOverrides,
       attrs,
       tiptap_node: block.tiptap_node ? {
         ...block.tiptap_node,
@@ -318,6 +373,18 @@ function blockAttrs(blockId, status, length, existingAttrs = {}, styleSettings =
     ...existingAttrs,
     blockId,
     status,
+    resumeStatus: status === 'processing'
+      ? normalizeResumeStatus(existingAttrs.resumeStatus)
+      : null,
+    processingBaselineText: status === 'processing'
+      ? String(existingAttrs.processingBaselineText ?? '')
+      : null,
+    changeSource: normalizeChangeSource(existingAttrs.changeSource),
+    partitionGeneration: Math.max(0, Number(existingAttrs.partitionGeneration) || 0),
+    formatOverrides: existingAttrs.formatOverrides
+      && typeof existingAttrs.formatOverrides === 'object'
+      ? existingAttrs.formatOverrides
+      : [],
     length,
   };
 }
@@ -398,10 +465,11 @@ export default function WorkspacePage() {
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [showUnsavedBackPrompt, setShowUnsavedBackPrompt] = useState(false);
+  const [formatReview, setFormatReview] = useState(null);
   const [editorReloadKey, setEditorReloadKey] = useState(0);
   const [workspaceDraft, setWorkspaceDraft] = useState(null);
   const [workspaceSidebarOpen, setWorkspaceSidebarOpen] = useState(true);
-  const [workspaceMode, setWorkspaceMode] = useState('analyzing');
+  const [workspaceMode, setWorkspaceMode] = useState('rewriting');
   const [workspaceOwlLoading, setWorkspaceOwlLoading] = useState(false);
   const [workspaceOwlError, setWorkspaceOwlError] = useState(false);
   const [workspaceOwlErrorKey, setWorkspaceOwlErrorKey] = useState(0);
@@ -412,11 +480,12 @@ export default function WorkspacePage() {
   const [rewriteCards, setRewriteCards] = useState(createRewriteCards);
   const [rewriteCardsLocked, setRewriteCardsLocked] = useState(false);
   const [rewriteAllCompleted, setRewriteAllCompleted] = useState(false);
-  const [rewriteBusy, setRewriteBusy] = useState(false);
+  const [rewriteApplyBusy, setRewriteApplyBusy] = useState(false);
   const [rewriteError, setRewriteError] = useState('');
-  const [rewriteCooldownUntil, setRewriteCooldownUntil] = useState(0);
+  const [rewriteCache, setRewriteCache] = useState({});
   const [practiceInput, setPracticeInput] = useState('');
   const [practiceFeedback, setPracticeFeedback] = useState(null);
+  const [practiceCache, setPracticeCache] = useState({});
   const [practiceBusy, setPracticeBusy] = useState(false);
   const [practiceError, setPracticeError] = useState('');
   const [mobileOwlOpen, setMobileOwlOpen] = useState(false);
@@ -443,6 +512,7 @@ export default function WorkspacePage() {
   const mobileDragEndedAtRef = useRef(0);
   const rewriteRefreshTimerRef = useRef(null);
   const rewriteContextKeyRef = useRef('');
+  const rewriteVisibleIdentityRef = useRef(null);
   const practiceContextKeyRef = useRef('');
   const wandHoverTimerRef = useRef(null);
   const workspaceUploadInputRef = useRef(null);
@@ -470,11 +540,18 @@ export default function WorkspacePage() {
       .map(([filter]) => filter)
       .sort()
   ), [analysisFilters]);
+  const activeSourceBlock = activeEditorBlock?.blockId
+    ? workspaceDraft?.blocks?.find((block) => block.id === activeEditorBlock.blockId) ?? null
+    : null;
+  const activeSourceText = activeEditorBlock?.text
+    ?? activeSourceBlock?.text
+    ?? activeSourceBlock?.text_content
+    ?? '';
   const currentAnalysisKey = useMemo(() => (
     activeEditorBlock?.blockId
-      ? `${activeEditorBlock.blockId}|${activeEditorBlock.text ?? ''}|${selectedAnalysisFilters.join(',')}`
+      ? `${activeEditorBlock.blockId}|${activeSourceText}|${selectedAnalysisFilters.join(',')}`
       : ''
-  ), [activeEditorBlock?.blockId, activeEditorBlock?.text, selectedAnalysisFilters]);
+  ), [activeEditorBlock?.blockId, activeSourceText, selectedAnalysisFilters]);
   const currentBlockAnalysis = currentAnalysisKey ? blockAnalyses[currentAnalysisKey] ?? null : null;
   const analysisHighlights = useMemo(
     () => Object.values(blockAnalysisHighlights),
@@ -489,8 +566,18 @@ export default function WorkspacePage() {
     ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}`
     : '';
   rewriteContextKeyRef.current = currentRewriteKey;
+  rewriteVisibleIdentityRef.current = selectedDocument?.id && currentRewriteBlockId
+    ? {
+      documentId: selectedDocument.id,
+      blockId: currentRewriteBlockId,
+      partitionGeneration: Number(currentRewriteBlock?.partition_generation
+        ?? currentRewriteBlock?.attrs?.partitionGeneration
+        ?? 0),
+      localKey: currentRewriteKey,
+    }
+    : null;
   const currentPracticeKey = selectedDocument?.id && activeEditorBlock?.blockId
-    ? `${selectedDocument.id}|${activeEditorBlock.blockId}|${activeEditorBlock.text ?? ''}`
+    ? `${selectedDocument.id}|${activeEditorBlock.blockId}|${activeSourceText}`
     : '';
   const currentPracticeRequestKey = `${currentPracticeKey}|${practiceInput}`;
   practiceContextKeyRef.current = currentPracticeRequestKey;
@@ -500,9 +587,127 @@ export default function WorkspacePage() {
   }, [currentAnalysisKey]);
 
   useEffect(() => {
+    if (!workspaceDirty || !currentRewriteBlock?.text) return undefined;
+    let alive = true;
+    hashAiSourceText(currentRewriteBlock.text).then((sourceTextHash) => {
+      if (!alive) return;
+      setRewriteCards((cards) => cards.map((card) => {
+        const option = rewriteCache[`${sourceTextHash}|${card.tone}`];
+        if (!option) return resetRewriteCard(card);
+        return {
+          ...card,
+          rewriteId: option.id,
+          response: option.rewrittenText,
+          explanation: option.explanation,
+          changes: option.changes ?? [],
+          warnings: option.warnings ?? [],
+          meaningPreserved: option.meaningPreserved,
+          error: '',
+          state: 'cache-hit',
+        };
+      }));
+    }).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [currentRewriteBlock?.text, rewriteCache, workspaceDirty]);
+
+  useEffect(() => {
+    let alive = true;
+    let refreshTimer = null;
     setRewriteError('');
     setRewriteCards(createRewriteCards());
-  }, [currentRewriteKey]);
+    if (!selectedDocument?.id || !currentRewriteBlockId || workspaceDirty) {
+      return () => {
+        alive = false;
+      };
+    }
+
+    const visibleAtStart = { ...rewriteVisibleIdentityRef.current };
+    const applyState = (response) => {
+      if (!alive) return false;
+      const visible = rewriteVisibleIdentityRef.current;
+      if (
+        !visible
+        || visible.localKey !== visibleAtStart.localKey
+        || response.identity?.documentId !== visible.documentId
+        || response.identity?.blockId !== visible.blockId
+        || Number(response.identity?.partitionGeneration) !== visible.partitionGeneration
+        || response.canonical === false
+      ) {
+        return false;
+      }
+
+      const activeJob = response.jobs?.find((job) => (
+        job.status === 'running' || job.status === 'queued'
+      ));
+      const failedJob = response.jobs?.find((job) => job.status === 'failed');
+      setRewriteCache((cache) => {
+        const next = { ...cache };
+        for (const rewrite of response.rewrites ?? []) {
+          next[`${response.identity.sourceTextHash}|${rewrite.tone}`] = rewrite;
+        }
+        return next;
+      });
+      setRewriteCards((cards) => cards.map((card) => {
+        const option = response.rewrites?.find((rewrite) => rewrite.tone === card.tone);
+        if (option) {
+          return {
+            ...card,
+            rewriteId: option.id,
+            response: option.rewrittenText,
+            explanation: option.explanation,
+            changes: option.changes ?? [],
+            warnings: option.warnings ?? [],
+            meaningPreserved: option.meaningPreserved,
+            error: '',
+            state: 'cache-hit',
+          };
+        }
+        return {
+          ...resetRewriteCard(card),
+          state: activeJob?.status ?? (failedJob ? 'failed' : 'idle'),
+          error: failedJob?.errorCode ? 'Automatic rewrite generation failed.' : '',
+        };
+      }));
+      setWorkspaceOwlLoading(Boolean(activeJob));
+      return Boolean(activeJob);
+    };
+
+    const refresh = async ({ enqueue = false } = {}) => {
+      try {
+        if (enqueue) {
+          await prewarmDocumentBlockRewrites(selectedDocument.id, currentRewriteBlockId);
+        }
+        const response = await getDocumentBlockRewrites(
+          selectedDocument.id,
+          currentRewriteBlockId,
+        );
+        const pending = applyState(response);
+        if (pending && alive) {
+          refreshTimer = window.setTimeout(() => void refresh(), 1200);
+        }
+      } catch (error) {
+        if (!alive) return;
+        setRewriteError(error.message || 'Could not load rewrite suggestions.');
+        setRewriteCards((cards) => cards.map((card) => (
+          card.response ? card : { ...card, state: 'failed', error: error.message }
+        )));
+        setWorkspaceOwlLoading(false);
+      }
+    };
+    void refresh({ enqueue: true });
+
+    return () => {
+      alive = false;
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [
+    currentRewriteKey,
+    currentRewriteBlockId,
+    selectedDocument?.id,
+    workspaceDirty,
+  ]);
 
   useEffect(() => {
     setPracticeInput('');
@@ -510,6 +715,19 @@ export default function WorkspacePage() {
     setPracticeError('');
     setMobilePracticeIndex(0);
   }, [currentPracticeKey]);
+
+  useEffect(() => {
+    if (!currentPracticeRequestKey) return;
+    const cached = practiceCache[currentPracticeRequestKey];
+    if (cached) {
+      setPracticeFeedback(cached);
+      setPracticeError('');
+      return;
+    }
+    setPracticeFeedback((current) => (
+      current?.requestKey === currentPracticeRequestKey ? current : null
+    ));
+  }, [currentPracticeRequestKey, practiceCache]);
 
   useEffect(() => () => {
     if (rewriteRefreshTimerRef.current) {
@@ -636,10 +854,7 @@ export default function WorkspacePage() {
     setWorkspaceDraft(nextDraft);
     setSelectedDocument(documentFromWorkspaceDraft(hydratedDocument, nextDraft, nextStyleName, nextStyleSettings));
     setEditorContent(nextDraft.contentJson ?? null);
-    setActiveEditorBlock({
-      blockId: nextDraft.currentProcessingBlockId ?? null,
-      status: nextDraft.currentProcessingBlockId ? 'processing' : 'unprocessed',
-    });
+    setActiveEditorBlock(activeBlockInfoFromDraft(nextDraft));
     setEditorReloadKey((value) => value + 1);
     setStyleName(nextStyleName);
     setStyleSettings(nextStyleSettings);
@@ -736,8 +951,8 @@ export default function WorkspacePage() {
     try {
       const result = await saveDocument(document.id, {
         title: document.title,
-        academicStyle: styleName,
-        styleSettings,
+        academicStyle: document.academic_style || styleName,
+        styleSettings: document.style_settings || styleSettings,
         contentJson: document.content_json,
         createVersion: true,
         versionLabel,
@@ -757,10 +972,7 @@ export default function WorkspacePage() {
         persistedStyleSettings,
       ));
       setEditorContent(persistedDraft.contentJson ?? document.content_json);
-      setActiveEditorBlock({
-        blockId: persistedDraft.currentProcessingBlockId ?? null,
-        status: persistedDraft.currentProcessingBlockId ? 'processing' : 'unprocessed',
-      });
+      setActiveEditorBlock(activeBlockInfoFromDraft(persistedDraft));
       setStyleName(persistedStyleName);
       setStyleSettings(persistedStyleSettings);
       setWorkspaceDirty(false);
@@ -775,15 +987,47 @@ export default function WorkspacePage() {
     }
   }
 
-  async function saveWorkspaceDocument({ leaveAfterSave = false } = {}) {
-    const document = normalizedWorkspaceDocument();
+  async function saveWorkspaceDocument({
+    leaveAfterSave = false,
+    formatDecision = null,
+  } = {}) {
+    const audit = documentEditorRef.current?.getFormatAudit?.();
+    if (!formatDecision && audit?.hasDifferences) {
+      setFormatReview({ audit, leaveAfterSave });
+      return false;
+    }
+
+    let nextStyleName = styleName;
+    let nextStyleSettings = styleSettings;
+    let snapshot = null;
+    if (formatDecision === 'normalize') {
+      snapshot = documentEditorRef.current?.normalizeFormatting?.();
+    } else if (formatDecision === 'keep') {
+      snapshot = documentEditorRef.current?.keepLocalFormatting?.();
+      nextStyleName = 'Customized';
+      setStyleName('Customized');
+    }
+
+    const document = snapshot?.contentJson && selectedDocument
+      ? documentFromContent(
+        selectedDocument,
+        snapshot.contentJson,
+        nextStyleName,
+        nextStyleSettings,
+        snapshot.blocks,
+        snapshot.currentProcessingBlockId,
+      )
+      : normalizedWorkspaceDocument();
     if (!document?.id) return false;
+    document.academic_style = nextStyleName;
+    document.style_settings = nextStyleSettings;
 
     setWorkspaceSaving(true);
     try {
       await persistWorkspaceDocument(document, 'Manual save');
       setWorkspaceNotice('Saved');
       setShowUnsavedBackPrompt(false);
+      setFormatReview(null);
       if (leaveAfterSave) {
         setView('home');
         navigate('/');
@@ -875,7 +1119,7 @@ export default function WorkspacePage() {
     if (analysisBusy) return;
 
     const requestKey = currentAnalysisKey;
-    const requestBlockText = activeEditorBlock?.text
+    const requestBlockText = activeSourceText
       ?? workspaceDraft?.blocks?.find((block) => block.id === blockId)?.text
       ?? '';
     setAnalysisBusy(true);
@@ -951,9 +1195,11 @@ export default function WorkspacePage() {
       const hasRemainingBlocks = nextDocument.blocks?.some((block) => (
         block.status === 'processing' || block.status === 'unprocessed'
       ));
-      const actionNotice = status === 'skipped'
-        ? 'Skipped block. Moved to the next block.'
-        : 'Completed block. Moved to the next block.';
+      const actionNotice = status === 'processing'
+        ? ''
+        : status === 'skipped'
+          ? 'Skipped block. Moved to the next block.'
+          : 'Completed block. Moved to the next block.';
       refreshRewriteCardsFromDocument(nextDocument, hasRemainingBlocks ? actionNotice : '');
     }
 
@@ -973,7 +1219,11 @@ export default function WorkspacePage() {
     }
 
     try {
-      const versionLabel = status === 'skipped' ? 'Skipped block' : 'Completed block';
+      const versionLabel = status === 'processing'
+        ? 'Selected processing block'
+        : status === 'skipped'
+          ? 'Skipped block'
+          : 'Completed block';
       await persistWorkspaceDocument(nextDocument, versionLabel);
     } catch (error) {
       setWorkspaceNotice(error.message || 'Could not update the block status.');
@@ -1078,10 +1328,17 @@ export default function WorkspacePage() {
       setRewriteError('Select a text block to rewrite.');
       return;
     }
-    if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy) return;
+    const requestedCard = rewriteCards.find((card) => card.tone === tone);
+    if (
+      rewriteCardsLocked
+      || rewriteAllCompleted
+      || ['queued', 'running'].includes(requestedCard?.state)
+    ) return;
 
     const requestKey = currentRewriteKey;
-    setRewriteBusy(true);
+    setRewriteCards((cards) => cards.map((card) => (
+      card.tone === tone ? { ...card, state: 'running', error: '' } : card
+    )));
     setRewriteError('');
     setWorkspaceNotice('');
     setWorkspaceOwlError(false);
@@ -1094,7 +1351,18 @@ export default function WorkspacePage() {
       }
 
       const response = await generateDocumentBlockRewrites(documentId, blockId, { tone, force });
-      if (rewriteContextKeyRef.current !== requestKey) return;
+      setRewriteCache((cache) => cacheRewriteResponse(cache, response));
+      const visible = rewriteVisibleIdentityRef.current;
+      const stillVisible = rewriteIdentityMatchesVisible(
+        response.identity,
+        visible,
+        requestKey,
+        rewriteContextKeyRef.current,
+      );
+      if (!stillVisible) {
+        setWorkspaceNotice('Rewrite finished and was saved for the earlier block state.');
+        return;
+      }
 
       setRewriteCards((cards) => cards.map((card) => {
         const option = response.rewrites.find((rewrite) => rewrite.tone === card.tone);
@@ -1108,33 +1376,31 @@ export default function WorkspacePage() {
           warnings: option.warnings ?? [],
           meaningPreserved: option.meaningPreserved,
           error: '',
+          state: response.cached ? 'cache-hit' : 'completed',
           applyWithExplanation: false,
         };
       }));
       setWorkspaceNotice(response.cached ? 'Loaded the saved rewrite.' : 'Rewrite is ready.');
     } catch (error) {
       setRewriteError(error.message || 'AI rewriting is temporarily unavailable.');
+      setRewriteCards((cards) => cards.map((card) => (
+        card.tone === tone ? { ...card, state: 'failed', error: error.message } : card
+      )));
       triggerWorkspaceError();
     } finally {
       setWorkspaceOwlLoading(false);
-      setRewriteBusy(false);
+      setRewriteCards((cards) => cards.map((card) => (
+        card.tone === tone && card.state === 'running'
+          ? { ...card, state: card.response ? 'completed' : 'idle' }
+          : card
+      )));
     }
   }
 
   async function regenerateRewriteCard(cardId) {
     if (rewriteCardsLocked || rewriteAllCompleted) return;
-    const now = Date.now();
-    if (now < rewriteCooldownUntil) {
-      setWorkspaceNotice('Regeneration is cooling down. Please wait a moment.');
-      return;
-    }
-    if (rewriteBusy) {
-      setWorkspaceNotice('A regeneration is already running.');
-      return;
-    }
     const card = rewriteCards.find((item) => item.id === cardId);
     if (!card) return;
-    setRewriteCooldownUntil(now + REGEN_COOLDOWN_MS);
     await generateRewrites({ tone: card.tone, force: Boolean(card.response) });
   }
 
@@ -1142,13 +1408,13 @@ export default function WorkspacePage() {
     if (
       rewriteCardsLocked
       || rewriteAllCompleted
-      || rewriteBusy
+      || rewriteApplyBusy
       || !card.rewriteId
       || !card.response
       || !card.meaningPreserved
     ) return;
     const animationTarget = event.currentTarget;
-    setRewriteBusy(true);
+    setRewriteApplyBusy(true);
     setRewriteError('');
     try {
       await acceptDocumentBlockRewrite(selectedDocument.id, currentRewriteBlockId, card.rewriteId);
@@ -1163,7 +1429,7 @@ export default function WorkspacePage() {
       triggerWorkspaceError();
     } finally {
       setWorkspaceOwlLoading(false);
-      setRewriteBusy(false);
+      setRewriteApplyBusy(false);
     }
   }
 
@@ -1195,12 +1461,17 @@ export default function WorkspacePage() {
     resetRewriteCardsForNextBlock(nextNotice);
   }
 
-  function applyStatusToSelectedBlock(nextStatus, replacementText = null) {
+  function applyStatusToSelectedBlock(
+    nextStatus,
+    replacementText = null,
+    changeSource = replacementText === null ? 'none' : 'ai-replacement',
+  ) {
     if (!selectedDocument) return null;
 
     const nextSnapshot = documentEditorRef.current?.applyCurrentBlockStatus({
       status: nextStatus,
       replacementText,
+      changeSource,
       targetBlockId: activeEditorBlock?.blockId ?? workspaceDraft?.currentProcessingBlockId ?? null,
     });
     if (nextSnapshot?.contentJson) {
@@ -1216,10 +1487,11 @@ export default function WorkspacePage() {
       setWorkspaceDraft(normalized.draft);
       setSelectedDocument(document);
       setEditorContent(document.content_json);
-      setActiveEditorBlock({
-        blockId: document.current_processing_block_id ?? null,
-        status: document.current_processing_block_id ? 'processing' : nextStatus,
-      });
+      setActiveEditorBlock(activeBlockInfoFromDraft(
+        normalized.draft,
+        document.current_processing_block_id,
+        nextStatus,
+      ));
       setWorkspaceDirty(true);
       return document;
     }
@@ -1270,8 +1542,11 @@ export default function WorkspacePage() {
 
       if (blockId === target.attrs?.blockId) {
         attrs.status = nextStatus;
+        attrs.resumeStatus = null;
+        attrs.processingBaselineText = null;
+        attrs.changeSource = changeSource;
         if (replacementText !== null) {
-          attrs.length = replacementText.length;
+          attrs.length = countCharacters(replacementText);
           return {
             ...node,
             attrs,
@@ -1281,10 +1556,29 @@ export default function WorkspacePage() {
         return { ...node, attrs };
       }
       if (blockId === nextProcessingBlockId) {
-        return { ...node, attrs: { ...attrs, status: 'processing' } };
+        return {
+          ...node,
+          attrs: {
+            ...attrs,
+            status: 'processing',
+            resumeStatus: 'unprocessed',
+            processingBaselineText: textFromNode(node),
+            changeSource: 'none',
+          },
+        };
       }
       if (attrs.status === 'processing') {
-        return { ...node, attrs: { ...attrs, status: 'unprocessed' } };
+        const unchanged = textFromNode(node) === String(attrs.processingBaselineText ?? textFromNode(node));
+        return {
+          ...node,
+          attrs: {
+            ...attrs,
+            status: unchanged ? normalizeResumeStatus(attrs.resumeStatus) : 'unprocessed',
+            resumeStatus: null,
+            processingBaselineText: null,
+            changeSource: unchanged ? 'none' : 'manual',
+          },
+        };
       }
       return node;
     });
@@ -1300,10 +1594,11 @@ export default function WorkspacePage() {
     setWorkspaceDraft(nextDraft);
     setSelectedDocument(document);
     setEditorContent(document.content_json);
-    setActiveEditorBlock({
-      blockId: document.current_processing_block_id ?? null,
-      status: document.current_processing_block_id ? 'processing' : nextStatus,
-    });
+    setActiveEditorBlock(activeBlockInfoFromDraft(
+      nextDraft,
+      document.current_processing_block_id,
+      nextStatus,
+    ));
     setWorkspaceDirty(true);
     return document;
   }
@@ -1324,7 +1619,6 @@ export default function WorkspacePage() {
   }
 
   async function tryPracticeResponse(event, { showMobileFeedback = false } = {}) {
-    const target = event.currentTarget;
     const documentId = selectedDocument?.id;
     const blockId = activeEditorBlock?.blockId;
     const attemptText = practiceInput.trim();
@@ -1341,13 +1635,11 @@ export default function WorkspacePage() {
 
     const requestKey = currentPracticeRequestKey;
     setPracticeBusy(true);
-    setPracticeFeedback(null);
     setPracticeError('');
     setWorkspaceNotice('');
     setWorkspaceOwlError(false);
     setWorkspaceOwlLoading(true);
     if (showMobileFeedback) setMobilePracticeIndex(1);
-    void runWorkspaceMagic(target);
 
     try {
       if (workspaceDirty) {
@@ -1359,13 +1651,40 @@ export default function WorkspacePage() {
       }
 
       const response = await requestDocumentBlockPracticeFeedback(documentId, blockId, attemptText);
-      if (practiceContextKeyRef.current !== requestKey) return;
+      const savedFeedback = {
+        ...response.practice,
+        identity: response.identity,
+        requestContextKey: currentPracticeKey,
+        requestKey,
+      };
+      const cacheKey = [
+        response.identity?.documentId,
+        response.identity?.blockId,
+        response.identity?.sourceTextHash,
+        response.identity?.attemptTextHash,
+        response.identity?.analysisContextKey,
+      ].join('|');
+      setPracticeCache((cache) => cachePracticeResponse(
+        cache,
+        requestKey,
+        cacheKey,
+        savedFeedback,
+      ));
+      if (practiceContextKeyRef.current !== requestKey) {
+        setWorkspaceNotice('Practice feedback finished and was saved for the earlier attempt.');
+        return;
+      }
 
-      setPracticeFeedback(response.practice);
+      setPracticeFeedback(savedFeedback);
       setWorkspaceNotice(response.cached ? 'Loaded saved practice feedback.' : 'Practice feedback is ready.');
     } catch (error) {
-      if (practiceContextKeyRef.current !== requestKey) return;
-      setPracticeError(error.message || 'AI practice feedback is temporarily unavailable.');
+      if (practiceContextKeyRef.current === requestKey) {
+        setPracticeError(
+          `${error.message || 'AI practice feedback is temporarily unavailable.'}${error.correlationId
+            ? ` Reference: ${error.correlationId}`
+            : ''}`,
+        );
+      }
       triggerWorkspaceError();
     } finally {
       setWorkspaceOwlLoading(false);
@@ -1379,8 +1698,51 @@ export default function WorkspacePage() {
     setPracticeError('');
   }
 
+  async function applyPracticeAttempt(event) {
+    const feedback = practiceFeedback;
+    if (
+      !feedback?.attemptText
+      || feedback.requestContextKey !== currentPracticeKey
+      || feedback.identity?.blockId !== activeEditorBlock?.blockId
+      || Number(feedback.identity?.partitionGeneration) !== Number(
+        activeEditorBlock?.partitionGeneration ?? currentRewriteBlock?.partition_generation ?? 0,
+      )
+    ) {
+      setPracticeError('This feedback belongs to an older block state. Request fresh feedback first.');
+      return;
+    }
+
+    setPracticeBusy(true);
+    setPracticeError('');
+    try {
+      const document = applyStatusToSelectedBlock(
+        'processed',
+        feedback.attemptText,
+        'practice-replacement',
+      );
+      if (!document) throw new Error('The reviewed revision could not be applied.');
+      await persistWorkspaceDocument(document, 'Applied reviewed Practice revision');
+      lockOrCompleteRewriteCards(
+        document,
+        'Your reviewed revision was applied. Suggestions are warming for the next block.',
+      );
+      await runWorkspaceMagic(event.currentTarget);
+    } catch (error) {
+      setPracticeError(error.message || 'The reviewed revision could not be applied.');
+      triggerWorkspaceError();
+    } finally {
+      setPracticeBusy(false);
+    }
+  }
+
   function renderPracticeComposer({ mobile = false } = {}) {
     const learningGoals = currentBlockAnalysis?.ai?.learningGoals ?? [];
+    const practiceDisabled = (
+      practiceBusy
+      || !activeEditorBlock?.blockId
+      || !currentBlockAnalysis
+      || !practiceInput.trim()
+    );
 
     return (
       <article
@@ -1392,7 +1754,15 @@ export default function WorkspacePage() {
       >
         <div className="practice-card-heading">
           <strong>Your revision</strong>
-          <span>{practiceInput.length} / {PRACTICE_MAX_CHARS}</span>
+          <button
+            type="button"
+            className={practiceDisabled ? 'ai-action-disabled' : ''}
+            onMouseEnter={holdWorkspaceWand}
+            onClick={mobile ? handleMobilePracticeTry : tryPracticeResponse}
+            disabled={practiceDisabled}
+          >
+            {practiceBusy ? 'Reviewing...' : 'Get AI feedback'}
+          </button>
         </div>
         <div className="practice-goals">
           <strong>Practice goals from analysis</strong>
@@ -1410,14 +1780,9 @@ export default function WorkspacePage() {
           placeholder="Rewrite the selected block in your own words..."
         />
         {practiceError ? <p className="practice-error" role="alert">{practiceError}</p> : null}
-        <button
-          type="button"
-          onMouseEnter={holdWorkspaceWand}
-          onClick={mobile ? handleMobilePracticeTry : tryPracticeResponse}
-          disabled={practiceBusy || !activeEditorBlock?.blockId || !practiceInput.trim()}
-        >
-          {practiceBusy ? 'Reviewing...' : 'Get AI feedback'}
-        </button>
+        <div className="practice-composer-actions">
+          <span>{practiceInput.length} / {PRACTICE_MAX_CHARS}</span>
+        </div>
       </article>
     );
   }
@@ -1521,6 +1886,17 @@ export default function WorkspacePage() {
             {mobile ? (
               <button type="button" onClick={() => setMobilePracticeIndex(0)}>Revise my attempt</button>
             ) : null}
+            <button
+              type="button"
+              className="practice-apply-button"
+              onClick={applyPracticeAttempt}
+              disabled={
+                practiceBusy
+                || feedback.requestContextKey !== currentPracticeKey
+              }
+            >
+              Apply Your Rewritten Version
+            </button>
           </>
         ) : null}
       </article>
@@ -1528,6 +1904,34 @@ export default function WorkspacePage() {
   }
 
   function renderRewriteCard(card) {
+    const tonePending = card.state === 'queued' || card.state === 'running';
+    const skippedOrigin = currentRewriteBlock?.attrs?.resumeStatus === 'skipped'
+      || currentRewriteBlock?.resume_status === 'skipped';
+    const manuallyEdited = currentRewriteBlock?.attrs?.changeSource === 'manual'
+      || currentRewriteBlock?.change_source === 'manual';
+    const automaticMiss = (
+      !card.response
+      && !skippedOrigin
+      && !manuallyEdited
+      && card.state !== 'failed'
+    );
+    const generateLabel = tonePending
+      ? 'Processing...'
+      : card.response
+        ? 'Regenerate'
+        : skippedOrigin
+          ? 'Regenerate for skipped'
+          : manuallyEdited
+            ? 'Regenerate for edited'
+            : card.state === 'failed'
+              ? 'Retry rewrite'
+              : 'Processing...';
+    const generationDisabled = (
+      tonePending
+      || automaticMiss
+      || rewriteCardsLocked
+      || rewriteAllCompleted
+    );
     return (
       <article
         key={card.id}
@@ -1545,9 +1949,12 @@ export default function WorkspacePage() {
               event.stopPropagation();
               regenerateRewriteCard(card.id);
             }}
-            disabled={rewriteBusy || rewriteCardsLocked || rewriteAllCompleted}
+            className={generationDisabled
+              ? 'ai-action-disabled'
+              : ''}
+            disabled={generationDisabled}
           >
-            {card.response ? 'Regenerate' : 'Generate'}
+            {generateLabel}
           </button>
         </div>
         <p className="rewrite-card-best-for">{card.bestFor}</p>
@@ -1567,9 +1974,11 @@ export default function WorkspacePage() {
               </button>
               <button
                 type="button"
-                className="rewrite-card-apply"
                 onClick={(event) => handleRewriteCardClick(card, event)}
-                disabled={rewriteBusy || rewriteCardsLocked || !card.meaningPreserved}
+                className={`rewrite-card-apply${rewriteApplyBusy || rewriteCardsLocked || !card.meaningPreserved
+                  ? ' ai-action-disabled'
+                  : ''}`}
+                disabled={rewriteApplyBusy || rewriteCardsLocked || !card.meaningPreserved}
               >
                 Use this rewrite
               </button>
@@ -1631,12 +2040,16 @@ export default function WorkspacePage() {
     return (
       <section className="workspace-mobile-assistant-panel" aria-label="Mobile owl workspace panel">
         <div className="workspace-mobile-panel-switcher" role="tablist" aria-label="Mobile workspace mode">
-          {['rewriting', 'practicing'].map((item) => (
+          {['rewriting', 'analyzing', 'practicing'].map((item) => (
             <button
               key={item}
               type="button"
               className={mobilePanelMode === item ? 'is-active' : ''}
               onClick={() => setMobilePanelMode(item)}
+              role="tab"
+              aria-selected={mobilePanelMode === item}
+              id={`mobile-assistant-tab-${item}`}
+              aria-controls="mobile-assistant-panel"
             >
               {item}
             </button>
@@ -1644,7 +2057,7 @@ export default function WorkspacePage() {
         </div>
 
         {mobilePanelMode === 'rewriting' ? (
-          <div className="workspace-mobile-panel-body">
+          <div className="workspace-mobile-panel-body" role="tabpanel" id="mobile-assistant-panel" aria-labelledby="mobile-assistant-tab-rewriting">
             {rewriteAllCompleted ? (
               renderRewriteCompleteCard()
             ) : (
@@ -1663,8 +2076,12 @@ export default function WorkspacePage() {
               </>
             )}
           </div>
+        ) : mobilePanelMode === 'analyzing' ? (
+          <div className="workspace-mobile-panel-body" role="tabpanel" id="mobile-assistant-panel" aria-labelledby="mobile-assistant-tab-analyzing">
+            {renderAnalysisStats()}
+          </div>
         ) : (
-          <div className="workspace-mobile-panel-body">
+          <div className="workspace-mobile-panel-body" role="tabpanel" id="mobile-assistant-panel" aria-labelledby="mobile-assistant-tab-practicing">
             <div className="workspace-mobile-card-nav">
               <button type="button" onClick={() => moveMobilePractice(-1)} aria-label="Previous practice card">
                 <PanelChevron direction="left" />
@@ -1688,9 +2105,10 @@ export default function WorkspacePage() {
     const metrics = analysis?.deterministic;
     const ai = analysis?.ai;
     const sourceLookup = ai?.sourceLookup;
+    const analysisResults = ai?.results ?? [];
     const filterCounts = Object.fromEntries(Object.keys(ANALYSIS_FILTER_LABELS).map((key) => [
       key,
-      ai?.issues?.filter((issue) => issue.type === key).length ?? null,
+      analysisResults.find((result) => result.type === key)?.issues?.length ?? null,
     ]));
 
     return (
@@ -1729,7 +2147,6 @@ export default function WorkspacePage() {
           <>
             <div className="analysis-result-heading">
               <strong>{ai.summary}</strong>
-              <span>{ai.purpose} · {analysis.model}</span>
             </div>
 
             <div className="analysis-stat-grid">
@@ -1784,33 +2201,34 @@ export default function WorkspacePage() {
               </section>
             ) : null}
 
-            <dl className="analysis-stats">
-              {Object.entries(ai.scores).map(([label, score], index) => (
-                <div className="analysis-score-row" key={label}>
-                  <div>
-                    <dt>{label}</dt>
-                    <dd>{score}%</dd>
+            <div className="analysis-result-list">
+              {analysisResults.map((result) => (
+                <section
+                  key={result.type}
+                  className={`analysis-result-card analysis-result-card--${result.type}`}
+                >
+                  <div className="analysis-result-card__heading">
+                    <h3>{ANALYSIS_FILTER_LABELS[result.type]}</h3>
+                    <span>
+                      {result.status === 'clear'
+                        ? 'Checked — clear'
+                        : `${result.issues.length} ${result.issues.length === 1 ? 'note' : 'notes'}`}
+                    </span>
                   </div>
-                  <div className="analysis-bar-track">
-                    <div
-                      className={`analysis-bar-fill${index === 0 ? ' analysis-bar-fill--green' : ''}`}
-                      style={{ width: `${score}%` }}
-                    />
-                  </div>
-                </div>
+                  {result.status === 'clear' ? (
+                    <p>No issue was found for this check.</p>
+                  ) : result.issues.map((issue, index) => (
+                    <article
+                      key={`${result.type}-${index}`}
+                      className={`analysis-issue analysis-issue--${result.type}`}
+                    >
+                      <q>{issue.evidence}</q>
+                      <p>{issue.explanation}</p>
+                      <small>{issue.suggestion}</small>
+                    </article>
+                  ))}
+                </section>
               ))}
-            </dl>
-
-            <div className="analysis-issue-list">
-              <h3>Coaching notes</h3>
-              {ai.issues.length ? ai.issues.map((issue, index) => (
-                <article key={`${issue.type}-${index}`} className={`analysis-issue analysis-issue--${issue.severity}`}>
-                  <div><strong>{ANALYSIS_FILTER_LABELS[issue.type]}</strong><span>{issue.severity}</span></div>
-                  <q>{issue.evidence}</q>
-                  <p>{issue.explanation}</p>
-                  <small>{issue.suggestion}</small>
-                </article>
-              )) : <p>No selected issues were found in this block.</p>}
             </div>
 
             <div className="analysis-learning-goals">
@@ -1833,8 +2251,7 @@ export default function WorkspacePage() {
     const tabs = [
       ['setup', 'New doc'],
       ['styles', 'Styles'],
-      ['history', 'History'],
-      ['analyzing', 'Analyzing'],
+      ['history', 'Others'],
     ];
 
     return (
@@ -1846,19 +2263,28 @@ export default function WorkspacePage() {
               type="button"
               className={mobileOptionsTab === id ? 'is-active' : ''}
               onClick={() => setMobileOptionsTab(id)}
+              role="tab"
+              aria-selected={mobileOptionsTab === id}
+              id={`mobile-options-tab-${id}`}
+              aria-controls="mobile-options-panel"
             >
               {label}
             </button>
           ))}
         </div>
-        <div className="workspace-mobile-options-body">
+        <div
+          className="workspace-mobile-options-body"
+          role="tabpanel"
+          id="mobile-options-panel"
+          aria-labelledby={`mobile-options-tab-${mobileOptionsTab}`}
+        >
           {mobileOptionsTab === 'setup' ? (
             <section className="workspace-upload-note">
-              <p>Upload a new document. Save current edits before leaving.</p>
               <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
                 <UploadDocIcon />
                 Upload
               </button>
+              <span>Upload a new document. Save current edits before leaving.</span>
             </section>
           ) : null}
           {mobileOptionsTab === 'styles' ? (
@@ -1880,14 +2306,6 @@ export default function WorkspacePage() {
               onViewAll={() => setWorkspaceHistoryExpanded((value) => !value)}
             />
           ) : null}
-          {mobileOptionsTab === 'analyzing' ? (
-            <section className="workspace-mode-card workspace-mode-card--interactive">
-              {!currentBlockAnalysis ? (
-                <p>Select a block, choose your goals, and learn with our AI coach.</p>
-              ) : null}
-              {renderAnalysisStats()}
-            </section>
-          ) : null}
         </div>
       </section>
     );
@@ -1896,30 +2314,36 @@ export default function WorkspacePage() {
   function renderWorkspaceMode() {
     if (workspaceMode === 'analyzing') {
       return (
-        <section className="workspace-mode-card workspace-mode-card--interactive">
+        <section className="workspace-mode-card workspace-mode-card--interactive" role="tabpanel" id="workspace-mode-panel" aria-labelledby="workspace-mode-tab-analyzing">
+          <div className="workspace-mode-card-content">
           {!currentBlockAnalysis ? (
             <p>Select a block, choose your goals, and learn with our AI coach.</p>
           ) : null}
           {renderAnalysisStats()}
+          </div>
         </section>
       );
     }
 
     if (workspaceMode === 'rewriting') {
       return (
-        <section className="workspace-mode-card workspace-mode-card--interactive">
+        <section className="workspace-mode-card workspace-mode-card--interactive" role="tabpanel" id="workspace-mode-panel" aria-labelledby="workspace-mode-tab-rewriting">
+          <div className="workspace-mode-card-content">
           {rewriteError ? <p className="rewrite-panel-error" role="alert">{rewriteError}</p> : null}
           <div className="rewrite-card-list">
             {rewriteAllCompleted ? renderRewriteCompleteCard() : rewriteCards.map((card) => renderRewriteCard(card))}
+          </div>
           </div>
         </section>
       );
     }
 
     return (
-      <section className="workspace-mode-card workspace-mode-card--interactive">
+      <section className="workspace-mode-card workspace-mode-card--interactive" role="tabpanel" id="workspace-mode-panel" aria-labelledby="workspace-mode-tab-practicing">
+        <div className="workspace-mode-card-content">
         {renderPracticeComposer()}
         {renderPracticeFeedback()}
+        </div>
       </section>
     );
   }
@@ -1951,6 +2375,8 @@ export default function WorkspacePage() {
           className="workspace-file-input"
           type="file"
           accept=".txt,.md,.docx"
+          aria-label="Upload a document"
+          tabIndex={-1}
           onChange={handleWorkspaceUploadInputChange}
         />
         <aside className="workspace-left-panel" aria-label="Document setup">
@@ -1959,14 +2385,15 @@ export default function WorkspacePage() {
             onClick={() => setWorkspaceSidebarOpen((value) => !value)}
             className="workspace-sidebar-toggle-button"
             ariaLabel={workspaceSidebarOpen ? 'Collapse setup sidebar' : 'Open setup sidebar'}
+            variant="side"
           />
           <div className="workspace-left-panel-content">
             <section className="workspace-upload-note">
-              <p>Upload a new document. Save current edits before leaving.</p>
               <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
                 <UploadDocIcon />
                 Upload
               </button>
+              <span>Upload a new document. Save current edits before leaving.</span>
             </section>
             <AcademicStylePanel
               styleName={styleName}
@@ -2031,15 +2458,25 @@ export default function WorkspacePage() {
         </section>
 
         <aside className="workspace-blackboard-panel" aria-label="Owl workspace panel" style={blackboardStyle}>
-          <img className="blackboard__image" src={blackboardUrl} alt="" />
+          <img
+            className="blackboard__image"
+            src={blackboardUrl}
+            alt=""
+            draggable={false}
+            aria-hidden="true"
+          />
           <div className="workspace-blackboard-content">
             <div className="workspace-mode-switcher" role="tablist" aria-label="Workspace mode">
-              {['analyzing', 'rewriting', 'practicing'].map((item) => (
+              {['rewriting', 'analyzing', 'practicing'].map((item) => (
                 <button
                   key={item}
                   type="button"
                   className={workspaceMode === item ? 'is-active' : ''}
                   onClick={() => setWorkspaceMode(item)}
+                  role="tab"
+                  aria-selected={workspaceMode === item}
+                  id={`workspace-mode-tab-${item}`}
+                  aria-controls="workspace-mode-panel"
                 >
                   {item}
                 </button>
@@ -2107,6 +2544,46 @@ export default function WorkspacePage() {
                   disabled={workspaceSaving}
                 >
                   {workspaceSaving ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
+        {formatReview ? (
+          <div className="confirm-backdrop" role="presentation">
+            <section className="confirm-modal format-review-modal" role="dialog" aria-modal="true" aria-labelledby="format-review-title">
+              <h2 id="format-review-title">Review local formatting</h2>
+              <p>
+                {formatReview.audit.differences.length} block(s) differ from the global format.
+                Choose whether to normalize them or preserve their property-level overrides.
+              </p>
+              <ul>
+                {formatReview.audit.differences.slice(0, 8).map((item, index) => (
+                  <li key={item.blockId || index}>
+                    Block {index + 1}: {item.properties.join(', ')}
+                  </li>
+                ))}
+              </ul>
+              <div className="confirm-actions">
+                <button type="button" onClick={() => setFormatReview(null)}>Cancel</button>
+                <button
+                  type="button"
+                  onClick={() => saveWorkspaceDocument({
+                    leaveAfterSave: formatReview.leaveAfterSave,
+                    formatDecision: 'keep',
+                  })}
+                >
+                  Keep local formatting
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => saveWorkspaceDocument({
+                    leaveAfterSave: formatReview.leaveAfterSave,
+                    formatDecision: 'normalize',
+                  })}
+                >
+                  Normalize to global
                 </button>
               </div>
             </section>

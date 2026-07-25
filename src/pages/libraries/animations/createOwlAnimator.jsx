@@ -1,4 +1,20 @@
-import { BLINK_MIN, BLINK_MAX, createAnimationState, createTimerRegistry, createVariantRegistry, cacheStageElements, clearStageModes, setIndicator, random, pick } from './animationState.jsx';
+import {
+  BLINK_MIN,
+  BLINK_MAX,
+  cacheStageElements,
+  clearStageModes,
+  createAnimationState,
+  createTimerRegistry,
+  createVariantRegistry,
+  pick,
+  random,
+  setIndicator,
+} from './animationState.jsx';
+import {
+  beginThinkingRequest,
+  canStartRequestedThinking,
+  cancelThinkingRequest,
+} from './thinkingRequestState.js';
 import { createEyeController } from './eyes.jsx';
 import { createHeadController } from './head.jsx';
 import { createParticleController } from './particles.jsx';
@@ -564,6 +580,9 @@ function createWandController(ctx) {
         }
       }
     } finally {
+      // Wand morph/tremor timers must not leave the passive head/body/feet
+      // variant in a cleared state after a rewrite or Practice action.
+      ctx.resumePassiveAfterMagic?.();
       releaseMagicPriority();
     }
   }
@@ -648,6 +667,12 @@ export function createOwlAnimator(stageRoot) {
     ctx.standby.enterStandby(choice);
   }
 
+  ctx.resumePassiveAfterMagic = () => {
+    state.headLocked = false;
+    startStandby(state.standbyChoice || 'random', { keepWand: true, keepBlink: true });
+    ctx.wand.keepWandPoseActive({ refreshPin: true, resumeTremor: true });
+  };
+
   function showPendingWandAfterMode() {
     if (!state.pendingWandShow) {
       return;
@@ -659,11 +684,9 @@ export function createOwlAnimator(stageRoot) {
   }
 
   async function startThinking() {
-    if (state.thinking) {
-      return;
-    }
+    if (!beginThinkingRequest(state)) return;
     await ctx.wand.waitForMagicPriority();
-    if (state.thinking || state.error) {
+    if (!canStartRequestedThinking(state)) {
       return;
     }
     stopPassiveAnimations({ keepBlink: true, keepWand: true });
@@ -681,6 +704,7 @@ export function createOwlAnimator(stageRoot) {
   }
 
   async function endThinking() {
+    cancelThinkingRequest(state);
     if (!state.thinking) {
       return;
     }
@@ -701,6 +725,7 @@ export function createOwlAnimator(stageRoot) {
 
   async function triggerError() {
     const wasThinking = state.thinking;
+    cancelThinkingRequest(state);
     state.error = true;
     state.mode = 'error';
 

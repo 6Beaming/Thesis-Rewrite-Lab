@@ -17,6 +17,31 @@ const SORT_MAP = {
   least_completed: 'completed_rate asc, updated_at desc',
 };
 
+function replaceTrackedNodes(node, byId) {
+  if (!node || typeof node !== 'object') return node;
+  if (node.type === 'blockSegment' && byId.has(node.attrs?.blockId)) {
+    return byId.get(node.attrs.blockId);
+  }
+  if (!Array.isArray(node.content)) return node;
+  return { ...node, content: node.content.map((child) => replaceTrackedNodes(child, byId)) };
+}
+
+async function synchronizeDocumentContentJson(client, documentId) {
+  const [documentResult, blockResult] = await Promise.all([
+    client.query('select content_json from documents where id = $1', [documentId]),
+    client.query(
+      'select id, tiptap_node from document_blocks where document_id = $1 order by block_index',
+      [documentId],
+    ),
+  ]);
+  const byId = new Map(blockResult.rows.map((block) => [block.id, block.tiptap_node]));
+  const contentJson = replaceTrackedNodes(documentResult.rows[0]?.content_json, byId);
+  await client.query(
+    'update documents set content_json = $2::jsonb where id = $1',
+    [documentId, JSON.stringify(contentJson)],
+  );
+}
+
 async function loadDocument(runQuery, documentId, userId) {
   const documentResult = await runQuery(
     `
@@ -35,7 +60,9 @@ async function loadDocument(runQuery, documentId, userId) {
 
   const blocks = await runQuery(
     `
-      select id, document_id, block_index, text_content, status, char_length, attrs, tiptap_node, created_at, updated_at
+      select id, document_id, block_index, text_content, status, resume_status,
+             processing_baseline_text, change_source, partition_generation,
+             format_overrides, char_length, attrs, tiptap_node, created_at, updated_at
       from document_blocks
       where document_id = $1
       order by block_index asc
@@ -360,6 +387,7 @@ export async function updateDocumentBlockStatus({ documentId, userId, blockId, s
     if (!blockUpdate.found) {
       return null;
     }
+    await synchronizeDocumentContentJson(client, documentId);
     const revision = await client.query(
       `update documents
        set revision = revision + 1

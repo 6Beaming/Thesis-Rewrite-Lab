@@ -15,7 +15,9 @@ export async function appendDocumentVersion(client, documentId, label) {
 
   const blocksResult = await client.query(
     `
-      select id, document_id, block_index, text_content, status, char_length, attrs, tiptap_node
+      select id, document_id, block_index, text_content, status, resume_status,
+             processing_baseline_text, change_source, partition_generation,
+             format_overrides, char_length, attrs, tiptap_node
       from document_blocks
       where document_id = $1
       order by block_index asc
@@ -157,7 +159,9 @@ export async function revertDocumentToVersion(documentId, versionId, userId) {
     );
     const blocksResult = await client.query(
       `
-        select id, block_index, text_content, status, char_length, attrs, tiptap_node,
+        select id, block_index, text_content, status, resume_status,
+               processing_baseline_text, change_source, partition_generation,
+               format_overrides, char_length, attrs, tiptap_node,
                created_at, updated_at
         from document_blocks
         where document_id = $1

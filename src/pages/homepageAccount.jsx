@@ -1,7 +1,6 @@
-import lottie from 'lottie-web';
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import owlUrl from '../assets/owl.svg';
-import streakAnimation from '../assets/streak_lottie.json';
+import StreakAnimation from '../components/StreakAnimation.jsx';
 
 function UploadIcon() {
   return (
@@ -15,26 +14,9 @@ function UploadIcon() {
 
 export default function HomepageAccount({ user, onClose, onLogout, onUploadProfile }) {
   const inputRef = useRef(null);
-  const streakRef = useRef(null);
-  const streakDays = Math.max(1, Number(user?.stats?.streak_day_count ?? 1));
+  const streakDays = Math.max(0, Number(user?.stats?.streak_day_count ?? 0));
   const avatarSrc = user?.profilePictureUrl || (user?.hasProfilePicture ? '/api/users/me/profile-picture' : owlUrl);
   const hasCustomAvatar = Boolean(user?.profilePictureUrl || user?.hasProfilePicture);
-
-  useEffect(() => {
-    if (!streakRef.current) return undefined;
-
-    const animation = lottie.loadAnimation({
-      container: streakRef.current,
-      renderer: 'svg',
-      loop: true,
-      autoplay: true,
-      animationData: streakAnimation,
-    });
-
-    return () => {
-      animation.destroy();
-    };
-  }, []);
 
   async function handleFileChange(event) {
     const file = event.target.files?.[0];
@@ -70,7 +52,7 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
         </div>
         <h2>{user?.email || user?.display_name || 'Your account'}</h2>
         <section className="account-streak">
-          <div ref={streakRef} className="account-streak-lottie" aria-hidden="true" />
+          <StreakAnimation className="account-streak-lottie" />
           <span className="account-streak-spark account-streak-spark--one" aria-hidden="true" />
           <span className="account-streak-spark account-streak-spark--two" aria-hidden="true" />
           <div className="account-streak-copy">

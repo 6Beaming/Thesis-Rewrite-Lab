@@ -1,4 +1,5 @@
 import { splitBlockKeepMarks } from '@tiptap/pm/commands';
+import { Fragment } from '@tiptap/pm/model';
 import { TextSelection } from '@tiptap/pm/state';
 
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
@@ -8,6 +9,7 @@ const UNFINISHED_BLOCK_STATUSES = new Set(['unprocessed', 'processing']);
 function textFromJsonNode(node) {
   if (!node) return '';
   if (node.type === 'text') return node.text ?? '';
+  if (node.type === 'hardBreak') return '\n';
   if (!Array.isArray(node.content)) return '';
   return node.content.map(textFromJsonNode).join('');
 }
@@ -208,6 +210,78 @@ export function splitSegmentedTextBlock(state, dispatch) {
 
     dispatch?.(transaction);
   });
+}
+
+export function insertSegmentedLineBreak(state, dispatch) {
+  if (!isSegmentedTextBlockSelection(state)) return false;
+  const hardBreak = state.schema.nodes.hardBreak;
+  if (!hardBreak) return false;
+  const { $from } = state.selection;
+  if ($from.nodeBefore?.type === hardBreak) {
+    let segmentDepth = null;
+    let structuralDepth = null;
+    for (let depth = $from.depth; depth > 0; depth -= 1) {
+      const name = $from.node(depth).type.name;
+      if (segmentDepth == null && name === 'blockSegment') segmentDepth = depth;
+      if (STRUCTURAL_TEXT_BLOCK_TYPES.has(name)) {
+        structuralDepth = depth;
+        break;
+      }
+    }
+    if (segmentDepth != null && structuralDepth != null) {
+      const segment = $from.node(segmentDepth);
+      const structural = $from.node(structuralDepth);
+      const segmentPos = $from.before(segmentDepth);
+      const structuralPos = $from.before(structuralDepth);
+      const offset = $from.pos - segmentPos - 1;
+      const segmentOffset = segmentPos - structuralPos - 1;
+      const leftContent = segment.content.cut(0, Math.max(0, offset - 1));
+      const rightContent = segment.content.cut(offset, segment.content.size);
+      const randomId = globalThis.crypto?.randomUUID?.()
+        ?? `block-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const generation = (Number(segment.attrs.partitionGeneration) || 0) + 1;
+      const leftSegment = segment.type.create({
+        ...segment.attrs,
+        status: segment.attrs.status === 'processing' ? 'unprocessed' : segment.attrs.status,
+        resumeStatus: null,
+        processingBaselineText: null,
+        changeSource: 'manual',
+        partitionGeneration: generation,
+        length: leftContent.size,
+      }, leftContent);
+      const rightSegment = segment.type.create({
+        ...segment.attrs,
+        blockId: randomId,
+        status: 'processing',
+        resumeStatus: 'unprocessed',
+        processingBaselineText: rightContent.textBetween(0, rightContent.size, '\n', '\n'),
+        changeSource: 'none',
+        partitionGeneration: generation,
+        length: rightContent.size,
+      }, rightContent);
+      const before = structural.content.cut(0, segmentOffset);
+      const after = structural.content.cut(segmentOffset + segment.nodeSize, structural.content.size);
+      const left = structural.type.create(structural.attrs, before.append(Fragment.from(leftSegment)));
+      const right = structural.type.create(structural.attrs, Fragment.from(rightSegment).append(after));
+      const transaction = state.tr.replaceWith(
+        structuralPos,
+        structuralPos + structural.nodeSize,
+        Fragment.fromArray([left, right]),
+      );
+      const rightStart = structuralPos + left.nodeSize + 2;
+      transaction.setSelection(TextSelection.near(transaction.doc.resolve(rightStart)));
+      transaction.setMeta('editorBlockPartition', {
+        type: 'hard-boundary',
+        retiredBlockIds: [],
+        survivingBlockIds: [segment.attrs.blockId, randomId],
+        partitionGeneration: generation,
+      });
+      dispatch?.(transaction.scrollIntoView());
+      return true;
+    }
+  }
+  dispatch?.(state.tr.replaceSelectionWith(hardBreak.create()).scrollIntoView());
+  return true;
 }
 
 export function insertTextIntoSelectedSegment(state, dispatch, text) {

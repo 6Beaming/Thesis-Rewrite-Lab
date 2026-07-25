@@ -4,6 +4,7 @@ import {
   getCurrentUserProfile,
   getOrCreateUserFromSession,
   getProfilePicture,
+  recordUserActivity,
   updateProfilePicture,
 } from '../models/users.js';
 
@@ -11,6 +12,13 @@ const router = Router();
 
 router.get('/me', async (_req, res) => {
   res.json(await getCurrentUserProfile(res.locals.session.user));
+});
+
+router.post('/me/activity', async (req, res) => {
+  res.json(await recordUserActivity(
+    res.locals.session.user,
+    req.body?.timeZone,
+  ));
 });
 
 router.get('/me/profile-picture', async (_req, res) => {

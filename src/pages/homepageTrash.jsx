@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import ConfirmModal from '../components/ConfirmModal.jsx';
 import DocumentCard from '../components/DocumentCard.jsx';
-import EmptyState from '../components/EmptyState.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
 import { deleteForever, restoreDocument } from '../services/trashApi.js';
 import trashUrl from '../assets/trash.png?url';
@@ -44,11 +43,11 @@ export default function HomepageTrash({ onNotice, onChanged }) {
 
   if (!documents.length) {
     return (
-      <EmptyState title={visibleNotice ? 'Could not load trash' : 'No items in trash'}>
-        {visibleNotice
-          ? <p role="alert">{visibleNotice}</p>
-          : <img className="trash-empty-icon" src={trashUrl} alt="" />}
-      </EmptyState>
+      <section className="trash-empty-custom">
+        <img className="trash-empty-icon" src={trashUrl} alt="" />
+        <h1>{visibleNotice ? 'Could not load trash' : 'No items in trash'}</h1>
+        {visibleNotice ? <p role="alert">{visibleNotice}</p> : null}
+      </section>
     );
   }
 

@@ -7,6 +7,7 @@ import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
   hasUnfinishedBlocks,
+  insertSegmentedLineBreak,
   insertTextIntoSelectedSegment,
   splitSegmentedTextBlock,
 } from './editorBlockCommands.js';
@@ -15,7 +16,7 @@ const BlockSegment = Node.create({
   name: 'blockSegment',
   group: 'inline',
   inline: true,
-  content: 'text*',
+  content: '(text | hardBreak)*',
   addAttributes() {
     return {
       blockId: { default: null },
@@ -125,6 +126,57 @@ test('segmented Enter command leaves normal paragraphs to the default keymap', (
   assert.equal(handled, false);
   assert.equal(editor.getJSON().content.length, 1);
 
+  editor.destroy();
+});
+
+test('a normal Enter remains an inline line break inside the tracked block', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'blockSegment',
+        attrs: { blockId: 'block-1', status: 'processing' },
+        content: [{ type: 'text', text: 'Hello world' }],
+      }],
+    }],
+  });
+
+  editor.commands.setTextSelection(7);
+  assert.equal(insertSegmentedLineBreak(editor.state, editor.view.dispatch), true);
+  const content = editor.getJSON().content;
+  assert.equal(content.length, 1);
+  assert.deepEqual(content[0].content[0].content.map((node) => node.type), [
+    'text',
+    'hardBreak',
+    'text',
+  ]);
+  assert.equal(content[0].content[0].attrs.blockId, 'block-1');
+  editor.destroy();
+});
+
+test('a second consecutive Enter creates a hard structural boundary', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'blockSegment',
+        attrs: { blockId: 'block-1', status: 'processing' },
+        content: [{ type: 'text', text: 'Hello world' }],
+      }],
+    }],
+  });
+  editor.commands.setTextSelection(7);
+  insertSegmentedLineBreak(editor.state, editor.view.dispatch);
+  insertSegmentedLineBreak(editor.state, editor.view.dispatch);
+  const paragraphs = editor.getJSON().content;
+  assert.equal(paragraphs.length, 2);
+  assert.equal(paragraphs[0].content[0].attrs.blockId, 'block-1');
+  assert.notEqual(paragraphs[1].content[0].attrs.blockId, 'block-1');
+  assert.equal(paragraphs[1].content[0].attrs.status, 'processing');
+  assert.equal(paragraphs[0].content[0].content[0].text, 'Hello');
+  assert.equal(paragraphs[1].content[0].content[0].text, ' world');
   editor.destroy();
 });
 

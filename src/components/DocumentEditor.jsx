@@ -11,42 +11,61 @@ import Paragraph from '@tiptap/extension-paragraph';
 import TextAlign from '@tiptap/extension-text-align';
 import { FontSize, TextStyle } from '@tiptap/extension-text-style';
 import Underline from '@tiptap/extension-underline';
-import { isHistoryTransaction } from 'prosemirror-history';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { buildAnalysisPhraseDecorations } from '../lib/analysisPhraseDecorations.js';
-import { DEFAULT_CLUSTER_OPTIONS } from '../lib/clusteringOptions.js';
+import {
+  countCharacters,
+  DEFAULT_SEGMENTATION_POLICY,
+  segmentText,
+} from '../lib/blockSegmentation/index.js';
+import {
+  normalizeBlockStatus,
+  normalizeChangeSource,
+  normalizeResumeStatus,
+} from '../lib/blockState.js';
+import { auditDocumentFormatting } from '../lib/formatAudit.js';
 import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
   hasUnfinishedBlocks,
+  insertSegmentedLineBreak,
   insertTextIntoSelectedSegment,
-  splitSegmentedTextBlock,
 } from '../lib/editorBlockCommands.js';
 import A4EditorPage from './A4EditorPage.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 
 const A4_PAGE_HEIGHT_PX = 1123;
+const PAGE_GUTTER_HEIGHT_PX = 54;
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const EMPTY_ANALYSIS_HIGHLIGHTS = Object.freeze([]);
+const PAGINATION_META = 'editorPagination';
+const PAGINATION_PLUGIN_KEY = new PluginKey('paginationDecoration');
 
 function generateBlockId(prefix) {
   const randomId = globalThis.crypto?.randomUUID?.();
-  if (randomId) return `${prefix}-${randomId}`;
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  if (randomId) return randomId;
+  const values = globalThis.crypto?.getRandomValues?.(new Uint8Array(16));
+  if (values) {
+    values[6] = (values[6] & 0x0f) | 0x40;
+    values[8] = (values[8] & 0x3f) | 0x80;
+    const hex = Array.from(values, (value) => value.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  void prefix;
+  throw new Error('Secure UUID generation is unavailable.');
 }
 
 function isTrackedTextBlockNode(node) {
   return node?.type?.name === 'blockSegment';
 }
 
-function normalizeBlockStatus(status) {
-  return ['unprocessed', 'processing', 'processed', 'skipped'].includes(status)
-    ? status
-    : 'unprocessed';
+function trackedNodeText(node) {
+  if (!node) return '';
+  return node.textBetween(0, node.content.size, '\n', '\n');
 }
 
 function buildTrackedBlockStyleAttrs(attrs = {}) {
@@ -59,13 +78,14 @@ function buildTrackedBlockStyleAttrs(attrs = {}) {
   };
 }
 
-function trackedBlockStyle(HTMLAttributes) {
+function trackedBlockStyle(HTMLAttributes, { headingLevel = null } = {}) {
+  const headingSizes = { 1: '24pt', 2: '18pt', 3: '14pt' };
   return [
     `line-height: ${HTMLAttributes.lineHeight}`,
     `text-indent: ${HTMLAttributes.textIndent}`,
     `text-align: ${HTMLAttributes.textAlign}`,
     `font-family: ${HTMLAttributes.fontFamily}`,
-    `font-size: ${HTMLAttributes.fontSize}`,
+    `font-size: ${headingLevel ? headingSizes[headingLevel] : HTMLAttributes.fontSize}`,
   ].join('; ');
 }
 
@@ -90,7 +110,7 @@ function renderTrackedBlock(tag, HTMLAttributes) {
   ];
 }
 
-function renderAcademicContainer(tag, HTMLAttributes) {
+function renderAcademicContainer(tag, HTMLAttributes, options) {
   const {
     blockId: _blockId,
     status: _status,
@@ -104,7 +124,7 @@ function renderAcademicContainer(tag, HTMLAttributes) {
     {
       ...containerAttributes,
       class: 'document-paragraph',
-      style: trackedBlockStyle(HTMLAttributes),
+      style: trackedBlockStyle(HTMLAttributes, options),
     },
     0,
   ];
@@ -139,7 +159,7 @@ const AcademicHeading = Heading.extend({
   },
   renderHTML({ node, HTMLAttributes }) {
     const level = this.options.levels.includes(node.attrs.level) ? node.attrs.level : this.options.levels[0];
-    return renderAcademicContainer(`h${level}`, HTMLAttributes);
+    return renderAcademicContainer(`h${level}`, HTMLAttributes, { headingLevel: level });
   },
 });
 
@@ -154,6 +174,11 @@ const BlockSegment = Node.create({
     return {
       blockId: { default: null },
       status: { default: 'unprocessed' },
+      resumeStatus: { default: null },
+      processingBaselineText: { default: null },
+      changeSource: { default: 'none' },
+      partitionGeneration: { default: 0 },
+      formatOverrides: { default: [] },
       paragraphIndex: { default: null },
       lineHeight: { default: '2.0' },
       textIndent: { default: '0.5in' },
@@ -178,7 +203,7 @@ const BlockSegmentEnter = Extension.create({
   priority: 1100,
   addKeyboardShortcuts() {
     return {
-      Enter: () => splitSegmentedTextBlock(this.editor.state, this.editor.view.dispatch),
+      Enter: () => insertSegmentedLineBreak(this.editor.state, this.editor.view.dispatch),
     };
   },
   addProseMirrorPlugins() {
@@ -207,6 +232,47 @@ const PageBreak = Node.create({
   },
 });
 
+const PaginationDecoration = Extension.create({
+  name: 'paginationDecoration',
+  addProseMirrorPlugins() {
+    return [new Plugin({
+      key: PAGINATION_PLUGIN_KEY,
+      state: {
+        init: () => [],
+        apply(transaction, positions) {
+          const supplied = transaction.getMeta(PAGINATION_META);
+          if (Array.isArray(supplied)) return supplied;
+          return positions
+            .map((position) => transaction.mapping.map(position, -1))
+            .filter((position) => position > 0 && position < transaction.doc.content.size);
+        },
+      },
+      props: {
+        decorations(state) {
+          const positions = PAGINATION_PLUGIN_KEY.getState(state);
+          if (!positions.length) return DecorationSet.empty;
+          return DecorationSet.create(state.doc, positions.map((position, index) => (
+            Decoration.widget(position, () => {
+              const gap = document.createElement('span');
+              gap.className = 'editor-page-gap';
+              gap.contentEditable = 'false';
+              gap.setAttribute('aria-hidden', 'true');
+              const precedingPageNumber = document.createElement('span');
+              precedingPageNumber.className = 'editor-page-number editor-page-number--bottom';
+              precedingPageNumber.textContent = String(index + 1);
+              const followingPageNumber = document.createElement('span');
+              followingPageNumber.className = 'editor-page-number editor-page-number--top';
+              followingPageNumber.textContent = String(index + 2);
+              gap.append(precedingPageNumber, followingPageNumber);
+              return gap;
+            }, { side: -1, key: `page-gap-${index}-${position}` })
+          )));
+        },
+      },
+    })];
+  },
+});
+
 function fallbackContent(document) {
   const createBlockId = () => generateBlockId(`${document?.id || 'document'}-block`);
   if (document?.content_json) {
@@ -220,13 +286,18 @@ function fallbackContent(document) {
         attrs: {
           blockId: block.id,
           status: block.status,
+          resumeStatus: block.resume_status ?? null,
+          processingBaselineText: block.processing_baseline_text ?? null,
+          changeSource: block.change_source ?? 'none',
+          partitionGeneration: block.partition_generation ?? 0,
+          formatOverrides: block.format_overrides ?? [],
           paragraphIndex: block.attrs?.paragraphIndex ?? index,
           lineHeight: '2.0',
           textIndent: '0.5in',
           textAlign: 'left',
           fontFamily: 'Times New Roman',
           fontSize: '12pt',
-          length: block.text_content?.length ?? 0,
+          length: countCharacters(block.text_content),
         },
         content: [{ type: 'text', text: block.text_content }],
       };
@@ -269,8 +340,17 @@ function fallbackContent(document) {
 }
 
 function normalizeStyleSettings(styleSettings = {}) {
+  const legacyMargin = String(styleSettings.margin || '1in').replace(/\s*inch(?:es)?$/i, 'in');
+  const normalizedLength = (value, fallback) => (
+    /^\d*\.?\d+(?:in|cm|mm|pt|px)$/i.test(String(value ?? '').trim())
+      ? String(value).trim()
+      : fallback
+  );
   return {
-    margin: styleSettings.margin || '1 inch',
+    marginTop: normalizedLength(styleSettings.marginTop, legacyMargin),
+    marginRight: normalizedLength(styleSettings.marginRight, legacyMargin),
+    marginBottom: normalizedLength(styleSettings.marginBottom, legacyMargin),
+    marginLeft: normalizedLength(styleSettings.marginLeft, legacyMargin),
     fontFamily: styleSettings.font || styleSettings.fontFamily || 'Times New Roman',
     lineHeight: styleSettings.spacing || styleSettings.lineHeight || '2.0',
     textIndent: styleSettings.indentation || styleSettings.textIndent || '0.5in',
@@ -332,11 +412,26 @@ function selectedParagraphInfo(editor) {
       const originalStatus = normalizeBlockStatus(node.attrs.status);
       return {
         blockId: node.attrs.blockId ?? null,
-        status: 'processing',
+        status: originalStatus,
         originalStatus,
-        text: node.textContent ?? '',
+        text: trackedNodeText(node),
+        sourceTextHash: null,
+        partitionGeneration: Number(node.attrs.partitionGeneration) || 0,
+        changeSource: normalizeChangeSource(node.attrs.changeSource),
       };
     }
+  }
+  const processing = blocks.find((block) => block.status === 'processing' && !block.isEmpty);
+  if (processing) {
+    return {
+      blockId: processing.blockId,
+      status: processing.status,
+      originalStatus: processing.status,
+      text: processing.text,
+      sourceTextHash: null,
+      partitionGeneration: Number(processing.attrs.partitionGeneration) || 0,
+      changeSource: normalizeChangeSource(processing.attrs.changeSource),
+    };
   }
   return { blockId: null, status: 'unprocessed' };
 }
@@ -373,15 +468,11 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
     return;
   }
 
-  const blocks = collectTrackedBlocks(editor.state).filter((block) => !block.isEmpty);
-  const selectedIndex = blocks.findIndex((block) => block.blockId === blockId);
-  const hasNextBlock = selectedIndex >= 0 && selectedIndex < blocks.length - 1;
   if (
     !actions
     || actions.dataset.blockId !== blockId
-    || actions.dataset.hasNextBlock !== String(hasNextBlock)
   ) {
-    const nextActions = createSelectedBlockActions(blockId, hasNextBlock);
+    const nextActions = createSelectedBlockActions(blockId);
     if (actions) {
       actions.replaceWith(nextActions);
     } else {
@@ -525,11 +616,10 @@ function selectedBlockActionButton({
   return button;
 }
 
-function createSelectedBlockActions(blockId, hasNextBlock) {
+function createSelectedBlockActions(blockId) {
   const actions = window.document.createElement('span');
   actions.className = 'selected-block-actions';
   actions.dataset.blockId = blockId ?? '';
-  actions.dataset.hasNextBlock = String(hasNextBlock);
   actions.contentEditable = 'false';
   actions.setAttribute('role', 'group');
   actions.setAttribute('aria-label', 'Selected block actions');
@@ -549,22 +639,7 @@ function createSelectedBlockActions(blockId, hasNextBlock) {
   });
   completeButton.textContent = 'Complete';
 
-  const nextButton = selectedBlockActionButton({
-    action: 'next',
-    blockId,
-    label: 'Go to next block',
-    className: 'selected-block-action--next',
-    disabled: !hasNextBlock,
-  });
-  const arrow = window.document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  arrow.setAttribute('viewBox', '0 0 24 24');
-  arrow.setAttribute('aria-hidden', 'true');
-  const shaft = window.document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  shaft.setAttribute('d', 'M4 12h15M13 6l6 6-6 6');
-  arrow.append(shaft);
-  nextButton.append(arrow);
-
-  actions.append(skipButton, completeButton, nextButton);
+  actions.append(skipButton, completeButton);
   return actions;
 }
 
@@ -622,7 +697,8 @@ function collectTrackedBlocks(state) {
   state.doc.descendants((node, pos) => {
     if (!isTrackedTextBlockNode(node)) return;
 
-    const text = node.textContent ?? '';
+    const text = trackedNodeText(node);
+    const length = countCharacters(text);
     blocks.push({
       node,
       pos,
@@ -631,14 +707,19 @@ function collectTrackedBlocks(state) {
       status: normalizeBlockStatus(node.attrs.status),
       isEmpty: !text.trim(),
       text,
-      length: text.length,
+      length,
       type: node.type.name,
       attrs: {
         ...node.attrs,
         ...buildTrackedBlockStyleAttrs(node.attrs),
         blockId: node.attrs.blockId ?? null,
         status: normalizeBlockStatus(node.attrs.status),
-        length: text.length,
+        resumeStatus: node.attrs.resumeStatus ?? null,
+        processingBaselineText: node.attrs.processingBaselineText ?? null,
+        changeSource: normalizeChangeSource(node.attrs.changeSource),
+        partitionGeneration: Math.max(0, Number(node.attrs.partitionGeneration) || 0),
+        formatOverrides: node.attrs.formatOverrides ?? {},
+        length,
       },
     });
     order += 1;
@@ -667,6 +748,11 @@ function createEditorSnapshot(editor) {
     length: block.length,
     char_length: block.length,
     attrs: block.attrs,
+    resume_status: block.attrs.resumeStatus,
+    processing_baseline_text: block.attrs.processingBaselineText,
+    change_source: block.attrs.changeSource,
+    partition_generation: block.attrs.partitionGeneration,
+    format_overrides: block.attrs.formatOverrides,
   }));
   const currentProcessingBlockId = blocks.find((block) => !block.isEmpty && block.status === 'processing')?.id ?? null;
 
@@ -677,7 +763,9 @@ function createEditorSnapshot(editor) {
   };
 }
 
-function reconcileEditorBlocks(editor, previousSnapshot, documentId, { skipEditedStatusReset = false } = {}) {
+function reconcileEditorBlocks(editor, _previousSnapshot, documentId, {
+  skipEditedStatusReset = false,
+} = {}) {
   if (!editor || editor.isDestroyed) return editor?.getJSON();
 
   let changed = false;
@@ -691,7 +779,8 @@ function reconcileEditorBlocks(editor, previousSnapshot, documentId, { skipEdite
     state.doc.descendants((node, pos) => {
       if (!isTrackedTextBlockNode(node)) return;
 
-      const text = node.textContent ?? '';
+      const text = trackedNodeText(node);
+      const length = countCharacters(text);
       const isEmpty = !text.trim();
       let blockId = node.attrs.blockId ?? null;
       if (!blockId || seenBlockIds.has(blockId)) {
@@ -700,19 +789,31 @@ function reconcileEditorBlocks(editor, previousSnapshot, documentId, { skipEdite
       seenBlockIds.add(blockId);
 
       let status = normalizeBlockStatus(node.attrs.status);
-      if (!skipEditedStatusReset && previousSnapshot?.has(blockId) && ['processed', 'skipped'].includes(status)) {
-        if ((previousSnapshot.get(blockId) ?? '') !== text) {
-          status = 'unprocessed';
-        }
-      }
+      let resumeStatus = status === 'processing'
+        ? normalizeResumeStatus(node.attrs.resumeStatus)
+        : null;
+      let processingBaselineText = status === 'processing'
+        ? String(node.attrs.processingBaselineText ?? text)
+        : null;
+      let changeSource = normalizeChangeSource(node.attrs.changeSource);
       if (isEmpty && status === 'processing') {
-        status = 'unprocessed';
+        status = resumeStatus;
+        resumeStatus = null;
+        processingBaselineText = null;
+        changeSource = 'none';
       }
       if (!isEmpty && status === 'processing') {
         if (!processingBlockId) {
           processingBlockId = blockId;
+          if (!skipEditedStatusReset) {
+            changeSource = text === processingBaselineText ? 'none' : 'manual';
+          }
         } else {
-          status = 'unprocessed';
+          const unchanged = text === processingBaselineText;
+          status = unchanged ? resumeStatus : 'unprocessed';
+          resumeStatus = null;
+          processingBaselineText = null;
+          changeSource = unchanged ? 'none' : 'manual';
         }
       }
 
@@ -721,7 +822,12 @@ function reconcileEditorBlocks(editor, previousSnapshot, documentId, { skipEdite
         ...buildTrackedBlockStyleAttrs(node.attrs),
         blockId,
         status,
-        length: text.length,
+        resumeStatus,
+        processingBaselineText,
+        changeSource,
+        partitionGeneration: Math.max(0, Number(node.attrs.partitionGeneration) || 0),
+        formatOverrides: node.attrs.formatOverrides ?? {},
+        length,
       };
       blocks.push({ pos, nextAttrs, isEmpty, blockId, status });
 
@@ -734,23 +840,16 @@ function reconcileEditorBlocks(editor, previousSnapshot, documentId, { skipEdite
         || node.attrs.textAlign !== nextAttrs.textAlign
         || node.attrs.fontFamily !== nextAttrs.fontFamily
         || node.attrs.fontSize !== nextAttrs.fontSize
+        || node.attrs.resumeStatus !== nextAttrs.resumeStatus
+        || node.attrs.processingBaselineText !== nextAttrs.processingBaselineText
+        || node.attrs.changeSource !== nextAttrs.changeSource
+        || node.attrs.partitionGeneration !== nextAttrs.partitionGeneration
+        || JSON.stringify(node.attrs.formatOverrides ?? {}) !== JSON.stringify(nextAttrs.formatOverrides)
       ) {
         tr.setNodeMarkup(pos, undefined, nextAttrs);
         changed = true;
       }
     });
-
-    if (!processingBlockId) {
-      const firstUnprocessed = blocks.find((block) => !block.isEmpty && block.nextAttrs.status === 'unprocessed');
-      if (firstUnprocessed) {
-        processingBlockId = firstUnprocessed.blockId;
-        tr.setNodeMarkup(firstUnprocessed.pos, undefined, {
-          ...firstUnprocessed.nextAttrs,
-          status: 'processing',
-        });
-        changed = true;
-      }
-    }
 
     if (changed) {
       tr.setMeta('addToHistory', false);
@@ -760,6 +859,50 @@ function reconcileEditorBlocks(editor, previousSnapshot, documentId, { skipEdite
   });
 
   return editor.getJSON();
+}
+
+function activateSelectedEditorBlock(editor) {
+  if (!editor || editor.isDestroyed) return false;
+  const selected = selectedParagraphFromState(editor.state);
+  if (!selected || selected.isEmpty) return false;
+  const blocks = collectTrackedBlocks(editor.state);
+  const current = blocks.find((block) => block.status === 'processing');
+  if (current?.blockId === selected.blockId) return false;
+
+  let changed = false;
+  editor.commands.command(({ state, tr, dispatch }) => {
+    for (const block of collectTrackedBlocks(state)) {
+      if (block.blockId === selected.blockId) {
+        tr.setNodeMarkup(block.pos, undefined, {
+          ...block.node.attrs,
+          status: 'processing',
+          resumeStatus: normalizeResumeStatus(block.status),
+          processingBaselineText: block.text,
+          changeSource: 'none',
+        });
+        changed = true;
+        continue;
+      }
+      if (block.status !== 'processing') continue;
+      const baseline = String(block.attrs.processingBaselineText ?? block.text);
+      const unchanged = block.text === baseline;
+      tr.setNodeMarkup(block.pos, undefined, {
+        ...block.node.attrs,
+        status: unchanged
+          ? normalizeResumeStatus(block.attrs.resumeStatus)
+          : 'unprocessed',
+        resumeStatus: null,
+        processingBaselineText: null,
+        changeSource: unchanged ? 'none' : 'manual',
+      });
+      changed = true;
+    }
+    if (!changed) return false;
+    tr.setMeta('blockStateTransition', 'select');
+    dispatch?.(tr);
+    return true;
+  });
+  return changed;
 }
 
 function normalizeEditorBlockNodes(editor, documentId) {
@@ -773,7 +916,7 @@ function normalizeEditorBlockNodes(editor, documentId) {
     paragraphIndex += 1;
     const children = Array.from({ length: node.childCount }, (_, index) => node.child(index));
     if (!children.some((child) => child.type.name === 'blockSegment')) {
-      const text = node.textContent ?? '';
+      const text = trackedNodeText(node);
       if (!text.trim()) return false;
 
       replacements.push({
@@ -783,8 +926,13 @@ function normalizeEditorBlockNodes(editor, documentId) {
           ...buildTrackedBlockStyleAttrs(node.attrs),
           blockId: generateBlockId(`${documentId || 'manual-document'}-block`),
           status: 'unprocessed',
+          resumeStatus: null,
+          processingBaselineText: null,
+          changeSource: 'none',
+          partitionGeneration: 0,
+          formatOverrides: [],
           paragraphIndex: currentParagraphIndex,
-          length: text.length,
+          length: countCharacters(text),
         }, node.content)],
       });
       return false;
@@ -840,43 +988,112 @@ function normalizeEditorBlockNodes(editor, documentId) {
   return true;
 }
 
-async function splitOversizedEditorBlocks(editor, documentId) {
+function repartitionAffectedEditorBlock(editor, documentId, blockId) {
   if (!editor || editor.isDestroyed) return false;
-
-  const hasOversizedBlock = collectTrackedBlocks(editor.state)
-    .some((block) => block.length > DEFAULT_CLUSTER_OPTIONS.maxChars);
-  if (!hasOversizedBlock) return false;
-
-  const { semanticClustering } = await import('../lib/clustering.js');
-  if (editor.isDestroyed) return false;
-  const oversizedBlocks = collectTrackedBlocks(editor.state)
-    .filter((block) => block.length > DEFAULT_CLUSTER_OPTIONS.maxChars)
-    .map((block) => ({ ...block, parts: semanticClustering(block.text) }))
-    .filter((block) => block.parts.length > 1)
-    .sort((a, b) => b.pos - a.pos);
-  if (!oversizedBlocks.length) return false;
-
+  const blocks = collectTrackedBlocks(editor.state).filter((block) => !block.isEmpty);
+  const blockIndex = blocks.findIndex((block) => block.blockId === blockId);
+  const block = blocks[blockIndex];
+  if (!block) return false;
   const prefix = documentId || 'manual-document';
-  editor.commands.command(({ state, tr, dispatch }) => {
-    for (const block of oversizedBlocks) {
-      const inlineBlocks = [];
-      block.parts.forEach((text, index) => {
-        if (index) inlineBlocks.push(state.schema.text(' '));
-        const status = index === 0 ? block.status : 'unprocessed';
-        inlineBlocks.push(state.schema.nodes.blockSegment.create({
-          ...buildTrackedBlockStyleAttrs(block.attrs),
-          paragraphIndex: block.attrs.paragraphIndex ?? null,
-          blockId: index === 0 ? block.blockId : generateBlockId(`${prefix}-block`),
-          status,
-          length: text.length,
-        }, text ? state.schema.text(text) : null));
-      });
 
-      tr.replaceWith(block.pos, block.pos + block.node.nodeSize, inlineBlocks);
+  if (block.length <= DEFAULT_SEGMENTATION_POLICY.maxChars) {
+    const previous = blocks[blockIndex - 1];
+    const previousEnd = previous ? previous.pos + previous.node.nodeSize : 0;
+    const separatorText = previous
+      ? editor.state.doc.textBetween(previousEnd, block.pos, '\n', '\n')
+      : '';
+    const combinedText = previous ? `${previous.text}${separatorText}${block.text}` : block.text;
+    if (
+      block.length >= DEFAULT_SEGMENTATION_POLICY.minChars
+      || !previous
+      || previous.attrs.paragraphIndex !== block.attrs.paragraphIndex
+      || /\n[^\S\r\n]*\n/.test(separatorText)
+      || countCharacters(combinedText) > DEFAULT_SEGMENTATION_POLICY.maxChars
+    ) {
+      return false;
     }
 
-    tr.setMeta('editorBlockPartition', true);
-    tr.setMeta('addToHistory', false);
+    editor.commands.command(({ state, tr, dispatch }) => {
+      const separator = state.doc.slice(previousEnd, block.pos).content;
+      const mergedContent = previous.node.content
+        .append(separator)
+        .append(block.node.content);
+      const mergedText = combinedText;
+      const partitionGeneration = Math.max(
+        Number(previous.attrs.partitionGeneration) || 0,
+        Number(block.attrs.partitionGeneration) || 0,
+      ) + 1;
+      const selectedIsCurrent = selectedParagraphFromState(state)?.blockId === block.blockId;
+      const mergedStatus = selectedIsCurrent || previous.status === 'processing'
+        ? 'processing'
+        : 'unprocessed';
+      const attrs = {
+        ...previous.node.attrs,
+        status: mergedStatus,
+        resumeStatus: mergedStatus === 'processing' ? 'unprocessed' : null,
+        processingBaselineText: mergedStatus === 'processing' ? mergedText : null,
+        changeSource: 'manual',
+        partitionGeneration,
+        length: countCharacters(mergedText),
+      };
+      const merged = previous.node.type.create(attrs, mergedContent, previous.node.marks);
+      tr.replaceWith(previous.pos, block.pos + block.node.nodeSize, merged);
+      tr.setMeta('editorBlockPartition', {
+        type: 'merge',
+        retiredBlockIds: [block.blockId],
+        survivingBlockIds: [previous.blockId],
+        partitionGeneration,
+      });
+      dispatch?.(tr);
+      return true;
+    });
+    return true;
+  }
+
+  const ranges = segmentText(block.text);
+  if (ranges.length <= 1) return false;
+
+  editor.commands.command(({ state, tr, dispatch }) => {
+    const inlineBlocks = [];
+    const selectedOffset = Math.max(
+      0,
+      state.selection.from - block.pos - 1,
+    );
+    const selectedSegmentIndex = Math.max(
+      0,
+      ranges.findIndex((range) => selectedOffset >= range.start && selectedOffset <= range.end),
+    );
+    const partitionGeneration = (Number(block.attrs.partitionGeneration) || 0) + 1;
+    const createdIds = [];
+    ranges.forEach((range, index) => {
+      const nextId = index === 0 ? block.blockId : generateBlockId(`${prefix}-block`);
+      createdIds.push(nextId);
+      const status = index === selectedSegmentIndex && block.status === 'processing'
+        ? 'processing'
+        : 'unprocessed';
+      const content = block.node.content.cut(range.start, range.end);
+      inlineBlocks.push(state.schema.nodes.blockSegment.create({
+          ...buildTrackedBlockStyleAttrs(block.attrs),
+          paragraphIndex: block.attrs.paragraphIndex ?? null,
+          blockId: nextId,
+          status,
+          resumeStatus: status === 'processing' ? 'unprocessed' : null,
+          processingBaselineText: status === 'processing' ? range.text : null,
+          changeSource: status === 'processing' ? 'manual' : 'none',
+          partitionGeneration,
+          formatOverrides: block.attrs.formatOverrides ?? {},
+          length: countCharacters(range.text),
+        }, content));
+    });
+
+    tr.replaceWith(block.pos, block.pos + block.node.nodeSize, inlineBlocks);
+
+    tr.setMeta('editorBlockPartition', {
+      type: 'split',
+      retiredBlockIds: [],
+      survivingBlockIds: createdIds,
+      partitionGeneration,
+    });
     dispatch?.(tr);
     return true;
   });
@@ -898,9 +1115,9 @@ function selectedParagraphFromState(state) {
       pos: $from.before(depth),
       blockId: node.attrs.blockId ?? null,
       status: normalizeBlockStatus(node.attrs.status),
-      isEmpty: !node.textContent?.trim(),
-      text: node.textContent ?? '',
-      length: (node.textContent ?? '').length,
+      isEmpty: !trackedNodeText(node).trim(),
+      text: trackedNodeText(node),
+      length: countCharacters(trackedNodeText(node)),
       type: node.type.name,
     };
   }
@@ -913,7 +1130,7 @@ function paragraphTextSnapshot(editor) {
 
   editor.state.doc.descendants((node) => {
     if (!isTrackedTextBlockNode(node) || !node.attrs.blockId) return;
-    snapshot.set(node.attrs.blockId, node.textContent ?? '');
+    snapshot.set(node.attrs.blockId, trackedNodeText(node));
   });
   return snapshot;
 }
@@ -937,6 +1154,8 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   const suppressEditedStatusResetRef = useRef(false);
   const blockPartitionTimerRef = useRef(null);
   const suppressProgrammaticUpdateRef = useRef(false);
+  const callbacksRef = useRef({ onChange, onBlockStatusChange, onActiveBlockChange });
+  callbacksRef.current = { onChange, onBlockStatusChange, onActiveBlockChange };
   const [pageCount, setPageCount] = useState(1);
   const processingBlockId = useMemo(() => {
     if (document?.current_processing_block_id) return document.current_processing_block_id;
@@ -961,6 +1180,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       BlockSelectionDecoration,
       AnalysisPhraseDecoration,
       PageBreak,
+      PaginationDecoration,
       BulletList.configure({ keepMarks: true }),
       OrderedList.configure({ keepMarks: true }),
       ListItem,
@@ -987,7 +1207,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       }
       normalizeEditorBlockNodes(activeEditor, document?.id);
       const suppressBlockUiActivation = suppressEditedStatusResetRef.current;
-      const skipEditedStatusReset = suppressBlockUiActivation || isHistoryTransaction(transaction);
+      const skipEditedStatusReset = suppressBlockUiActivation;
       const normalizedJson = reconcileEditorBlocks(
         activeEditor,
         paragraphTextSnapshotRef.current,
@@ -1003,30 +1223,44 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       }
       const info = selectedParagraphInfo(activeEditor);
       syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
-      onChange?.({
-        ...createEditorSnapshot(activeEditor),
+      const snapshot = createEditorSnapshot(activeEditor);
+      callbacksRef.current.onChange?.({
+        ...snapshot,
         contentJson: normalizedJson,
         activeBlock: info,
       });
-      onActiveBlockChange?.(info);
+      callbacksRef.current.onActiveBlockChange?.(info);
+      if (
+        transaction.getMeta('blockStateTransition') === 'select'
+        && info.blockId
+      ) {
+        callbacksRef.current.onBlockStatusChange?.({
+          blockId: info.blockId,
+          status: 'processing',
+          replacementText: null,
+          changeSource: 'none',
+          ...snapshot,
+        });
+      }
       paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
 
       if (
         transaction.docChanged
         && !transaction.getMeta('editorBlockPartition')
         && !transaction.getMeta('editorBlockNormalization')
-        && !isHistoryTransaction(transaction)
       ) {
+        const affectedBlockId = info.blockId;
         clearTimeout(blockPartitionTimerRef.current);
         blockPartitionTimerRef.current = setTimeout(() => {
-          void splitOversizedEditorBlocks(activeEditor, document?.id);
-        }, 450);
+          repartitionAffectedEditorBlock(activeEditor, document?.id, affectedBlockId);
+        }, 120);
       }
     },
     onSelectionUpdate({ editor: activeEditor }) {
+      activateSelectedEditorBlock(activeEditor);
       const info = selectedParagraphInfo(activeEditor);
       syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
-      onActiveBlockChange?.(info);
+      callbacksRef.current.onActiveBlockChange?.(info);
     },
   }, [document?.id]);
 
@@ -1080,22 +1314,17 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         const targetBlockId = button.dataset.selectedBlockId ?? null;
         if (action === 'skip') setSelectedBlockStatus('skipped', targetBlockId);
         if (action === 'complete') setSelectedBlockStatus('processed', targetBlockId);
-        if (action === 'next') selectNextBlock();
         return;
       }
 
       const clickedBlock = event.target.closest?.('.doc-block');
-      const blockSelectionActive = editor.storage.blockSelectionDecoration.active;
-      const blockSelectionExited = blockSelectionActive === false || (
-        blockSelectionActive == null
-        && !hasUnfinishedBlocks(collectTrackedBlocks(editor.state))
-      );
-      if (!clickedBlock || !blockSelectionExited) return;
+      if (!clickedBlock) return;
 
       editor.storage.blockSelectionDecoration.active = true;
       editor.view.dispatch(editor.state.tr
         .setMeta('blockSelectionActivation', true)
         .setMeta('addToHistory', false));
+      activateSelectedEditorBlock(editor);
       const info = selectedParagraphInfo(editor);
       syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
       onActiveBlockChange?.(info);
@@ -1121,8 +1350,15 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       state.doc.descendants((node, pos) => {
         if (!isStyleableTextNode(node)) return;
 
-        const nextAttrs = { ...node.attrs, ...attrs };
-        const didChange = Object.entries(attrs).some(([key, value]) => node.attrs[key] !== value);
+        const overrideValue = node.attrs.formatOverrides;
+        const overrides = new Set(Array.isArray(overrideValue)
+          ? overrideValue
+          : Object.keys(overrideValue ?? {}));
+        const synchronizedAttrs = Object.fromEntries(
+          Object.entries(attrs).filter(([key]) => !overrides.has(key)),
+        );
+        const nextAttrs = { ...node.attrs, ...synchronizedAttrs };
+        const didChange = Object.entries(synchronizedAttrs).some(([key, value]) => node.attrs[key] !== value);
         if (!didChange) return;
 
         tr.setNodeMarkup(pos, undefined, nextAttrs);
@@ -1163,39 +1399,77 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   }, [editor, document?.id]);
 
   useEffect(() => {
-    if (!pageRef.current) return undefined;
+    if (!editor || editor.isDestroyed || !pageRef.current) return undefined;
+    let timer = null;
+    let measuring = false;
 
-    const updatePageCount = () => {
-      const editorSurface = pageRef.current.querySelector('.document-editor-surface');
+    const measureAtSafeBlocks = () => {
+      if (measuring || editor.isDestroyed) return;
+      measuring = true;
       const pageStyles = getComputedStyle(pageRef.current);
-      const pageHeight = Number.parseFloat(pageStyles.getPropertyValue('--a4-page-height'))
-        || A4_PAGE_HEIGHT_PX;
-      const paddingTop = Number.parseFloat(pageStyles.paddingTop) || 0;
-      const paddingBottom = Number.parseFloat(pageStyles.paddingBottom) || 0;
-      const contentHeight = Math.max(
-        paddingTop + (editorSurface?.scrollHeight ?? 0) + paddingBottom,
-        pageHeight
+      const availableHeight = Math.max(
+        240,
+        (Number.parseFloat(pageStyles.getPropertyValue('--a4-page-height')) || A4_PAGE_HEIGHT_PX)
+          - (Number.parseFloat(pageStyles.paddingTop) || 0)
+          - (Number.parseFloat(pageStyles.paddingBottom) || 0),
       );
-      const nextPageCount = Math.max(1, Math.ceil(contentHeight / pageHeight));
-      setPageCount((current) => (current === nextPageCount ? current : nextPageCount));
+      const positions = [];
+      let used = 0;
+      editor.state.doc.forEach((node, offset) => {
+        const dom = editor.view.nodeDOM(offset);
+        const height = dom instanceof HTMLElement
+          ? dom.getBoundingClientRect().height
+          : 0;
+        if (node.type.name === 'pageBreak') {
+          if (!positions.includes(offset)) positions.push(offset);
+          used = 0;
+          return;
+        }
+        if (used > 0 && height > 0 && used + height > availableHeight) {
+          positions.push(offset);
+          used = height;
+        } else {
+          used += height;
+        }
+      });
+      const current = PAGINATION_PLUGIN_KEY.getState(editor.state) ?? [];
+      if (JSON.stringify(current) !== JSON.stringify(positions)) {
+        editor.view.dispatch(editor.state.tr
+          .setMeta(PAGINATION_META, positions)
+          .setMeta('addToHistory', false));
+      }
+      setPageCount(positions.length + 1);
+      measuring = false;
     };
-
-    updatePageCount();
-    const observer = new ResizeObserver(updatePageCount);
+    const schedule = () => {
+      clearTimeout(timer);
+      timer = setTimeout(measureAtSafeBlocks, 120);
+    };
+    schedule();
+    const observer = new ResizeObserver(schedule);
+    observer.observe(editor.view.dom);
     observer.observe(pageRef.current);
-    const editorSurface = pageRef.current.querySelector('.document-editor-surface');
-    if (editorSurface) observer.observe(editorSurface);
-
+    window.addEventListener('resize', schedule);
+    editor.on('transaction', schedule);
     return () => {
+      clearTimeout(timer);
       observer.disconnect();
+      window.removeEventListener('resize', schedule);
+      editor.off('transaction', schedule);
     };
   }, [editor, document?.id, styleSignature]);
 
   const pageStyle = {
     '--a4-page-height': `${A4_PAGE_HEIGHT_PX}px`,
     '--a4-page-count': pageCount,
-    '--a4-paper-height': `${pageCount * A4_PAGE_HEIGHT_PX}px`,
-    '--paper-margin': cssLength(normalizedStyle.margin, '1in'),
+    '--a4-paper-height': `${
+      (pageCount * A4_PAGE_HEIGHT_PX) + ((pageCount - 1) * PAGE_GUTTER_HEIGHT_PX)
+    }px`,
+    '--paper-page-gutter-height': `${PAGE_GUTTER_HEIGHT_PX}px`,
+    '--paper-margin-top': cssLength(normalizedStyle.marginTop, '1in'),
+    '--paper-margin-right': cssLength(normalizedStyle.marginRight, '1in'),
+    '--paper-margin-bottom': cssLength(normalizedStyle.marginBottom, '1in'),
+    '--paper-margin-left': cssLength(normalizedStyle.marginLeft, '1in'),
     '--paper-font-family': normalizedStyle.fontFamily,
     '--paper-line-height': normalizedStyle.lineHeight,
     '--paper-text-indent': normalizedStyle.textIndent,
@@ -1203,7 +1477,12 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     ...pageNumberPosition(normalizedStyle.pageNumber),
   };
 
-  function applyCurrentBlockStatus({ status, replacementText = null, targetBlockId = null } = {}) {
+  function applyCurrentBlockStatus({
+    status,
+    replacementText = null,
+    targetBlockId = null,
+    changeSource = replacementText === null ? 'none' : 'ai-replacement',
+  } = {}) {
     if (!editor || editor.isDestroyed) return;
 
     let updatedBlockId = selectedParagraphInfo(editor).blockId;
@@ -1231,11 +1510,29 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       if (status === 'processing') {
         editor.storage.blockSelectionDecoration.active = true;
         paragraphs.forEach((paragraph) => {
-          const nextStatus = paragraph.pos === target.pos ? 'processing' : (
-            paragraph.status === 'processing' ? 'unprocessed' : paragraph.status
-          );
-          if (nextStatus === paragraph.status) return;
-          tr.setNodeMarkup(paragraph.pos, undefined, { ...paragraph.node.attrs, status: nextStatus });
+          if (paragraph.pos === target.pos) {
+            if (paragraph.status === 'processing') return;
+            tr.setNodeMarkup(paragraph.pos, undefined, {
+              ...paragraph.node.attrs,
+              status: 'processing',
+              resumeStatus: normalizeResumeStatus(paragraph.status),
+              processingBaselineText: paragraph.text,
+              changeSource: 'none',
+            });
+            return;
+          }
+          if (paragraph.status !== 'processing') return;
+          const baseline = String(paragraph.attrs.processingBaselineText ?? paragraph.text);
+          const unchanged = paragraph.text === baseline;
+          tr.setNodeMarkup(paragraph.pos, undefined, {
+            ...paragraph.node.attrs,
+            status: unchanged
+              ? normalizeResumeStatus(paragraph.attrs.resumeStatus)
+              : 'unprocessed',
+            resumeStatus: null,
+            processingBaselineText: null,
+            changeSource: unchanged ? 'none' : 'manual',
+          });
         });
       } else if (status === 'processed' || status === 'skipped') {
         const nextProcessing = chooseNextUnfinishedBlock(paragraphs, target.blockId);
@@ -1254,8 +1551,27 @@ const DocumentEditor = forwardRef(function DocumentEditor({
           }
 
           nextAttrs.status = nextStatus;
+          if (paragraph.pos === target.pos) {
+            nextAttrs.resumeStatus = null;
+            nextAttrs.processingBaselineText = null;
+            nextAttrs.changeSource = normalizeChangeSource(changeSource);
+          } else if (nextProcessing && paragraph.blockId === nextProcessing.blockId) {
+            nextAttrs.resumeStatus = 'unprocessed';
+            nextAttrs.processingBaselineText = paragraph.text;
+            nextAttrs.changeSource = 'none';
+          } else if (paragraph.status === 'processing') {
+            const baseline = String(paragraph.attrs.processingBaselineText ?? paragraph.text);
+            const unchanged = paragraph.text === baseline;
+            nextAttrs.status = unchanged
+              ? normalizeResumeStatus(paragraph.attrs.resumeStatus)
+              : 'unprocessed';
+            nextAttrs.resumeStatus = null;
+            nextAttrs.processingBaselineText = null;
+            nextAttrs.changeSource = unchanged ? 'none' : 'manual';
+            nextStatus = nextAttrs.status;
+          }
           if (paragraph.pos === target.pos && replacementText !== null) {
-            nextAttrs.length = replacementText.length;
+            nextAttrs.length = countCharacters(replacementText);
           }
           const attrsChanged = nextStatus !== paragraph.status
             || (paragraph.pos === target.pos && replacementText !== null);
@@ -1301,6 +1617,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         blockId: updatedBlockId,
         status,
         replacementText,
+        changeSource,
         nextProcessingBlockId: nextLocalProcessingId,
         ...snapshot,
       });
@@ -1311,23 +1628,59 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   useImperativeHandle(ref, () => ({
     applyCurrentBlockStatus,
     getSnapshot: () => createEditorSnapshot(editor),
-  }), [editor, onBlockStatusChange]);
+    getFormatAudit: () => auditDocumentFormatting(editor?.getJSON(), normalizedStyle),
+    normalizeFormatting: () => {
+      if (!editor || editor.isDestroyed) return null;
+      const textStyle = editor.schema.marks.textStyle;
+      editor.commands.command(({ state, tr, dispatch }) => {
+        state.doc.descendants((node, pos) => {
+          if (!isTrackedTextBlockNode(node)) return;
+          tr.setNodeMarkup(pos, undefined, {
+            ...node.attrs,
+            lineHeight: normalizedStyle.lineHeight,
+            textIndent: normalizedStyle.textIndent,
+            textAlign: 'left',
+            fontFamily: normalizedStyle.fontFamily,
+            fontSize: normalizedStyle.fontSize,
+            formatOverrides: [],
+          });
+          if (textStyle && node.content.size) {
+            const from = pos + 1;
+            const to = pos + node.nodeSize - 1;
+            tr.removeMark(from, to, textStyle);
+            tr.addMark(from, to, textStyle.create({
+              fontFamily: normalizedStyle.fontFamily,
+              fontSize: normalizedStyle.fontSize,
+            }));
+          }
+        });
+        dispatch?.(tr.scrollIntoView());
+        return true;
+      });
+      return createEditorSnapshot(editor);
+    },
+    keepLocalFormatting: () => {
+      if (!editor || editor.isDestroyed) return null;
+      const audit = auditDocumentFormatting(editor.getJSON(), normalizedStyle);
+      const byId = new Map(audit.differences.map((item) => [item.blockId, item.properties]));
+      editor.commands.command(({ state, tr, dispatch }) => {
+        state.doc.descendants((node, pos) => {
+          if (!isTrackedTextBlockNode(node) || !byId.has(node.attrs.blockId)) return;
+          tr.setNodeMarkup(pos, undefined, {
+            ...node.attrs,
+            formatOverrides: byId.get(node.attrs.blockId),
+          });
+        });
+        dispatch?.(tr);
+        return true;
+      });
+      return createEditorSnapshot(editor);
+    },
+  }), [editor, onBlockStatusChange, normalizedStyle]);
 
   function setSelectedBlockStatus(status, targetBlockId = null) {
     const blockId = targetBlockId ?? selectedParagraphInfo(editor).blockId;
     applyCurrentBlockStatus({ status, targetBlockId: blockId });
-  }
-
-  function selectNextBlock() {
-    if (!editor || editor.isDestroyed) return;
-
-    const blocks = collectTrackedBlocks(editor.state).filter((block) => !block.isEmpty);
-    const selectedBlockId = selectedParagraphInfo(editor).blockId;
-    const selectedIndex = blocks.findIndex((block) => block.blockId === selectedBlockId);
-    const nextBlock = selectedIndex >= 0 ? blocks[selectedIndex + 1] : blocks[0];
-    if (!nextBlock) return;
-
-    editor.chain().focus().setTextSelection(nextBlock.pos + 1).scrollIntoView().run();
   }
 
   return (

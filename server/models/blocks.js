@@ -1,5 +1,11 @@
 import { randomUUID } from 'crypto';
 import { query } from './db.js';
+import { countCharacters } from '../../src/lib/blockSegmentation/index.js';
+import {
+  normalizeBlockStatus,
+  normalizeChangeSource,
+  normalizeResumeStatus,
+} from '../../src/lib/blockState.js';
 
 const DEFAULT_BLOCK_ATTRS = {
   lineHeight: '2.0',
@@ -11,7 +17,6 @@ const DEFAULT_BLOCK_ATTRS = {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
-const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 
 function styleAttrsFromSettings(styleSettings = {}) {
   return {
@@ -32,6 +37,7 @@ function styleAttrsFromSettings(styleSettings = {}) {
 function textFromNode(node) {
   if (!node) return '';
   if (node.type === 'text') return node.text ?? '';
+  if (node.type === 'hardBreak') return '\n';
   if (!Array.isArray(node.content)) return '';
   return node.content.map(textFromNode).join('');
 }
@@ -67,6 +73,9 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
     const normalized = normalizeBlockInput(blockInput);
     const id = randomUUID();
     const status = index === 0 ? 'processing' : 'unprocessed';
+    const resumeStatus = index === 0 ? 'unprocessed' : null;
+    const processingBaselineText = index === 0 ? normalized.text : null;
+    const charLength = countCharacters(normalized.text);
     const attrs = {
       ...mergedAttrs,
       ...normalized.attrs,
@@ -75,7 +84,12 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
         : index,
       blockId: id,
       status,
-      length: normalized.text.length,
+      resumeStatus,
+      processingBaselineText,
+      changeSource: 'none',
+      partitionGeneration: 0,
+      formatOverrides: [],
+      length: charLength,
     };
 
     return {
@@ -83,7 +97,12 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
       blockIndex: index,
       textContent: normalized.text,
       status,
-      charLength: normalized.text.length,
+      resumeStatus,
+      processingBaselineText,
+      changeSource: 'none',
+      partitionGeneration: 0,
+      formatOverrides: [],
+      charLength,
       attrs,
       tiptapNode: {
         type: 'blockSegment',
@@ -111,14 +130,20 @@ export function createContentJson(blocks) {
           fontSize: block.attrs.fontSize,
         },
         content: [],
+        lastText: '',
       };
       paragraphs.push(paragraph);
     }
 
-    if (paragraph.content.length) {
+    if (
+      paragraph.content.length
+      && !/\s$/u.test(paragraph.lastText)
+      && !/^\s/u.test(block.textContent)
+    ) {
       paragraph.content.push({ type: 'text', text: ' ' });
     }
     paragraph.content.push(block.tiptapNode);
+    paragraph.lastText = block.textContent;
   }
 
   return {
@@ -136,9 +161,13 @@ export async function insertBlocks(client, documentId, blocks) {
     await client.query(
       `
         insert into document_blocks (
-          id, document_id, block_index, text_content, status, char_length, attrs, tiptap_node
+          id, document_id, block_index, text_content, status, resume_status,
+          processing_baseline_text, change_source, partition_generation,
+          format_overrides, char_length, attrs, tiptap_node
         )
-        values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+        values (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::jsonb
+        )
       `,
       [
         block.id,
@@ -146,6 +175,11 @@ export async function insertBlocks(client, documentId, blocks) {
         block.blockIndex,
         block.textContent,
         block.status,
+        block.resumeStatus,
+        block.processingBaselineText,
+        block.changeSource,
+        block.partitionGeneration,
+        JSON.stringify(block.formatOverrides),
         block.charLength,
         JSON.stringify(block.attrs),
         JSON.stringify(block.tiptapNode),
@@ -157,7 +191,9 @@ export async function insertBlocks(client, documentId, blocks) {
 export async function getBlocksByDocument(documentId) {
   const result = await query(
     `
-      select id, document_id, block_index, text_content, status, char_length, attrs, tiptap_node, created_at, updated_at
+      select id, document_id, block_index, text_content, status, resume_status,
+             processing_baseline_text, change_source, partition_generation,
+             format_overrides, char_length, attrs, tiptap_node, created_at, updated_at
       from document_blocks
       where document_id = $1
       order by block_index asc
@@ -246,19 +282,52 @@ export async function chooseNextProcessingBlock(client, documentId, fromBlockId 
 
   const rows = blocks.rows;
   const currentIndex = rows.find((row) => row.id === fromBlockId)?.block_index ?? -1;
-  const above = rows
-    .filter((row) => row.status === 'unprocessed' && row.block_index < currentIndex)
-    .sort((a, b) => b.block_index - a.block_index)[0];
   const below = rows.find((row) => row.status === 'unprocessed' && row.block_index > currentIndex);
   const fallback = rows.find((row) => row.status === 'unprocessed');
-  const next = above ?? below ?? fallback ?? null;
+  const next = below ?? fallback ?? null;
 
   await client.query(
     `
       update document_blocks
-      set status = 'unprocessed',
-          attrs = jsonb_set(attrs, '{status}', '"unprocessed"', true),
-          tiptap_node = jsonb_set(tiptap_node, '{attrs,status}', '"unprocessed"', true)
+      set status = case
+            when text_content = processing_baseline_text then coalesce(resume_status, 'unprocessed')
+            else 'unprocessed'
+          end,
+          resume_status = null,
+          processing_baseline_text = null,
+          change_source = case
+            when text_content = processing_baseline_text then 'none'
+            else 'manual'
+          end,
+          attrs = attrs || jsonb_build_object(
+            'status', case
+              when text_content = processing_baseline_text then coalesce(resume_status, 'unprocessed')
+              else 'unprocessed'
+            end,
+            'resumeStatus', null,
+            'processingBaselineText', null,
+            'changeSource', case
+              when text_content = processing_baseline_text then 'none'
+              else 'manual'
+            end
+          ),
+          tiptap_node = jsonb_set(
+            tiptap_node,
+            '{attrs}',
+            coalesce(tiptap_node->'attrs', '{}'::jsonb) || jsonb_build_object(
+              'status', case
+                when text_content = processing_baseline_text then coalesce(resume_status, 'unprocessed')
+                else 'unprocessed'
+              end,
+              'resumeStatus', null,
+              'processingBaselineText', null,
+              'changeSource', case
+                when text_content = processing_baseline_text then 'none'
+                else 'manual'
+              end
+            ),
+            true
+          )
       where document_id = $1
         and status = 'processing'
         and ($2::uuid is null or id <> $2)
@@ -271,8 +340,26 @@ export async function chooseNextProcessingBlock(client, documentId, fromBlockId 
       `
         update document_blocks
         set status = 'processing',
-            attrs = jsonb_set(attrs, '{status}', '"processing"', true),
-            tiptap_node = jsonb_set(tiptap_node, '{attrs,status}', '"processing"', true)
+            resume_status = 'unprocessed',
+            processing_baseline_text = text_content,
+            change_source = 'none',
+            attrs = attrs || jsonb_build_object(
+              'status', 'processing',
+              'resumeStatus', 'unprocessed',
+              'processingBaselineText', text_content,
+              'changeSource', 'none'
+            ),
+            tiptap_node = jsonb_set(
+              tiptap_node,
+              '{attrs}',
+              coalesce(tiptap_node->'attrs', '{}'::jsonb) || jsonb_build_object(
+                'status', 'processing',
+                'resumeStatus', 'unprocessed',
+                'processingBaselineText', text_content,
+                'changeSource', 'none'
+              ),
+              true
+            )
         where document_id = $1
           and id = $2
       `,
@@ -295,7 +382,7 @@ export async function chooseNextProcessingBlock(client, documentId, fromBlockId 
 export async function updateBlockStatus(client, { documentId, blockId, status }) {
   const target = await client.query(
     `
-      select id
+      select id, status, text_content, resume_status, processing_baseline_text
       from document_blocks
       where document_id = $1
         and id = $2
@@ -311,27 +398,148 @@ export async function updateBlockStatus(client, { documentId, blockId, status })
     await client.query(
       `
         update document_blocks
-        set status = 'unprocessed',
-            attrs = jsonb_set(attrs, '{status}', '"unprocessed"', true),
-            tiptap_node = jsonb_set(tiptap_node, '{attrs,status}', '"unprocessed"', true)
+        set status = case
+              when text_content = processing_baseline_text then coalesce(resume_status, 'unprocessed')
+              else 'unprocessed'
+            end,
+            resume_status = null,
+            processing_baseline_text = null,
+            change_source = case
+              when text_content = processing_baseline_text then 'none'
+              else 'manual'
+            end,
+            attrs = attrs || jsonb_build_object(
+              'status', case
+                when text_content = processing_baseline_text then coalesce(resume_status, 'unprocessed')
+                else 'unprocessed'
+              end,
+              'resumeStatus', null,
+              'processingBaselineText', null,
+              'changeSource', case
+                when text_content = processing_baseline_text then 'none'
+                else 'manual'
+              end
+            ),
+            tiptap_node = jsonb_set(
+              tiptap_node,
+              '{attrs}',
+              coalesce(tiptap_node->'attrs', '{}'::jsonb) || jsonb_build_object(
+                'status', case
+                  when text_content = processing_baseline_text then coalesce(resume_status, 'unprocessed')
+                  else 'unprocessed'
+                end,
+                'resumeStatus', null,
+                'processingBaselineText', null,
+                'changeSource', case
+                  when text_content = processing_baseline_text then 'none'
+                  else 'manual'
+                end
+              ),
+              true
+            )
         where document_id = $1
           and status = 'processing'
+          and id <> $2
       `,
-      [documentId]
+      [documentId, blockId]
     );
   }
 
-  await client.query(
-    `
-      update document_blocks
-      set status = $3,
-          attrs = jsonb_set(attrs, '{status}', to_jsonb($3::text), true),
-          tiptap_node = jsonb_set(tiptap_node, '{attrs,status}', to_jsonb($3::text), true)
-      where document_id = $1
-        and id = $2
-    `,
-    [documentId, blockId, status]
-  );
+  if (status === 'processing') {
+    await client.query(
+      `
+        update document_blocks
+        set status = 'processing',
+            resume_status = case when status = 'processing'
+              then coalesce(resume_status, 'unprocessed')
+              else status
+            end,
+            processing_baseline_text = case when status = 'processing'
+              then coalesce(processing_baseline_text, text_content)
+              else text_content
+            end,
+            change_source = 'none',
+            attrs = attrs || jsonb_build_object(
+              'status', 'processing',
+              'resumeStatus', case when status = 'processing'
+                then coalesce(resume_status, 'unprocessed')
+                else status
+              end,
+              'processingBaselineText', case when status = 'processing'
+                then coalesce(processing_baseline_text, text_content)
+                else text_content
+              end,
+              'changeSource', 'none'
+            ),
+            tiptap_node = jsonb_set(
+              tiptap_node,
+              '{attrs}',
+              coalesce(tiptap_node->'attrs', '{}'::jsonb) || jsonb_build_object(
+                'status', 'processing',
+                'resumeStatus', case when status = 'processing'
+                  then coalesce(resume_status, 'unprocessed')
+                  else status
+                end,
+                'processingBaselineText', case when status = 'processing'
+                  then coalesce(processing_baseline_text, text_content)
+                  else text_content
+                end,
+                'changeSource', 'none'
+              ),
+              true
+            )
+        where document_id = $1 and id = $2
+      `,
+      [documentId, blockId],
+    );
+  } else {
+    await client.query(
+      `
+        update document_blocks
+        set status = $3,
+            resume_status = null,
+            processing_baseline_text = null,
+            attrs = attrs || jsonb_build_object(
+              'status', $3::text,
+              'resumeStatus', null,
+              'processingBaselineText', null
+            ),
+            tiptap_node = jsonb_set(
+              tiptap_node,
+              '{attrs}',
+              coalesce(tiptap_node->'attrs', '{}'::jsonb) || jsonb_build_object(
+                'status', $3::text,
+                'resumeStatus', null,
+                'processingBaselineText', null
+              ),
+              true
+            )
+        where document_id = $1 and id = $2
+      `,
+      [documentId, blockId, status],
+    );
+  }
+
+  if (status === 'skipped') {
+    await client.query(
+      'delete from block_rewrite_options where document_id = $1 and block_id = $2',
+      [documentId, blockId],
+    );
+    await client.query(
+      'delete from block_analyses where document_id = $1 and block_id = $2',
+      [documentId, blockId],
+    );
+    await client.query(
+      'delete from block_practice_attempts where document_id = $1 and block_id = $2',
+      [documentId, blockId],
+    );
+    await client.query(
+      `update block_rewrite_jobs
+       set status = 'cancelled', safe_error_code = 'BLOCK_SKIPPED'
+       where document_id = $1 and block_id = $2 and status in ('queued', 'running')`,
+      [documentId, blockId],
+    );
+  }
 
   let next = null;
   if (status === 'processed' || status === 'skipped') {
@@ -346,6 +554,13 @@ export async function updateBlockStatus(client, { documentId, blockId, status })
       [documentId, blockId]
     );
     next = { id: blockId, status: 'processing' };
+  } else {
+    await client.query(
+      `update documents
+       set current_processing_block_id = null
+       where id = $1 and current_processing_block_id = $2`,
+      [documentId, blockId],
+    );
   }
 
   await recalculateDocumentProgress(client, documentId);
@@ -359,9 +574,13 @@ export async function replaceBlocksFromSnapshot(client, documentId, blocks) {
     await client.query(
       `
         insert into document_blocks (
-          id, document_id, block_index, text_content, status, char_length, attrs, tiptap_node
+          id, document_id, block_index, text_content, status, resume_status,
+          processing_baseline_text, change_source, partition_generation,
+          format_overrides, char_length, attrs, tiptap_node
         )
-        values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+        values (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::jsonb
+        )
       `,
       [
         block.id,
@@ -369,6 +588,11 @@ export async function replaceBlocksFromSnapshot(client, documentId, blocks) {
         block.block_index,
         block.text_content,
         block.status,
+        block.resume_status ?? block.attrs?.resumeStatus ?? null,
+        block.processing_baseline_text ?? block.attrs?.processingBaselineText ?? null,
+        block.change_source ?? block.attrs?.changeSource ?? 'none',
+        block.partition_generation ?? block.attrs?.partitionGeneration ?? 0,
+        JSON.stringify(block.format_overrides ?? block.attrs?.formatOverrides ?? []),
         block.char_length,
         JSON.stringify(block.attrs),
         JSON.stringify(block.tiptap_node),
@@ -389,8 +613,19 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
 
     const existingAttrs = node.attrs ?? {};
     const blockId = validBlockId(existingAttrs.blockId) ? existingAttrs.blockId : randomUUID();
-    const rawStatus = existingAttrs.status;
-    const status = BLOCK_STATUSES.has(rawStatus) ? rawStatus : 'unprocessed';
+    const status = normalizeBlockStatus(existingAttrs.status);
+    const resumeStatus = status === 'processing'
+      ? normalizeResumeStatus(existingAttrs.resumeStatus)
+      : null;
+    const processingBaselineText = status === 'processing'
+      ? String(existingAttrs.processingBaselineText ?? textContent)
+      : null;
+    const changeSource = normalizeChangeSource(existingAttrs.changeSource);
+    const partitionGeneration = Math.max(0, Number(existingAttrs.partitionGeneration) || 0);
+    const formatOverrides = Array.isArray(existingAttrs.formatOverrides)
+      ? [...new Set(existingAttrs.formatOverrides.filter((value) => typeof value === 'string'))]
+      : Object.keys(existingAttrs.formatOverrides ?? {});
+    const charLength = countCharacters(textContent);
     const attrs = {
       ...styleAttrs,
       ...existingAttrs,
@@ -399,7 +634,12 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
         : paragraphIndex,
       blockId,
       status,
-      length: textContent.length,
+      resumeStatus,
+      processingBaselineText,
+      changeSource,
+      partitionGeneration,
+      formatOverrides,
+      length: charLength,
     };
     const tiptapNode = {
       ...node,
@@ -412,7 +652,12 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
       index: blockEntries.length,
       textContent,
       status,
-      charLength: textContent.length,
+      resumeStatus,
+      processingBaselineText,
+      changeSource,
+      partitionGeneration,
+      formatOverrides,
+      charLength,
       attrs,
       tiptapNode,
     });
@@ -431,6 +676,15 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
         ...(attrs.fontSize ? { fontSize: attrs.fontSize } : {}),
         ...(attrs.blockId ? { blockId: attrs.blockId } : {}),
         ...(attrs.status ? { status: attrs.status } : {}),
+        ...(attrs.resumeStatus ? { resumeStatus: attrs.resumeStatus } : {}),
+        ...(attrs.processingBaselineText ? {
+          processingBaselineText: attrs.processingBaselineText,
+        } : {}),
+        ...(attrs.changeSource ? { changeSource: attrs.changeSource } : {}),
+        ...(Number.isInteger(attrs.partitionGeneration) ? {
+          partitionGeneration: attrs.partitionGeneration,
+        } : {}),
+        ...(attrs.formatOverrides ? { formatOverrides: attrs.formatOverrides } : {}),
         ...(Number.isInteger(attrs.paragraphIndex) ? { paragraphIndex: attrs.paragraphIndex } : {}),
       },
       content: Array.isArray(node?.content) ? node.content : [],
@@ -485,17 +739,14 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
       continue;
     }
     entry.status = 'unprocessed';
+    entry.resumeStatus = null;
+    entry.processingBaselineText = null;
     entry.attrs.status = 'unprocessed';
+    entry.attrs.resumeStatus = null;
+    entry.attrs.processingBaselineText = null;
     entry.tiptapNode.attrs.status = 'unprocessed';
-  }
-
-  if (!processingSeen) {
-    const nextProcessing = blockEntries.find((entry) => entry.status === 'unprocessed');
-    if (nextProcessing) {
-      nextProcessing.status = 'processing';
-      nextProcessing.attrs.status = 'processing';
-      nextProcessing.tiptapNode.attrs.status = 'processing';
-    }
+    entry.tiptapNode.attrs.resumeStatus = null;
+    entry.tiptapNode.attrs.processingBaselineText = null;
   }
 
   const normalizedContent = {
@@ -521,9 +772,13 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     await client.query(
       `
         insert into document_blocks (
-          id, document_id, block_index, text_content, status, char_length, attrs, tiptap_node
+          id, document_id, block_index, text_content, status, resume_status,
+          processing_baseline_text, change_source, partition_generation,
+          format_overrides, char_length, attrs, tiptap_node
         )
-        values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+        values (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::jsonb
+        )
       `,
       [
         entry.id,
@@ -531,12 +786,36 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
         entry.index,
         entry.textContent,
         entry.status,
+        entry.resumeStatus,
+        entry.processingBaselineText,
+        entry.changeSource,
+        entry.partitionGeneration,
+        JSON.stringify(entry.formatOverrides),
         entry.charLength,
         JSON.stringify(entry.attrs),
         JSON.stringify(entry.tiptapNode),
       ]
     );
   }
+
+  await client.query(
+    `update block_rewrite_jobs jobs
+     set status = 'cancelled',
+         safe_error_code = 'STALE_BLOCK_CONTEXT',
+         lease_owner = null,
+         lease_expires_at = null
+     where jobs.document_id = $1
+       and jobs.status in ('queued', 'running')
+       and not exists (
+         select 1
+         from document_blocks blocks
+         where blocks.document_id = jobs.document_id
+           and blocks.id = jobs.block_id
+           and blocks.partition_generation = jobs.partition_generation
+           and encode(digest(blocks.text_content, 'sha256'), 'hex') = jobs.source_text_hash
+       )`,
+    [documentId],
+  );
 
   return {
     contentJson: normalized.contentJson,

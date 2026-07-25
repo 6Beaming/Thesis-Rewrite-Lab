@@ -36,11 +36,14 @@ export function normalizeText(value) {
 }
 
 function textBlock(text, sourceType = 'paragraph', attrs = {}, content = null) {
+  const inlineContent = String(text ?? '').split(/(\n)/).filter(Boolean).map((part) => (
+    part === '\n' ? { type: 'hardBreak' } : { type: 'text', text: part }
+  ));
   return {
     sourceType,
     text,
     attrs: { sourceType, ...attrs },
-    content: content ?? (text ? [{ type: 'text', text }] : []),
+    content: content ?? inlineContent,
   };
 }
 
@@ -52,13 +55,73 @@ function ensureBlocks(blocks) {
   return normalized;
 }
 
+function endsCompleteSentence(value) {
+  return /[.!?][\p{Pe}"'’”]*$/u.test(String(value ?? '').trim());
+}
+
+function beginsAsContinuation(value) {
+  const text = String(value ?? '').trim();
+  return /^[\p{Ll},.;:!?)}\]]/u.test(text)
+    || /^(?:and|but|nor|or|so|yet|which|that|because|while|whereas)\b/i.test(text);
+}
+
+function mergeContinuationBlocks(left, right) {
+  const leftContent = Array.isArray(left.content) ? left.content : [];
+  const rightContent = Array.isArray(right.content) ? right.content : [];
+  return {
+    ...left,
+    text: `${left.text}\n${right.text}`,
+    content: [
+      ...leftContent,
+      { type: 'hardBreak' },
+      ...rightContent,
+    ],
+  };
+}
+
+export function coalesceContinuationBlocks(blocks) {
+  const output = [];
+  let continuationOpen = false;
+
+  for (const block of blocks) {
+    const previous = output.at(-1);
+    const compatible = previous?.sourceType === 'paragraph' && block.sourceType === 'paragraph';
+    const previousIncomplete = compatible && !endsCompleteSentence(previous.text);
+    const currentShort = Array.from(String(block.text ?? '')).length <= 80;
+    const currentContinuation = beginsAsContinuation(block.text);
+    const shouldMerge = compatible && (
+      continuationOpen
+      || currentContinuation
+      || (previousIncomplete && (
+        Array.from(String(previous.text ?? '')).length >= 80
+        || currentShort
+      ))
+    );
+
+    if (!shouldMerge) {
+      output.push(block);
+      continuationOpen = false;
+      continue;
+    }
+
+    output[output.length - 1] = mergeContinuationBlocks(previous, block);
+    continuationOpen = currentShort
+      || (!endsCompleteSentence(block.text) && (
+        currentContinuation
+        || Array.from(String(block.text ?? '')).length < 240
+      ));
+  }
+
+  return output;
+}
+
 export function extractTextBlocks(text) {
   const blocks = normalizeText(text)
-    .split('\n')
-    .map((line) => line.trim())
+    .split(/\n[^\S\n]*\n+/)
+    .map((section) => section.trim())
     .filter(Boolean)
-    .map((line) => textBlock(line));
-  return ensureBlocks(blocks);
+    .map((section) => textBlock(section));
+  return ensureBlocks(coalesceContinuationBlocks(blocks));
 }
 
 function markdownMetadata(line) {
@@ -144,29 +207,35 @@ function appendInlineText(segment, value, marks) {
 
 function trimInlineContent(content) {
   const nodes = content
-    .filter((node) => node.type === 'text' && node.text)
+    .filter((node) => node.type === 'hardBreak' || (node.type === 'text' && node.text))
     .map((node) => ({ ...node, marks: node.marks ? [...node.marks] : undefined }));
   if (!nodes.length) return [];
-  nodes[0].text = nodes[0].text.replace(/^\s+/, '');
-  nodes[nodes.length - 1].text = nodes[nodes.length - 1].text.replace(/\s+$/, '');
-  return nodes.filter((node) => node.text);
+  while (nodes[0]?.type === 'hardBreak') nodes.shift();
+  while (nodes.at(-1)?.type === 'hardBreak') nodes.pop();
+  const firstText = nodes.find((node) => node.type === 'text');
+  const lastText = nodes.findLast((node) => node.type === 'text');
+  if (firstText) firstText.text = firstText.text.replace(/^\s+/, '');
+  if (lastText) lastText.text = lastText.text.replace(/\s+$/, '');
+  return nodes.filter((node) => node.type === 'hardBreak' || node.text);
 }
 
 function contentText(content) {
-  return content.map((node) => node.text ?? '').join('');
+  return content.map((node) => node.type === 'hardBreak' ? '\n' : node.text ?? '').join('');
 }
 
 function inlineSegments(root) {
-  const segments = [[]];
+  const content = [];
 
   function walk(node, activeMarks = []) {
     if (node.nodeName === '#text') {
-      appendInlineText(segments[segments.length - 1], node.value, activeMarks);
+      appendInlineText(content, node.value, activeMarks);
       return;
     }
     const tagName = node.tagName?.toLowerCase();
     if (tagName === 'br') {
-      segments.push([]);
+      if (content.length && content.at(-1)?.type !== 'hardBreak') {
+        content.push({ type: 'hardBreak' });
+      }
       return;
     }
     const mark = MARK_TAGS.get(tagName);
@@ -177,7 +246,24 @@ function inlineSegments(root) {
   }
 
   walk(root);
-  return segments.map(trimInlineContent).filter((content) => contentText(content).trim());
+  const normalized = trimInlineContent(content);
+  return normalized.length ? [normalized] : [];
+}
+
+function normalizeNumberedHeading(block) {
+  if (Array.from(String(block.text ?? '')).length > 160) return block;
+  const content = (block.content ?? []).map((node) => ({ ...node }));
+  const firstText = content.find((node) => node.type === 'text');
+  if (!firstText) return block;
+  firstText.text = firstText.text.replace(
+    /^(\s*\d+(?:\.\d+)+)(?=\p{Lu})/u,
+    '$1 ',
+  );
+  return {
+    ...block,
+    text: contentText(content),
+    content,
+  };
 }
 
 export function blocksFromHtml(html) {
@@ -190,12 +276,12 @@ export function blocksFromHtml(html) {
       const segments = inlineSegments(node);
       for (const content of segments) {
         const text = contentText(content);
-        blocks.push(textBlock(
+        blocks.push(normalizeNumberedHeading(textBlock(
           text,
           sourceTypeForTag(tagName),
           attrsForTag(tagName),
           content,
-        ));
+        )));
       }
       return;
     }
@@ -203,7 +289,7 @@ export function blocksFromHtml(html) {
   }
 
   walk(fragment);
-  return ensureBlocks(blocks);
+  return ensureBlocks(coalesceContinuationBlocks(blocks));
 }
 
 export async function extractDocxBlocks(buffer) {

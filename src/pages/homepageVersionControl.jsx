@@ -4,8 +4,7 @@ import DocumentCard from '../components/DocumentCard.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
 import { getVersion, revertVersion } from '../services/versionsApi.js';
-
-const MAX_DIFF_TOKENS = 1200;
+import { diffLogicalBlocks } from '../lib/versionDiff.js';
 
 function textFromTiptap(node) {
   if (!node) return '';
@@ -38,76 +37,32 @@ function snapshotText(version) {
   return textFromBlocks(snapshot.blocks) || textFromTiptap(snapshot.document?.content_json) || '';
 }
 
-function tokenize(text) {
-  return String(text ?? '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .split(/(\s+)/)
-    .filter(Boolean);
+function logicalBlocks(source, snapshot = false) {
+  const root = snapshot ? source?.snapshot_json ?? {} : source ?? {};
+  const blocks = snapshot ? root.blocks : root.blocks;
+  if (Array.isArray(blocks) && blocks.length) {
+    return blocks.map((block, index) => ({
+      id: block.id ?? block.block_id ?? `legacy-${index}`,
+      text: block.text_content ?? block.text ?? '',
+    }));
+  }
+  return [{ id: 'legacy-document', text: snapshot ? snapshotText(source) : currentDocumentText(source) }];
 }
 
-function pushSegment(segments, type, value) {
-  if (!value) return;
-  const previous = segments[segments.length - 1];
-  if (previous?.type === type) {
-    previous.text += value;
-    return;
-  }
-  segments.push({ type, text: value });
-}
-
-function diffText(previousText, nextText) {
-  const previous = tokenize(previousText);
-  const next = tokenize(nextText);
-
-  if (!previous.length && !next.length) return [];
-  if (previous.length + next.length > MAX_DIFF_TOKENS) {
-    return [
-      { type: 'removed', text: previous.join(' ') },
-      { type: 'added', text: next.join(' ') },
-    ];
-  }
-
-  const table = Array.from({ length: previous.length + 1 }, () => (
-    Array(next.length + 1).fill(0)
-  ));
-
-  for (let i = previous.length - 1; i >= 0; i -= 1) {
-    for (let j = next.length - 1; j >= 0; j -= 1) {
-      table[i][j] = previous[i] === next[j]
-        ? table[i + 1][j + 1] + 1
-        : Math.max(table[i + 1][j], table[i][j + 1]);
-    }
-  }
-
-  const segments = [];
-  let i = 0;
-  let j = 0;
-
-  while (i < previous.length && j < next.length) {
-    if (previous[i] === next[j]) {
-      pushSegment(segments, 'same', next[j]);
-      i += 1;
-      j += 1;
-    } else if (table[i + 1][j] >= table[i][j + 1]) {
-      pushSegment(segments, 'removed', previous[i]);
-      i += 1;
-    } else {
-      pushSegment(segments, 'added', next[j]);
-      j += 1;
-    }
-  }
-
-  while (i < previous.length) {
-    pushSegment(segments, 'removed', previous[i]);
-    i += 1;
-  }
-  while (j < next.length) {
-    pushSegment(segments, 'added', next[j]);
-    j += 1;
-  }
-
-  return segments;
+function DiffView({ segments, side }) {
+  return (
+    <div className="version-diff-text">
+      {segments.map((segment, index) => {
+        if (side === 'new' && segment.type === 'added') {
+          return <ins key={`${segment.type}-${index}`}>{segment.text}</ins>;
+        }
+        if (side === 'old' && segment.type === 'removed') {
+          return <del key={`${segment.type}-${index}`}>{segment.text}</del>;
+        }
+        return <span key={`${segment.type}-${index}`}>{segment.text}</span>;
+      })}
+    </div>
+  );
 }
 
 export default function HomepageVersionControl({
@@ -129,9 +84,12 @@ export default function HomepageVersionControl({
   const selectedDocument = documents.find((document) => document.id === selectedDocumentId) ?? null;
   const versions = realtimeState.versionsByDocument[selectedDocumentId] ?? [];
   const activeDocument = documentDetail ?? selectedDocument;
-  const diffSegments = useMemo(() => {
-    if (!selectedVersion) return [];
-    return diffText(snapshotText(selectedVersion), currentDocumentText(activeDocument));
+  const diffViews = useMemo(() => {
+    if (!selectedVersion) return { oldView: [], newView: [] };
+    return diffLogicalBlocks(
+      logicalBlocks(selectedVersion, true),
+      logicalBlocks(activeDocument),
+    );
   }, [activeDocument, selectedVersion]);
 
   useEffect(() => {
@@ -289,25 +247,11 @@ export default function HomepageVersionControl({
                     <section className="version-diff" aria-label={`Current version compared with Version ${version.version_number}`}>
                       <article>
                         <h2>Current Version</h2>
-                        <div className="version-diff-summary" aria-hidden="true">
-                          <span className="diff-added">Added in current</span>
-                          <span className="diff-removed">Removed from version</span>
-                        </div>
-                        <div className="version-diff-text">
-                          {diffSegments.map((segment, index) => {
-                            if (segment.type === 'added') {
-                              return <ins key={`${segment.type}-${index}`}>{segment.text}</ins>;
-                            }
-                            if (segment.type === 'removed') {
-                              return <del key={`${segment.type}-${index}`}>{segment.text}</del>;
-                            }
-                            return <span key={`${segment.type}-${index}`}>{segment.text}</span>;
-                          })}
-                        </div>
+                        <DiffView segments={diffViews.newView} side="new" />
                       </article>
                       <article>
                         <h2>Version {version.version_number}</h2>
-                        <pre>{snapshotText(selectedVersion) || 'No text snapshot is available for this version.'}</pre>
+                        <DiffView segments={diffViews.oldView} side="old" />
                       </article>
                     </section>
                   ) : null}

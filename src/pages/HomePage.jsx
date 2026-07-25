@@ -256,8 +256,10 @@ export default function HomePage({ onOpenWorkspace }) {
       onSubscription={() => navigate('/subscription')}
       actionsHidden={hideHeaderActions}
     >
-      {notice ? <p className="home-api-notice" role="status">{notice}</p> : null}
-      {renderMainContent()}
+      <div className="home-main-inner">
+        {notice ? <p className="home-api-notice" role="status">{notice}</p> : null}
+        {renderMainContent()}
+      </div>
       {accountOpen ? (
         <HomepageAccount
           user={user}

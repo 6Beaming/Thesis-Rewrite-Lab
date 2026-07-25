@@ -9,6 +9,10 @@ export async function getOwnedBlockContext({ documentId, blockId, userId }) {
           db.document_id,
           db.block_index,
           db.text_content,
+          db.status,
+          db.resume_status,
+          db.change_source,
+          db.partition_generation,
           d.academic_style,
           lag(db.text_content) over (order by db.block_index) as previous_text,
           lead(db.text_content) over (order by db.block_index) as next_text
@@ -53,7 +57,12 @@ export async function findCachedBlockAnalysis({
   return result.rows[0] ?? null;
 }
 
-export async function findLatestBlockAnalysis({ documentId, blockId, sourceTextHash }) {
+export async function findLatestBlockAnalysis({
+  documentId,
+  blockId,
+  sourceTextHash,
+  promptVersion,
+}) {
   const result = await query(
     `
       select *
@@ -61,10 +70,11 @@ export async function findLatestBlockAnalysis({ documentId, blockId, sourceTextH
       where document_id = $1
         and block_id = $2
         and source_text_hash = $3
+        and ($4::text is null or prompt_version = $4)
       order by created_at desc
       limit 1
     `,
-    [documentId, blockId, sourceTextHash],
+    [documentId, blockId, sourceTextHash, promptVersion ?? null],
   );
   return result.rows[0] ?? null;
 }

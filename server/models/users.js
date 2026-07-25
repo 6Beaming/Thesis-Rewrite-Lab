@@ -1,6 +1,39 @@
-import { query } from './db.js';
+import { query, withTransaction } from './db.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function validateTimeZone(timeZone) {
+  const candidate = String(timeZone ?? '').trim();
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: candidate }).format();
+    return candidate;
+  } catch {
+    throw Object.assign(new Error('A valid IANA time zone is required.'), { status: 400 });
+  }
+}
+
+export function localActivityDate(now, timeZone) {
+  const zone = validateTimeZone(timeZone);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: zone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+export function nextStreakState(previousDate, previousCount, today) {
+  if (!previousDate) return { count: 1, startDate: today };
+  if (previousDate === today) return { count: Math.max(1, Number(previousCount) || 0), startDate: null };
+  const distance = Math.round(
+    (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${previousDate}T00:00:00Z`)) / 86_400_000,
+  );
+  return distance === 1
+    ? { count: Math.max(1, Number(previousCount) || 0) + 1, startDate: null }
+    : { count: 1, startDate: today };
+}
 
 export function normalizeSessionUser(sessionUser) {
   const authUserId = String(sessionUser?.id ?? '').trim();
@@ -51,7 +84,8 @@ export async function getCurrentUserProfile(sessionUser, runQuery = query) {
   const stats = await runQuery(
     `
       select completed_chars, total_chars, completed_rate, streak_day_count,
-             streak_start_date, streak_end_date, streak_days, updated_at
+             streak_start_date, streak_end_date, streak_days, last_active_on,
+             time_zone, updated_at
       from user_stats
       where user_id = $1
     `,
@@ -69,13 +103,51 @@ export async function getUserStats(userId, runQuery = query) {
   const result = await runQuery(
     `
       select completed_chars, total_chars, completed_rate, streak_day_count,
-             streak_start_date, streak_end_date, streak_days, updated_at
+             streak_start_date, streak_end_date, streak_days, last_active_on,
+             time_zone, updated_at
       from user_stats
       where user_id = $1
     `,
     [userId],
   );
   return result.rows[0] ?? null;
+}
+
+export async function recordUserActivity(sessionUser, timeZone, now = new Date()) {
+  const zone = validateTimeZone(timeZone);
+  const today = localActivityDate(now, zone);
+  return withTransaction(async (client) => {
+    const runQuery = client.query.bind(client);
+    const user = await getOrCreateUserFromSession(sessionUser, runQuery);
+    const locked = await runQuery(
+      `select streak_day_count, streak_start_date, last_active_on, streak_days
+       from user_stats where user_id = $1 for update`,
+      [user.id],
+    );
+    const previous = locked.rows[0] ?? {};
+    const previousDate = previous.last_active_on
+      ? new Date(previous.last_active_on).toISOString().slice(0, 10)
+      : null;
+    const next = nextStreakState(previousDate, previous.streak_day_count, today);
+    const existingDays = Array.isArray(previous.streak_days) ? previous.streak_days : [];
+    const streakDays = previousDate === today
+      ? existingDays
+      : [...existingDays.filter((date) => date !== today), today].slice(-366);
+    await runQuery(
+      `update user_stats
+       set streak_day_count = $2,
+           streak_start_date = case when $3::date is null then streak_start_date else $3::date end,
+           streak_end_date = $4::date,
+           streak_days = $5::jsonb,
+           last_active_on = $4::date,
+           time_zone = $6,
+           updated_at = now()
+       where user_id = $1`,
+      [user.id, next.count, next.startDate, today, JSON.stringify(streakDays), zone],
+    );
+    const stats = await getUserStats(user.id, runQuery);
+    return { ...user, hasProfilePicture: Boolean(user.profile_picture_mime), stats };
+  });
 }
 
 export async function updateProfilePicture({ userId, buffer, mimeType }) {
