@@ -16,13 +16,13 @@ function Icon({ type }) {
 
 const topItems = [
   { id: 'docs', label: 'Docs', icon: 'docs' },
-  { id: 'versions', label: 'Version History', icon: 'history' },
+  { id: 'versions', label: 'Version history', icon: 'history' },
   { id: 'trash', label: 'Trash', icon: 'trash' },
 ];
 
 const bottomItems = [
   { id: 'support', label: 'Support', icon: 'support' },
-  { id: 'credits', label: 'Credits For', icon: 'credits' },
+  { id: 'credits', label: 'Credits for', icon: 'credits' },
 ];
 
 export default function HomeSidebar({ active, onSelect, open = false }) {

@@ -64,7 +64,7 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
             onClick={() => inputRef.current?.click()}
           >
             <UploadIcon />
-            Upload Your Avatar
+            Upload your avatar
           </button>
           <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleFileChange} />
         </div>
@@ -79,11 +79,11 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
           </div>
         </section>
         <div className="account-settings">
-          {['Profile settings', 'Writing preferences', 'Notifications'].map((item) => (
+          {['Writing preferences'].map((item) => (
             <button type="button" key={item}>{item}</button>
           ))}
         </div>
-        <button type="button" className="account-logout" onClick={onLogout}>Logout</button>
+        <button type="button" className="account-logout" onClick={onLogout}>Log out</button>
       </aside>
     </div>
   );

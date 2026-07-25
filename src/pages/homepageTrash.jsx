@@ -56,7 +56,7 @@ export default function HomepageTrash({ onNotice, onChanged }) {
     <section className="home-subpage">
       <header className="home-subpage-header">
         <div>
-          <h1>Trash</h1>
+          <h1><strong>Trash</strong></h1>
           <p>{documents.length} items, {totalSize} characters</p>
         </div>
       </header>

@@ -5,7 +5,7 @@ export default function HomepageCredits() {
     <section className="home-subpage credits-page">
       <header className="home-subpage-header">
         <div>
-          <h1>Credits For</h1>
+          <h1><strong>Credits for</strong></h1>
           <p>External resources currently used by the local UI.</p>
         </div>
       </header>

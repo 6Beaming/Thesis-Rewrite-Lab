@@ -227,7 +227,7 @@ export default function HomepageVersionControl({
     <section className="home-subpage">
       <header className="home-subpage-header">
         <div>
-          <h1>Version History</h1>
+          <h1><strong>Version history</strong></h1>
           <p>Select a document to inspect its saved versions.</p>
         </div>
       </header>

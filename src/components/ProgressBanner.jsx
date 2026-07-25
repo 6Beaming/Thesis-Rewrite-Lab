@@ -8,7 +8,7 @@ export default function ProgressBanner({ value = 0 }) {
     <section className="progress-banner" aria-label="Your progress">
       <ProgressRing value={percent} />
       <div className="progress-copy">
-        <h2>Your progress</h2>
+        <h2><strong>Your progress</strong></h2>
         <p>You have finished {percent}% of all practice!</p>
         <div className="progress-bar" aria-hidden="true">
           <span style={{ width: `${percent}%` }} />
@@ -18,3 +18,4 @@ export default function ProgressBanner({ value = 0 }) {
     </section>
   );
 }
+  
