@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 const options = [
-  { value: 'most_recent', label: 'Most Recent' },
-  { value: 'least_recent', label: 'Least Recent' },
-  { value: 'most_completed', label: 'Most Completed' },
-  { value: 'least_completed', label: 'Least Completed' },
+  { value: 'most_recent', label: 'Most recent' },
+  { value: 'least_recent', label: 'Least recent' },
+  { value: 'most_completed', label: 'Most completed' },
+  { value: 'least_completed', label: 'Least completed' },
 ];
 
 function DownArrowIcon({ className = 'sort-dropdown-arrow' }) {
