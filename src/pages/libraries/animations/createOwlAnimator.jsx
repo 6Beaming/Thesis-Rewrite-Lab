@@ -694,6 +694,9 @@ export function createOwlAnimator(stageRoot) {
       return;
     }
     stopPassiveAnimations({ keepBlink: true, keepWand: true });
+    // stopPassiveAnimations clears every status asset while switching modes,
+    // so restore the thinking asset for the active request.
+    ctx.setIndicator('thinking', true);
     state.mode = 'thinking';
     state.thinking = true;
     state.error = false;
