@@ -5,7 +5,7 @@ import { useRealtime } from '../components/RealtimeProvider.jsx';
 import { deleteForever, restoreDocument } from '../services/trashApi.js';
 import trashUrl from '../assets/trash.png?url';
 
-export default function HomepageTrash({ onNotice, onChanged }) {
+export default function HomepageTrash({ onError, onChanged }) {
   const { state: realtimeState, applyDocument } = useRealtime();
   const documents = realtimeState.trashDocuments;
   const [selected, setSelected] = useState(null);
@@ -13,6 +13,8 @@ export default function HomepageTrash({ onNotice, onChanged }) {
   const visibleNotice = localNotice || realtimeState.error;
 
   async function handleRestore(document) {
+    setLocalNotice('');
+    onError?.('');
     try {
       const result = await restoreDocument(document.id);
       applyDocument('document:restored', result.document);
@@ -20,13 +22,15 @@ export default function HomepageTrash({ onNotice, onChanged }) {
     } catch (error) {
       const message = error.message || 'Restore failed.';
       setLocalNotice(message);
-      onNotice?.(message);
+      onError?.(message);
     }
   }
 
   async function handleDeleteForever() {
     if (!selected) return;
 
+    setLocalNotice('');
+    onError?.('');
     try {
       const result = await deleteForever(selected.id);
       applyDocument('document:deleted', result.document);
@@ -35,7 +39,7 @@ export default function HomepageTrash({ onNotice, onChanged }) {
     } catch (error) {
       const message = error.message || 'Delete forever failed.';
       setLocalNotice(message);
-      onNotice?.(message);
+      onError?.(message);
     }
   }
 

@@ -85,11 +85,12 @@ export default function HomePage({ onOpenWorkspace }) {
   const [historyDocument, setHistoryDocument] = useState(null);
   const [busy, setBusy] = useState(false);
   const [exportingDocumentId, setExportingDocumentId] = useState(null);
-  const [notice, setNotice] = useState('');
+  const [actionError, setActionError] = useState('');
   const documents = useMemo(
     () => visibleDocuments(realtimeState.documents, query, sort),
     [query, realtimeState.documents, sort],
   );
+  const homeError = actionError || realtimeState.error;
 
   useEffect(() => {
     if (!authUser) return;
@@ -115,28 +116,26 @@ export default function HomePage({ onOpenWorkspace }) {
     setHistoryDocument((current) => pickHistoryDocument(documents, current));
   }, [documents]);
 
-  useEffect(() => {
-    if (realtimeState.error) setNotice(realtimeState.error);
-  }, [realtimeState.error]);
-
   const progressValue = useMemo(() => {
     return Math.round(Number(user?.stats?.completed_rate ?? 0) * 100);
   }, [user]);
 
   async function handleNewDocument() {
+    setActionError('');
     setBusy(true);
     try {
       const result = await createDocument();
       applyDocument('document:created', result.document);
       onOpenWorkspace?.(result.document);
     } catch (error) {
-      setNotice(error.message || 'Could not create a document.');
+      setActionError(error.message || 'Could not create a document.');
     } finally {
       setBusy(false);
     }
   }
 
   async function handleUpload(file) {
+    setActionError('');
     setBusy(true);
     try {
       const result = await uploadDocument(file);
@@ -144,9 +143,9 @@ export default function HomePage({ onOpenWorkspace }) {
       onOpenWorkspace?.(result.document);
     } catch (error) {
       if (file.name.toLowerCase().endsWith('.doc')) {
-        setNotice('.doc uploads are not supported. Please upload .docx, .md, or .txt.');
+        setActionError('.doc uploads are not supported. Please upload .docx, .md, or .txt.');
       } else {
-        setNotice(error.message || 'Upload failed.');
+        setActionError(error.message || 'Upload failed.');
       }
     } finally {
       setBusy(false);
@@ -154,30 +153,32 @@ export default function HomePage({ onOpenWorkspace }) {
   }
 
   async function handleDelete(document) {
+    setActionError('');
     setBusy(true);
     try {
       const result = await moveToTrash(document.id);
       applyDocument('document:trashed', result.document);
     } catch (error) {
-      setNotice(error.message || 'Could not move document to trash.');
+      setActionError(error.message || 'Could not move document to trash.');
     } finally {
       setBusy(false);
     }
   }
 
   async function handleExport(document) {
+    setActionError('');
     setExportingDocumentId(document.id);
     try {
-      const result = await downloadDocument(document.id);
-      setNotice(`${result.filename} exported.`);
+      await downloadDocument(document.id);
     } catch (error) {
-      setNotice(error.message || 'Could not export the document.');
+      setActionError(error.message || 'Could not export the document.');
     } finally {
       setExportingDocumentId(null);
     }
   }
 
   async function handleProfileUpload(file) {
+    setActionError('');
     try {
       const nextUser = await uploadProfilePicture(file);
       applyProfile(nextUser);
@@ -187,23 +188,22 @@ export default function HomePage({ onOpenWorkspace }) {
         profilePictureUrl: `/api/users/me/profile-picture?v=${encodeURIComponent(nextUser.updated_at || Date.now())}`,
         hasProfilePicture: true,
       }));
-      setNotice('Profile picture updated.');
       return true;
     } catch (error) {
-      setNotice(error.message || 'Profile upload failed.');
+      setActionError(error.message || 'Profile upload failed.');
       return false;
     }
   }
 
   async function handleWritingPreferencesUpdate(settings) {
+    setActionError('');
     try {
       const nextUser = await updateWritingPreferences(settings);
       applyProfile(nextUser);
       setUser((current) => ({ ...current, ...nextUser }));
-      setNotice('Writing preferences updated.');
       return true;
     } catch (error) {
-      setNotice(error.message || 'Could not update writing preferences.');
+      setActionError(error.message || 'Could not update writing preferences.');
       throw error;
     }
   }
@@ -244,7 +244,7 @@ export default function HomePage({ onOpenWorkspace }) {
     if (activePage === 'trash') {
       return (
           <HomepageTrash
-            onNotice={setNotice}
+            onError={setActionError}
             onChanged={refreshShared}
         />
       );
@@ -258,7 +258,7 @@ export default function HomePage({ onOpenWorkspace }) {
       return (
         <HomepageVersionControl
           documents={realtimeState.documents}
-          onNotice={setNotice}
+          onError={setActionError}
           onDocumentReverted={handleDocumentReverted}
         />
       );
@@ -284,6 +284,7 @@ export default function HomePage({ onOpenWorkspace }) {
       onNewDocument={handleNewDocument}
       onUpload={handleUpload}
       onSelectPage={(page) => {
+        setActionError('');
         setActivePage(page);
         setSidebarOpen(false);
       }}
@@ -293,7 +294,7 @@ export default function HomePage({ onOpenWorkspace }) {
       actionsHidden={hideHeaderActions}
     >
       <div className="home-main-inner">
-        {notice ? <p className="home-api-notice" role="status">{notice}</p> : null}
+        {homeError ? <p className="home-api-notice" role="alert">{homeError}</p> : null}
         {renderMainContent()}
       </div>
       {accountOpen ? (
