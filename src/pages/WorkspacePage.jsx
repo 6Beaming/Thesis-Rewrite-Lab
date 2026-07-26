@@ -44,6 +44,7 @@ import { useFloatingWindow } from './libraries/useFloatingWindow.js';
 import {
   acceptDocumentBlockRewrite,
   analyzeDocumentBlock,
+  discardEmptyDocument,
   generateDocumentBlockRewrites,
   getDocumentBlockRewrites,
   getDocument,
@@ -173,6 +174,13 @@ function textFromNode(node) {
   if (node.type === 'hardBreak') return '\n';
   if (!Array.isArray(node.content)) return '';
   return node.content.map(textFromNode).join('');
+}
+
+function isDocumentTitleAndBodyEmpty(document) {
+  return (
+    !String(document?.title ?? '').trim()
+    && !textFromNode(document?.content_json).trim()
+  );
 }
 
 function CloseIcon() {
@@ -630,6 +638,9 @@ export default function WorkspacePage() {
   const aiBlockEpochRef = useRef(new Map());
   const wandHoverTimerRef = useRef(null);
   const autosaveTimerRef = useRef(null);
+  const activeDocumentIdRef = useRef(null);
+  const activeDocumentIsEmptyRef = useRef(false);
+  const discardEmptyRequestsRef = useRef(new Map());
   const nlpCheckTimerRef = useRef(null);
   const nlpAbortControllerRef = useRef(null);
   const visibleNlpIdentityRef = useRef(null);
@@ -641,6 +652,33 @@ export default function WorkspacePage() {
     documentMutationCoordinatorRef.current = createDocumentMutationCoordinator();
   }
   const localDocumentRevisionsRef = useRef(new Map());
+  if (selectedDocument?.id === activeDocumentIdRef.current) {
+    activeDocumentIsEmptyRef.current = isDocumentTitleAndBodyEmpty(selectedDocument);
+  }
+  const discardEmptyCreatedDocument = useCallback((targetDocumentId, {
+    keepalive = true,
+  } = {}) => {
+    if (!targetDocumentId) return Promise.resolve(false);
+    const pending = discardEmptyRequestsRef.current.get(targetDocumentId);
+    if (pending) return pending;
+
+    const request = discardEmptyDocument(targetDocumentId, { keepalive })
+      .then((result) => {
+        if (result.deleted && result.document) {
+          applyDocument('document:deleted', result.document);
+        }
+        return Boolean(result.deleted);
+      })
+      .catch((error) => {
+        if (error.status === 404) return false;
+        throw error;
+      })
+      .finally(() => {
+        discardEmptyRequestsRef.current.delete(targetDocumentId);
+      });
+    discardEmptyRequestsRef.current.set(targetDocumentId, request);
+    return request;
+  }, [applyDocument]);
   const blackboardStyle = getBlackboardCssVars();
   const {
     windowRef: mobileOwlRef,
@@ -1129,12 +1167,42 @@ export default function WorkspacePage() {
   ]);
 
   useEffect(() => {
+    function discardOnPageHide() {
+      const activeDocumentId = activeDocumentIdRef.current;
+      if (!activeDocumentId || !activeDocumentIsEmptyRef.current) return;
+      void discardEmptyCreatedDocument(activeDocumentId, { keepalive: true }).catch(() => {});
+    }
+
+    window.addEventListener('pagehide', discardOnPageHide);
+    return () => {
+      window.removeEventListener('pagehide', discardOnPageHide);
+    };
+  }, [discardEmptyCreatedDocument]);
+
+  useEffect(() => {
     if (!documentId) {
+      const previousDocumentId = activeDocumentIdRef.current;
+      const previousDocumentWasEmpty = activeDocumentIsEmptyRef.current;
+      activeDocumentIdRef.current = null;
+      activeDocumentIsEmptyRef.current = false;
+      if (previousDocumentId && previousDocumentWasEmpty) {
+        void discardEmptyCreatedDocument(previousDocumentId).catch(() => {});
+      }
       setView('home');
       setSelectedDocument(null);
       return undefined;
     }
 
+    const previousDocumentId = activeDocumentIdRef.current;
+    if (
+      previousDocumentId
+      && previousDocumentId !== documentId
+      && activeDocumentIsEmptyRef.current
+    ) {
+      activeDocumentIdRef.current = null;
+      activeDocumentIsEmptyRef.current = false;
+      void discardEmptyCreatedDocument(previousDocumentId).catch(() => {});
+    }
     setView('workspace');
     let alive = true;
     setWorkspaceNotice('Loading document...');
@@ -1153,7 +1221,7 @@ export default function WorkspacePage() {
     return () => {
       alive = false;
     };
-  }, [applyDocument, documentId]);
+  }, [applyDocument, discardEmptyCreatedDocument, documentId]);
 
   useEffect(() => {
     if (view !== 'workspace' || !documentId) return undefined;
@@ -1167,6 +1235,8 @@ export default function WorkspacePage() {
       || realtimeState.deletedDocumentIds.some((document) => document.id === documentId)
     ) {
       resetWorkspaceDirty();
+      activeDocumentIdRef.current = null;
+      activeDocumentIsEmptyRef.current = false;
       setWorkspaceNotice('This document was removed from the workspace in another session.');
       setView('home');
       navigate('/');
@@ -1237,6 +1307,16 @@ export default function WorkspacePage() {
   function openWorkspace(document, { updateRoute = true } = {}) {
     const hydratedDocument = hydrateWorkspaceDocument(document);
     if (!hydratedDocument) return;
+    const previousDocumentId = activeDocumentIdRef.current;
+    if (
+      previousDocumentId
+      && previousDocumentId !== hydratedDocument.id
+      && activeDocumentIsEmptyRef.current
+    ) {
+      void discardEmptyCreatedDocument(previousDocumentId).catch(() => {});
+    }
+    activeDocumentIdRef.current = hydratedDocument.id;
+    activeDocumentIsEmptyRef.current = isDocumentTitleAndBodyEmpty(hydratedDocument);
     if (hydratedDocument.id === selectedDocument?.id) {
       pendingEditorScrollRestoreRef.current = (
         documentEditorRef.current?.getScrollPosition?.() ?? null
@@ -1550,8 +1630,8 @@ export default function WorkspacePage() {
         return false;
       }
       if (leaveAfterSave) {
-        setView('home');
-        navigate('/');
+        const leftWorkspace = await leaveWorkspace(persistedDocument);
+        if (!leftWorkspace) return false;
       }
       return persistedDocument ?? true;
     } catch (error) {
@@ -1597,6 +1677,30 @@ export default function WorkspacePage() {
     return saveWorkspaceDocument({ automatic: true });
   }
 
+  async function leaveWorkspace(document = selectedDocument) {
+    const targetDocumentId = document?.id ?? activeDocumentIdRef.current;
+    if (isDocumentTitleAndBodyEmpty(document)) {
+      try {
+        await discardEmptyCreatedDocument(targetDocumentId);
+      } catch (error) {
+        setWorkspaceNotice(error.message || 'Could not finish leaving the document.');
+        return false;
+      }
+    }
+
+    activeDocumentIdRef.current = null;
+    activeDocumentIsEmptyRef.current = false;
+    setShowUnsavedBackPrompt(false);
+    setSelectedDocument(null);
+    setWorkspaceDraft(null);
+    setEditorContent(null);
+    setActiveEditorBlock({ blockId: null, status: 'unprocessed' });
+    resetWorkspaceDirty();
+    setView('home');
+    navigate('/');
+    return true;
+  }
+
   function requestWorkspaceBack() {
     const policy = workspaceLeavePolicy({ workspaceDirty, autosaveDocs });
     if (policy === 'autosave-and-leave') {
@@ -1607,19 +1711,12 @@ export default function WorkspacePage() {
       setShowUnsavedBackPrompt(true);
       return;
     }
-    setView('home');
-    navigate('/');
+    void leaveWorkspace();
   }
 
-  function leaveWorkspaceWithoutSaving() {
+  async function leaveWorkspaceWithoutSaving() {
     setShowUnsavedBackPrompt(false);
-    setSelectedDocument(null);
-    setWorkspaceDraft(null);
-    setEditorContent(null);
-    setActiveEditorBlock({ blockId: null, status: 'unprocessed' });
-    resetWorkspaceDirty();
-    setView('home');
-    navigate('/');
+    await leaveWorkspace();
   }
 
   function handleWorkspaceUploadInputChange(event) {
@@ -3112,7 +3209,7 @@ export default function WorkspacePage() {
       );
     }
 
-    const documentTitle = selectedDocument.title || 'Untitled document';
+    const documentTitle = selectedDocument.title ?? '';
     const recentDocuments = workspaceHistoryDocuments;
 
     return (
@@ -3174,6 +3271,7 @@ export default function WorkspacePage() {
               <input
                 className="workspace-title-input"
                 value={documentTitle}
+                placeholder="Untitled document"
                 onChange={(event) => handleWorkspaceTitleChange(event.target.value)}
                 aria-label="Document title"
               />

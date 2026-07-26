@@ -45,6 +45,13 @@ export function saveDocument(documentId, payload) {
   });
 }
 
+export function discardEmptyDocument(documentId, { keepalive = false } = {}) {
+  return requestJson(`/documents/${documentId}/discard-empty`, {
+    method: 'DELETE',
+    keepalive,
+  });
+}
+
 export function uploadDocument(
   file,
   academicStyle = 'APA',

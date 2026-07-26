@@ -15,6 +15,7 @@ import {
   checkExpiredTrash,
   createBlankDocument,
   createDocumentWithBlocks,
+  discardEmptyDocument,
   getDocument,
   getDocumentRate,
   listDocuments,
@@ -246,10 +247,9 @@ function validateSavePayload(payload) {
   }
   if (payload.title !== undefined && (
     typeof payload.title !== 'string'
-    || !payload.title.trim()
     || payload.title.length > 300
   )) {
-    throw invalidInput('Title must contain 1 to 300 characters');
+    throw invalidInput('Title must contain no more than 300 characters');
   }
   if (payload.academicStyle !== undefined) {
     validateAcademicStyle(payload.academicStyle);
@@ -1187,6 +1187,23 @@ router.patch('/:id', async (req, res) => {
   publishVersion(req, user, mutation.document, mutation.version, mutationId);
   await publishProgress(req, user, mutation.document, mutationId);
   res.json({ document: mutation.document });
+});
+
+router.delete('/:id/discard-empty', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const result = await discardEmptyDocument(req.params.id, user.id);
+  if (!result) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+
+  if (result.deleted) {
+    const mutationId = mutationIdFromRequest(req);
+    publishDeletedDocument(req, result.document, mutationId);
+    await publishProgress(req, user, result.document, mutationId);
+  }
+  res.json(result);
 });
 
 router.delete('/:id', async (req, res) => {
