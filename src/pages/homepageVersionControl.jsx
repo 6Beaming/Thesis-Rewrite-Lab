@@ -67,7 +67,7 @@ function DiffView({ segments, side }) {
 
 export default function HomepageVersionControl({
   documents = [],
-  onNotice,
+  onError,
   onDocumentReverted,
 }) {
   const {
@@ -114,6 +114,7 @@ export default function HomepageVersionControl({
     }
 
     let alive = true;
+    onError?.('');
     setSelectedVersion(null);
     Promise.all([
       refreshVersions(selectedDocument.id),
@@ -126,13 +127,13 @@ export default function HomepageVersionControl({
       .catch((error) => {
         if (!alive) return;
         setDocumentDetail(selectedDocument);
-        onNotice?.(error.message || 'Could not load version history.');
+        onError?.(error.message || 'Could not load version history.');
       });
 
     return () => {
       alive = false;
     };
-  }, [onNotice, refreshDocument, refreshVersions, selectedDocument?.id]);
+  }, [onError, refreshDocument, refreshVersions, selectedDocument?.id]);
 
   useEffect(() => {
     const realtimeDocument = realtimeState.documentDetails[selectedDocumentId];
@@ -141,6 +142,7 @@ export default function HomepageVersionControl({
 
   async function handleView(version) {
     if (!selectedDocument) return;
+    onError?.('');
     try {
       if (selectedVersion?.id === version.id) {
         setSelectedVersion(null);
@@ -149,13 +151,14 @@ export default function HomepageVersionControl({
       const data = await getVersion(selectedDocument.id, version.id);
       setSelectedVersion({ ...version, ...data.version });
     } catch (error) {
-      onNotice?.(error.message || 'Could not load version detail.');
+      onError?.(error.message || 'Could not load version detail.');
     }
   }
 
   async function handleRevert() {
     if (!pendingRevert || !selectedDocument) return;
 
+    onError?.('');
     try {
       const data = await revertVersion(selectedDocument.id, pendingRevert.id);
       setPendingRevert(null);
@@ -164,9 +167,8 @@ export default function HomepageVersionControl({
       applyDocument('document:reverted', data.document);
       if (data.version) applyVersion(selectedDocument.id, data.version);
       onDocumentReverted?.(data.document);
-      onNotice?.('Document reverted and new version appended.');
     } catch (error) {
-      onNotice?.(error.message || 'Revert failed.');
+      onError?.(error.message || 'Revert failed.');
     }
   }
 

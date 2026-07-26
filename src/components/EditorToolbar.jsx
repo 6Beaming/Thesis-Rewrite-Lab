@@ -31,6 +31,7 @@ function ToolIcon({ type }) {
     undo: <path d="M9 7H4v5M4 12c2-4 7-6 12-3 2 1 3 3 4 5" />,
     redo: <path d="M15 7h5v5M20 12c-2-4-7-6-12-3-2 1-3 3-4 5" />,
     save: <path d="M5 4h12l2 2v14H5zM8 4v6h8V4M8 20v-6h8v6" />,
+    export: <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" />,
   };
 
   return (
@@ -70,8 +71,10 @@ const headingOptions = [
 export default function EditorToolbar({
   editor,
   onSave,
+  onExport,
   saveDisabled = false,
   saving = false,
+  exporting = false,
 }) {
   const [, setToolbarRevision] = useState(0);
 
@@ -137,6 +140,12 @@ export default function EditorToolbar({
           icon={<ToolIcon type="save" />}
           disabled={saveDisabled || saving}
           onClick={onSave}
+        />
+        <ToolbarButton
+          label={exporting ? 'Exporting' : 'Export'}
+          icon={<ToolIcon type="export" />}
+          disabled={saving || exporting}
+          onClick={onExport}
         />
         <ToolbarButton label="Bold" icon={<ToolIcon type="bold" />} active={editor.isActive('bold')} onClick={() => runToolbarCommand(editor, (chain) => chain.toggleBold())} />
         <ToolbarButton label="Italic" icon={<ToolIcon type="italic" />} active={editor.isActive('italic')} onClick={() => runToolbarCommand(editor, (chain) => chain.toggleItalic())} />

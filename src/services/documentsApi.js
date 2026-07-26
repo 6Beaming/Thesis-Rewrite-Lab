@@ -53,6 +53,68 @@ export function moveToTrash(documentId) {
   return requestJson(`/documents/${documentId}`, { method: 'DELETE' });
 }
 
+function filenameFromContentDisposition(value) {
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(String(value ?? ''));
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // Fall back to the ASCII filename below.
+    }
+  }
+
+  const quotedMatch = /filename="([^"]+)"/i.exec(String(value ?? ''));
+  return quotedMatch?.[1] || 'document.docx';
+}
+
+export async function downloadDocument(documentId) {
+  const response = await fetch(`/api/documents/${documentId}/export`, {
+    headers: {
+      Accept: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    },
+  });
+
+  if (!response.ok) {
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      // Use the status fallback when an upstream server returns a non-JSON error.
+    }
+
+    const error = new Error(data?.error || `Export failed with ${response.status}`);
+    error.status = response.status;
+    error.code = data?.code ?? null;
+    if (response.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('app:auth-expired'));
+    }
+    if (
+      response.status === 403
+      && data?.code === 'SUBSCRIPTION_REQUIRED'
+      && typeof window !== 'undefined'
+    ) {
+      window.dispatchEvent(new CustomEvent('app:subscription-required', { detail: data }));
+    }
+    throw error;
+  }
+
+  const blob = await response.blob();
+  const filename = filenameFromContentDisposition(response.headers.get('content-disposition'));
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  }
+
+  return { blob, filename };
+}
+
 export function updateDocumentBlockStatus(documentId, blockId, status) {
   return requestJson(`/documents/${documentId}/blocks/${blockId}`, {
     method: 'PATCH',

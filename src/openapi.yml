@@ -363,6 +363,26 @@ paths:
               schema:
                 $ref: '#/components/schemas/DocumentRate'
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/documents/{documentId}/export:
+    parameters: [{ $ref: '#/components/parameters/DocumentId' }]
+    get:
+      tags: [Documents]
+      summary: Export the current persisted document as DOCX
+      description: Preserves document structure, rich-text marks, academic style settings, margins, and page-number placement.
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200':
+          description: Downloadable Word document
+          headers:
+            Content-Disposition:
+              description: Attachment filename derived from the document title.
+              schema: { type: string }
+          content:
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+              schema:
+                type: string
+                format: binary
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/documents/{documentId}/blocks/{blockId}:
     parameters:
       - $ref: '#/components/parameters/DocumentId'
