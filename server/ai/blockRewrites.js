@@ -127,7 +127,7 @@ export function createRewritePreferenceContext({
   };
 }
 
-function rewriteInstructions(tone, preferenceContext) {
+function rewriteInstructions(tone, preferenceContext, nlpContext) {
   const preferenceResult = compileWritingPreferenceSupplement(
     tone,
     preferenceContext?.effectivePreferences,
@@ -144,12 +144,13 @@ function rewriteInstructions(tone, preferenceContext) {
     'The explanation must identify concrete changes and teaching value.',
     'Set meaningPreserved to false and explain the warning if the requested tone cannot be achieved safely without changing meaning.',
     preferenceResult.supplement,
+    nlpContext?.supplement,
   ].filter(Boolean).join(' '),
     preferenceResult,
   };
 }
 
-function rewriteSetInstructions(preferenceContext) {
+function rewriteSetInstructions(preferenceContext, nlpContext) {
   const preferenceResult = compileWritingPreferenceSetSupplement(
     preferenceContext?.effectivePreferences,
   );
@@ -167,12 +168,18 @@ function rewriteSetInstructions(preferenceContext) {
     'Use neighboring blocks only for continuity and do not copy them into the answer.',
     'Each explanation must identify concrete changes and teaching value.',
     preferenceResult.supplement,
+    nlpContext?.supplement,
   ].filter(Boolean).join(' '),
     preferenceResults,
   };
 }
 
-export async function generateBlockRewrites({ context, tone, preferenceContext }) {
+export async function generateBlockRewrites({
+  context,
+  tone,
+  preferenceContext,
+  nlpContext,
+}) {
   const requestedTone = normalizeRewriteTone(tone);
   if (!requestedTone) {
     const error = new Error('Rewrite tone is invalid.');
@@ -183,7 +190,7 @@ export async function generateBlockRewrites({ context, tone, preferenceContext }
   const client = getOpenAIClient();
   const model = process.env.OPENAI_REWRITE_MODEL || 'gpt-5.4-mini';
   const toneDetails = { [requestedTone]: REWRITE_TONE_DETAILS[requestedTone] };
-  const prompt = rewriteInstructions(requestedTone, preferenceContext);
+  const prompt = rewriteInstructions(requestedTone, preferenceContext, nlpContext);
   let response;
 
   try {
@@ -229,13 +236,14 @@ export async function generateBlockRewrites({ context, tone, preferenceContext }
     preferenceResults: {
       [requestedTone]: prompt.preferenceResult,
     },
+    nlpResult: nlpContext ?? null,
   };
 }
 
-export async function generateBlockRewriteSet({ context, preferenceContext }) {
+export async function generateBlockRewriteSet({ context, preferenceContext, nlpContext }) {
   const client = getOpenAIClient();
   const model = process.env.OPENAI_REWRITE_MODEL || 'gpt-5.4-mini';
-  const prompt = rewriteSetInstructions(preferenceContext);
+  const prompt = rewriteSetInstructions(preferenceContext, nlpContext);
   let response;
   try {
     response = await client.responses.parse({
@@ -273,5 +281,6 @@ export async function generateBlockRewriteSet({ context, preferenceContext }) {
     )),
     usage: response.usage ?? null,
     preferenceResults: prompt.preferenceResults,
+    nlpResult: nlpContext ?? null,
   };
 }

@@ -12,9 +12,18 @@ dist/
 /test/
 **/*.test.js
 **/*.test.cjs
+!server/ai/nlpPromptSupplement.test.js
+!server/citations/citations.test.js
+!server/nlp/blockIdentityMapping.test.js
+!server/nlp/localPipeline.test.js
+!src/pages/workspaceNlpContract.test.js
 .env.test
 *.test.db
 *.test.sqlite
 *.test.sqlite3
 coverage/
 test-results/
+
+# Python NLP service bytecode is always local.
+**/__pycache__/
+*.py[cod]

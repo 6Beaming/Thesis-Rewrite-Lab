@@ -10,6 +10,10 @@ import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
 import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
 import OwlContainer from '../components/OwlContainer.jsx';
+import AnalyzingFlipCard from '../components/AnalyzingFlipCard.jsx';
+import NlpAnalysisPanel from '../components/NlpAnalysisPanel.jsx';
+import SemanticProfileControl from '../components/SemanticProfileControl.jsx';
+import CitationReviewPanel from '../components/CitationReviewPanel.jsx';
 import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
@@ -46,13 +50,35 @@ import {
   listDocuments,
   requestDocumentBlockPracticeFeedback,
   prewarmDocumentBlockRewrites,
+  repartitionDocument,
+  getDocumentNlpJob,
   saveDocument,
   uploadDocument,
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
 import { writingPreferenceCacheKey } from '../shared/writingPreferences.js';
+import {
+  checkDocumentBlockNlp,
+  getNlpFeatures,
+  rejectDocumentBlockLanguageIssue,
+} from '../services/nlpApi.js';
+import { convertDocumentCitationStyle } from '../services/citationsApi.js';
+import {
+  createBlockNlpRequestIdentity,
+  nlpResponseMatchesIdentity,
+} from '../lib/nlp/nlpRequestIdentity.js';
+import { normalizeBlockNlpSnapshot } from '../lib/nlp/blockNlpSnapshot.js';
+import {
+  applyLanguageIssueRejections,
+  rejectLanguageIssue,
+} from '../lib/nlp/issueRejections.js';
+import {
+  rewriteCardShowsProcessing,
+  shouldAnimateWorkspaceOwl,
+} from '../lib/rewriteProcessingState.js';
 
 const PRACTICE_MAX_CHARS = 4000;
+export const WORKSPACE_AI_MODES = Object.freeze(['analyzing', 'practicing', 'rewriting']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 const ANALYSIS_FILTER_LABELS = {
   clarity: 'Clear and understandable',
@@ -202,6 +228,19 @@ function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
         ?? storedAttrs.partitionGeneration
         ?? 0,
       formatOverrides: block.format_overrides ?? storedAttrs.formatOverrides ?? [],
+      nlpStatus: block.nlp_status ?? storedAttrs.nlpStatus ?? 'unknown',
+      nlpReasonCodes: block.nlp_reason_codes ?? storedAttrs.nlpReasonCodes ?? [],
+      nlpAnalysis: block.nlp_analysis ?? storedAttrs.nlpAnalysis ?? {},
+      nlpTextHash: block.nlp_text_hash ?? storedAttrs.nlpTextHash ?? null,
+      nlpPipelineVersion: block.nlp_pipeline_version
+        ?? storedAttrs.nlpPipelineVersion
+        ?? null,
+      nlpSnapshotFingerprint: block.nlp_snapshot_fingerprint
+        ?? storedAttrs.nlpSnapshotFingerprint
+        ?? null,
+      semanticCoherence: block.semantic_coherence ?? storedAttrs.semanticCoherence ?? null,
+      semanticAnchor: block.semantic_anchor ?? storedAttrs.semanticAnchor ?? null,
+      nlpCheckedAt: block.nlp_checked_at ?? storedAttrs.nlpCheckedAt ?? null,
     },
     styleSettings
   );
@@ -229,6 +268,15 @@ function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
     change_source: attrs.changeSource,
     partition_generation: attrs.partitionGeneration,
     format_overrides: attrs.formatOverrides,
+    nlp_status: attrs.nlpStatus,
+    nlp_reason_codes: attrs.nlpReasonCodes,
+    nlp_analysis: attrs.nlpAnalysis,
+    nlp_text_hash: attrs.nlpTextHash,
+    nlp_pipeline_version: attrs.nlpPipelineVersion,
+    nlp_snapshot_fingerprint: attrs.nlpSnapshotFingerprint,
+    semantic_coherence: attrs.semanticCoherence,
+    semantic_anchor: attrs.semanticAnchor,
+    nlp_checked_at: attrs.nlpCheckedAt,
     attrs,
     tiptap_node: {
       ...(storedNode?.type === 'blockSegment' ? storedNode : {}),
@@ -265,6 +313,15 @@ function extractRuntimeBlocksFromContent(document, contentJson, styleSettings = 
         isEmpty: !text.trim(),
         length,
         char_length: length,
+        nlp_status: attrs.nlpStatus,
+        nlp_reason_codes: attrs.nlpReasonCodes,
+        nlp_analysis: attrs.nlpAnalysis,
+        nlp_text_hash: attrs.nlpTextHash,
+        nlp_pipeline_version: attrs.nlpPipelineVersion,
+        nlp_snapshot_fingerprint: attrs.nlpSnapshotFingerprint,
+        semantic_coherence: attrs.semanticCoherence,
+        semantic_anchor: attrs.semanticAnchor,
+        nlp_checked_at: attrs.nlpCheckedAt,
         attrs,
         tiptap_node: {
           ...node,
@@ -394,6 +451,28 @@ function blockAttrs(blockId, status, length, existingAttrs = {}, styleSettings =
       && typeof existingAttrs.formatOverrides === 'object'
       ? existingAttrs.formatOverrides
       : [],
+    nlpStatus: ['unknown', 'pass', 'warning', 'blocked', 'skipped'].includes(existingAttrs.nlpStatus)
+      ? existingAttrs.nlpStatus
+      : 'unknown',
+    nlpReasonCodes: Array.isArray(existingAttrs.nlpReasonCodes)
+      ? existingAttrs.nlpReasonCodes
+      : [],
+    nlpAnalysis: existingAttrs.nlpAnalysis
+      && typeof existingAttrs.nlpAnalysis === 'object'
+      && !Array.isArray(existingAttrs.nlpAnalysis)
+      ? existingAttrs.nlpAnalysis
+      : {},
+    nlpTextHash: existingAttrs.nlpTextHash ?? null,
+    nlpPipelineVersion: existingAttrs.nlpPipelineVersion ?? null,
+    nlpSnapshotFingerprint: existingAttrs.nlpSnapshotFingerprint ?? null,
+    semanticCoherence: Number.isFinite(Number(existingAttrs.semanticCoherence))
+      ? Number(existingAttrs.semanticCoherence)
+      : null,
+    semanticAnchor: existingAttrs.semanticAnchor
+      && typeof existingAttrs.semanticAnchor === 'object'
+      ? existingAttrs.semanticAnchor
+      : null,
+    nlpCheckedAt: existingAttrs.nlpCheckedAt ?? null,
     length,
   };
 }
@@ -476,12 +555,14 @@ export default function WorkspacePage() {
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [showUnsavedBackPrompt, setShowUnsavedBackPrompt] = useState(false);
   const [formatReview, setFormatReview] = useState(null);
+  const [templateSwitchReview, setTemplateSwitchReview] = useState(null);
+  const [templateSwitchBusy, setTemplateSwitchBusy] = useState(false);
+  const [templateSwitchError, setTemplateSwitchError] = useState('');
   const [editorReloadKey, setEditorReloadKey] = useState(0);
   const [workspaceDraft, setWorkspaceDraft] = useState(null);
   const [workspaceSidebarOpen, setWorkspaceSidebarOpen] = useState(true);
-  const [workspaceMode, setWorkspaceMode] = useState('rewriting');
+  const [workspaceMode, setWorkspaceMode] = useState('analyzing');
   const [workspaceOwlRequestLoading, setWorkspaceOwlLoading] = useState(false);
-  const [rewritePrewarmLoading, setRewritePrewarmLoading] = useState(false);
   const [workspaceOwlError, setWorkspaceOwlError] = useState(false);
   const [workspaceOwlErrorKey, setWorkspaceOwlErrorKey] = useState(0);
   const [styleName, setStyleName] = useState('APA');
@@ -489,14 +570,6 @@ export default function WorkspacePage() {
   const [editorContent, setEditorContent] = useState(null);
   const [activeEditorBlock, setActiveEditorBlock] = useState({ blockId: null, status: 'unprocessed' });
   const [rewriteCards, setRewriteCards] = useState(createRewriteCards);
-  const rewriteCardsProcessing = rewriteCards.some((card) => (
-    card.state === 'queued' || card.state === 'running'
-  ));
-  const workspaceOwlLoading = (
-    workspaceOwlRequestLoading
-    || rewritePrewarmLoading
-    || rewriteCardsProcessing
-  );
   const [rewriteCardsLocked, setRewriteCardsLocked] = useState(false);
   const [rewriteAllCompleted, setRewriteAllCompleted] = useState(false);
   const [rewriteApplyBusy, setRewriteApplyBusy] = useState(false);
@@ -508,7 +581,7 @@ export default function WorkspacePage() {
   const [practiceBusy, setPracticeBusy] = useState(false);
   const [practiceError, setPracticeError] = useState('');
   const [mobileOwlOpen, setMobileOwlOpen] = useState(false);
-  const [mobilePanelMode, setMobilePanelMode] = useState('rewriting');
+  const [mobilePanelMode, setMobilePanelMode] = useState('analyzing');
   const [mobileRewriteIndex, setMobileRewriteIndex] = useState(0);
   const [mobilePracticeIndex, setMobilePracticeIndex] = useState(0);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
@@ -525,6 +598,23 @@ export default function WorkspacePage() {
   const [blockAnalysisHighlights, setBlockAnalysisHighlights] = useState({});
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
+  const [visibleBlockNlp, setVisibleBlockNlp] = useState(null);
+  const [documentNlpSummary, setDocumentNlpSummary] = useState(null);
+  const [nlpCheckState, setNlpCheckState] = useState('idle');
+  const [nlpCheckError, setNlpCheckError] = useState('');
+  const [rejectingLanguageIssueKey, setRejectingLanguageIssueKey] = useState('');
+  const [analysisFace, setAnalysisFace] = useState('nlp');
+  const [semanticProfile, setSemanticProfile] = useState('medium');
+  const [nlpRepartitionBusy, setNlpRepartitionBusy] = useState(false);
+  const [nlpRepartitionStatus, setNlpRepartitionStatus] = useState('');
+  const [nlpFeatureFlags, setNlpFeatureFlags] = useState({
+    NLP_LIVE_BLOCK_CHECK_ENABLED: true,
+    NLP_REWRITE_GATE_ENABLED: true,
+    NLP_ANALYZING_FLIP_CARD_ENABLED: true,
+    NLP_SEMANTIC_PROFILE_ENABLED: true,
+    NLP_REPARTITION_ENABLED: true,
+    MCP_CITATION_V2_ENABLED: true,
+  });
   const workspaceOwlAnimatorRef = useRef(null);
   const mobileWorkspaceOwlAnimatorRef = useRef(null);
   const documentEditorRef = useRef(null);
@@ -538,6 +628,9 @@ export default function WorkspacePage() {
   const aiBlockEpochRef = useRef(new Map());
   const wandHoverTimerRef = useRef(null);
   const autosaveTimerRef = useRef(null);
+  const nlpCheckTimerRef = useRef(null);
+  const nlpAbortControllerRef = useRef(null);
+  const visibleNlpIdentityRef = useRef(null);
   const workspaceUploadInputRef = useRef(null);
   const mobileOptionsPanelRef = useRef(null);
   const mobileOptionsButtonRef = useRef(null);
@@ -573,11 +666,31 @@ export default function WorkspacePage() {
     ?? activeSourceBlock?.text
     ?? activeSourceBlock?.text_content
     ?? '';
+  const activeAnalysisNlpFingerprint = visibleBlockNlp?.identity?.nlpSnapshotFingerprint
+    ?? visibleBlockNlp?.nlp?.nlpSnapshotFingerprint
+    ?? activeSourceBlock?.nlp_snapshot_fingerprint
+    ?? activeSourceBlock?.attrs?.nlpSnapshotFingerprint
+    ?? 'none';
   const currentAnalysisKey = useMemo(() => (
     activeEditorBlock?.blockId
-      ? `${activeEditorBlock.blockId}|${activeSourceText}|${selectedAnalysisFilters.join(',')}`
+      ? [
+        activeEditorBlock.blockId,
+        activeSourceText,
+        Number(activeEditorBlock.partitionGeneration
+          ?? activeSourceBlock?.partition_generation
+          ?? 0),
+        activeAnalysisNlpFingerprint,
+        selectedAnalysisFilters.join(','),
+      ].join('|')
       : ''
-  ), [activeEditorBlock?.blockId, activeSourceText, selectedAnalysisFilters]);
+  ), [
+    activeAnalysisNlpFingerprint,
+    activeEditorBlock?.blockId,
+    activeEditorBlock?.partitionGeneration,
+    activeSourceBlock?.partition_generation,
+    activeSourceText,
+    selectedAnalysisFilters,
+  ]);
   const currentBlockAnalysis = currentAnalysisKey ? blockAnalyses[currentAnalysisKey] ?? null : null;
   const analysisHighlights = useMemo(
     () => Object.values(blockAnalysisHighlights),
@@ -593,7 +706,7 @@ export default function WorkspacePage() {
     realtimeState.profile?.useWritingPreferences !== false,
   );
   const currentRewriteKey = selectedDocument?.id && currentRewriteBlockId
-    ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}|${currentWritingPreferenceKey}`
+    ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}|${currentWritingPreferenceKey}|${activeAnalysisNlpFingerprint}`
     : '';
   rewriteContextKeyRef.current = currentRewriteKey;
   rewriteVisibleIdentityRef.current = selectedDocument?.id && currentRewriteBlockId
@@ -604,6 +717,7 @@ export default function WorkspacePage() {
         ?? currentRewriteBlock?.attrs?.partitionGeneration
         ?? 0),
       localKey: currentRewriteKey,
+      nlpSnapshotFingerprint: activeAnalysisNlpFingerprint,
     }
     : null;
   const currentPracticeKey = selectedDocument?.id && activeEditorBlock?.blockId
@@ -612,10 +726,187 @@ export default function WorkspacePage() {
   const currentPracticeRequestKey = `${currentPracticeKey}|${practiceInput}`;
   practiceContextKeyRef.current = currentPracticeRequestKey;
   const autosaveDocs = Boolean(realtimeState.profile?.autosaveDocs);
+  const activeBlockNlpSnapshot = useMemo(
+    () => normalizeBlockNlpSnapshot(
+      visibleBlockNlp?.nlp ?? currentRewriteBlock ?? activeSourceBlock ?? {},
+    ),
+    [activeSourceBlock, currentRewriteBlock, visibleBlockNlp],
+  );
+  const activeBlockNlpIssues = useMemo(
+    () => activeBlockNlpSnapshot.issues.map((issue) => ({
+      ...issue,
+      blockId: activeEditorBlock?.blockId,
+    })),
+    [activeBlockNlpSnapshot.issues, activeEditorBlock?.blockId],
+  );
+  const rewriteNlpEligible = (
+    !nlpFeatureFlags.NLP_REWRITE_GATE_ENABLED
+    || activeBlockNlpSnapshot.rewriteEligible
+  );
+  const workspaceOwlLoading = shouldAnimateWorkspaceOwl({
+    requestLoading: workspaceOwlRequestLoading,
+    workspaceMode,
+    mobileOwlOpen,
+    mobilePanelMode,
+    rewriteAllCompleted,
+    rewriteNlpEligible,
+    rewriteCards,
+    currentRewriteBlock,
+  });
+
+  useEffect(() => {
+    let alive = true;
+    getNlpFeatures()
+      .then((response) => {
+        if (alive && response?.featureFlags) setNlpFeatureFlags(response.featureFlags);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    clearTimeout(nlpCheckTimerRef.current);
+    nlpAbortControllerRef.current?.abort();
+    nlpAbortControllerRef.current = null;
+    visibleNlpIdentityRef.current = null;
+    setVisibleBlockNlp(null);
+    setNlpCheckError('');
+    if (
+      !selectedDocument?.id
+      || !activeEditorBlock?.blockId
+      || activeEditorBlock.status !== 'processing'
+      || !activeSourceText.trim()
+      || !nlpFeatureFlags.NLP_LIVE_BLOCK_CHECK_ENABLED
+    ) {
+      setNlpCheckState('idle');
+      return undefined;
+    }
+
+    let disposed = false;
+    setNlpCheckState('checking');
+    nlpCheckTimerRef.current = setTimeout(async () => {
+      try {
+        const identity = await createBlockNlpRequestIdentity({
+          documentId: selectedDocument.id,
+          blockId: activeEditorBlock.blockId,
+          text: activeSourceText,
+          partitionGeneration: activeEditorBlock.partitionGeneration
+            ?? currentRewriteBlock?.partition_generation
+            ?? 0,
+        });
+        if (disposed) return;
+        visibleNlpIdentityRef.current = identity;
+        const controller = new AbortController();
+        nlpAbortControllerRef.current = controller;
+        const response = await checkDocumentBlockNlp(
+          selectedDocument.id,
+          activeEditorBlock.blockId,
+          {
+            text: activeSourceText,
+            sourceTextHash: identity.sourceTextHash,
+            partitionGeneration: identity.partitionGeneration,
+            sourceType: activeSourceBlock?.attrs?.sourceType
+              ?? activeSourceBlock?.sourceType
+              ?? 'paragraph',
+            signal: controller.signal,
+          },
+        );
+        if (
+          disposed
+          || !nlpResponseMatchesIdentity(response, visibleNlpIdentityRef.current)
+        ) return;
+        const visibleResponse = {
+          ...response,
+          nlp: applyLanguageIssueRejections(
+            response.nlp,
+            normalizeBlockNlpSnapshot(
+              currentRewriteBlock ?? activeSourceBlock ?? {},
+            ).rejectedIssues,
+          ),
+        };
+        setVisibleBlockNlp(visibleResponse);
+        setDocumentNlpSummary(response.documentSummary ?? null);
+        setNlpCheckState(visibleResponse.nlp?.degraded ? 'degraded' : 'ready');
+        setNlpCheckError('');
+        documentEditorRef.current?.applyBlockNlpResult?.(
+          activeEditorBlock.blockId,
+          visibleResponse,
+        );
+      } catch (error) {
+        if (disposed || error?.name === 'AbortError') return;
+        setVisibleBlockNlp(null);
+        setNlpCheckState('unknown');
+        setNlpCheckError(error.message || 'Automatic language review is temporarily unavailable.');
+      }
+    }, 400);
+
+    return () => {
+      disposed = true;
+      clearTimeout(nlpCheckTimerRef.current);
+      nlpAbortControllerRef.current?.abort();
+    };
+  }, [
+    activeEditorBlock?.blockId,
+    activeEditorBlock?.partitionGeneration,
+    activeEditorBlock?.status,
+    activeSourceText,
+    activeSourceBlock?.attrs?.sourceType,
+    activeSourceBlock?.sourceType,
+    currentRewriteBlock?.partition_generation,
+    selectedDocument?.id,
+    nlpFeatureFlags.NLP_LIVE_BLOCK_CHECK_ENABLED,
+  ]);
+
+  async function rejectActiveLanguageIssue(issue, issueKey) {
+    if (!selectedDocument?.id || !activeEditorBlock?.blockId || !issue) return;
+    setRejectingLanguageIssueKey(issueKey);
+    setNlpCheckError('');
+    try {
+      let response;
+      if (visibleBlockNlp?.persisted === false) {
+        response = {
+          ...visibleBlockNlp,
+          nlp: rejectLanguageIssue(visibleBlockNlp.nlp, issue),
+        };
+      } else {
+        const sourceTextHash = activeBlockNlpSnapshot.textHash
+          ?? await hashAiSourceText(activeSourceText);
+        response = await rejectDocumentBlockLanguageIssue(
+          selectedDocument.id,
+          activeEditorBlock.blockId,
+          {
+            issue,
+            sourceTextHash,
+            partitionGeneration: Number(
+              activeEditorBlock.partitionGeneration
+              ?? currentRewriteBlock?.partition_generation
+              ?? 0
+            ),
+          },
+        );
+      }
+      setVisibleBlockNlp(response);
+      setDocumentNlpSummary(response.documentSummary ?? documentNlpSummary);
+      documentEditorRef.current?.applyBlockNlpResult?.(
+        activeEditorBlock.blockId,
+        response,
+      );
+    } catch (error) {
+      setNlpCheckError(error.message || 'The writing suggestion could not be rejected.');
+    } finally {
+      setRejectingLanguageIssueKey('');
+    }
+  }
 
   useEffect(() => {
     setAnalysisError('');
   }, [currentAnalysisKey]);
+
+  useEffect(() => {
+    setAnalysisFace('nlp');
+  }, [activeEditorBlock?.blockId]);
 
   useEffect(() => {
     if (!workspaceDirty || !currentRewriteBlock?.text) return undefined;
@@ -625,7 +916,7 @@ export default function WorkspacePage() {
       rewriteCardsContextKeyRef.current = currentRewriteKey;
       setRewriteCards((cards) => cards.map((card) => {
         const option = rewriteCache[
-          `${currentRewriteBlockId}|${sourceTextHash}|${currentWritingPreferenceKey}|${card.tone}`
+          `${currentRewriteBlockId}|${sourceTextHash}|${currentWritingPreferenceKey}|${activeAnalysisNlpFingerprint}|${card.tone}`
         ];
         if (!option) return resetRewriteCard(card);
         return {
@@ -649,6 +940,7 @@ export default function WorkspacePage() {
     currentRewriteBlockId,
     currentRewriteKey,
     currentWritingPreferenceKey,
+    activeAnalysisNlpFingerprint,
     rewriteCache,
     workspaceDirty,
   ]);
@@ -662,12 +954,10 @@ export default function WorkspacePage() {
       setRewriteCards(createRewriteCards());
     }
     if (!selectedDocument?.id || !currentRewriteBlockId || workspaceAiContextDirty) {
-      setRewritePrewarmLoading(false);
       return () => {
         alive = false;
       };
     }
-    setRewritePrewarmLoading(true);
     setRewriteCards((cards) => cards.map((card) => (
       card.response ? card : { ...card, state: 'queued', error: '' }
     )));
@@ -686,6 +976,8 @@ export default function WorkspacePage() {
         || response.identity?.documentId !== visible.documentId
         || response.identity?.blockId !== visible.blockId
         || Number(response.identity?.partitionGeneration) !== visible.partitionGeneration
+        || (response.identity?.nlpSnapshotFingerprint ?? 'none')
+          !== (visible.nlpSnapshotFingerprint ?? 'none')
         || response.canonical === false
       ) {
         return false;
@@ -700,9 +992,10 @@ export default function WorkspacePage() {
         const preferenceKey = writingPreferenceCacheKey(
           response.identity.effectivePreferences,
         );
+        const nlpFingerprint = response.identity.nlpSnapshotFingerprint ?? 'none';
         for (const rewrite of response.rewrites ?? []) {
           next[
-            `${response.identity.blockId}|${response.identity.sourceTextHash}|${preferenceKey}|${rewrite.tone}`
+            `${response.identity.blockId}|${response.identity.sourceTextHash}|${preferenceKey}|${nlpFingerprint}|${rewrite.tone}`
           ] = rewrite;
         }
         return next;
@@ -729,7 +1022,6 @@ export default function WorkspacePage() {
         };
       }));
       rewriteCardsContextKeyRef.current = visible.localKey;
-      setRewritePrewarmLoading(Boolean(activeJob));
       return Boolean(activeJob);
     };
 
@@ -752,7 +1044,6 @@ export default function WorkspacePage() {
         setRewriteCards((cards) => cards.map((card) => (
           card.response ? card : { ...card, state: 'failed', error: error.message }
         )));
-        setRewritePrewarmLoading(false);
       }
     };
     void refresh({ enqueue: true });
@@ -969,9 +1260,14 @@ export default function WorkspacePage() {
     setStyleSettings(nextStyleSettings);
     resetWorkspaceDirty();
     setWorkspaceNotice('');
+    setTemplateSwitchReview(null);
+    setTemplateSwitchError('');
     setBlockAnalyses({});
     setBlockAnalysisHighlights({});
     setAnalysisError('');
+    setAnalysisFace('nlp');
+    setSemanticProfile(hydratedDocument.nlp_semantic_profile ?? 'medium');
+    setNlpRepartitionStatus('');
     setRewriteCardsLocked(false);
     setRewriteAllCompleted(false);
     setRewriteCards((cards) => cards.map(resetRewriteCard));
@@ -990,15 +1286,86 @@ export default function WorkspacePage() {
   }
 
   function handleTemplateChange(nextStyleName) {
-    setStyleName(nextStyleName);
-    setStyleSettings(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? TEMPLATE_STYLE_SETTINGS.APA);
-    markWorkspaceDirty('ai-context');
+    if (nextStyleName === styleName || templateSwitchBusy) return;
+    setTemplateSwitchError('');
+    setTemplateSwitchReview({
+      previousStyleName: styleName,
+      nextStyleName,
+      nextStyleSettings: TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? TEMPLATE_STYLE_SETTINGS.APA,
+    });
+  }
+
+  function handleCustomModeSelect() {
+    if (styleName === 'Customized' || templateSwitchBusy) return;
+    setTemplateSwitchError('');
+    setTemplateSwitchReview({
+      previousStyleName: styleName,
+      nextStyleName: 'Customized',
+      nextStyleSettings: { ...DEFAULT_CUSTOM_STYLE, ...styleSettings },
+    });
   }
 
   function handleCustomStyleChange(nextSettings) {
+    if (styleName !== 'Customized') {
+      setTemplateSwitchError('');
+      setTemplateSwitchReview({
+        previousStyleName: styleName,
+        nextStyleName: 'Customized',
+        nextStyleSettings: { ...DEFAULT_CUSTOM_STYLE, ...nextSettings },
+      });
+      return;
+    }
     setStyleName('Customized');
     setStyleSettings({ ...DEFAULT_CUSTOM_STYLE, ...nextSettings });
     markWorkspaceDirty('ai-context');
+  }
+
+  async function confirmTemplateSwitch() {
+    if (!templateSwitchReview || !selectedDocument?.id || templateSwitchBusy) return;
+    const { nextStyleName, nextStyleSettings } = templateSwitchReview;
+    setTemplateSwitchBusy(true);
+    setTemplateSwitchError('');
+    try {
+      if (nextStyleName === 'Customized') {
+        const customizedDocument = normalizedWorkspaceDocument();
+        customizedDocument.academic_style = 'Customized';
+        customizedDocument.style_settings = nextStyleSettings;
+        const persisted = await persistWorkspaceDocument(
+          customizedDocument,
+          'Switched to Customized formatting',
+        );
+        setTemplateSwitchReview(null);
+        if (persisted) openWorkspace(persisted, { updateRoute: false });
+        setWorkspaceNotice('Customized formatting selected. Citation checking is disabled.');
+        return;
+      }
+
+      let persistedDocument = selectedDocument;
+      if (workspaceDirty) {
+        persistedDocument = await persistWorkspaceDocument(
+          normalizedWorkspaceDocument(),
+          `Saved before switching from ${styleName} to ${nextStyleName}`,
+        );
+      }
+      const response = await convertDocumentCitationStyle(selectedDocument.id, {
+        targetAcademicStyle: nextStyleName,
+        targetStyleSettings: nextStyleSettings,
+        expectedRevision: Number(persistedDocument.revision),
+        expectedPartitionRevision: Number(persistedDocument.partition_revision),
+      });
+      applyDocument('document:updated', response.document);
+      openWorkspace(response.document, { updateRoute: false });
+      setTemplateSwitchReview(null);
+      const bibliographyCount = response.conversion?.bibliographyChanges ?? 0;
+      const inlineCount = response.conversion?.inlineChanges ?? 0;
+      setWorkspaceNotice(
+        `${nextStyleName} selected: ${bibliographyCount} reference-list change${bibliographyCount === 1 ? '' : 's'} applied before ${inlineCount} in-text citation change${inlineCount === 1 ? '' : 's'}.`,
+      );
+    } catch (error) {
+      setTemplateSwitchError(error.message || 'The citation template could not be switched.');
+    } finally {
+      setTemplateSwitchBusy(false);
+    }
   }
 
   function handleWorkspaceTitleChange(nextTitle) {
@@ -1037,7 +1404,9 @@ export default function WorkspacePage() {
         refreshRewriteCardsFromDocument(normalized.document);
       }
     }
-    markWorkspaceDirty(payload.mutationKind === 'text' ? 'ai-context' : 'document');
+    if (payload.mutationKind !== 'nlp-metadata') {
+      markWorkspaceDirty(payload.mutationKind === 'text' ? 'ai-context' : 'document');
+    }
   }
 
   const handleActiveEditorBlockChange = useCallback((info) => {
@@ -1166,7 +1535,7 @@ export default function WorkspacePage() {
 
     setWorkspaceSaving(true);
     try {
-      await persistWorkspaceDocument(
+      const persistedDocument = await persistWorkspaceDocument(
         document,
         automatic ? 'Autosave' : 'Manual save',
         { createVersion: !automatic },
@@ -1178,7 +1547,7 @@ export default function WorkspacePage() {
         setView('home');
         navigate('/');
       }
-      return true;
+      return persistedDocument ?? true;
     } catch (error) {
       setWorkspaceNotice(error.message || 'Could not save the document.');
       return false;
@@ -1291,7 +1660,6 @@ export default function WorkspacePage() {
     setAnalysisBusy(false);
     setPracticeBusy(false);
     setWorkspaceOwlLoading(false);
-    setRewritePrewarmLoading(false);
   }
 
   function canonicalizeStatusSnapshot(payload, blockId, status) {
@@ -1353,10 +1721,15 @@ export default function WorkspacePage() {
     }
 
     try {
-      const result = await uploadDocument(file, styleName);
+      const result = await uploadDocument(file, styleName, 'character', semanticProfile);
       applyDocument('document:created', result.document);
       openWorkspace(result.document);
-      setWorkspaceNotice(`${file.name} uploaded as a new document.`);
+      const skipped = Number(result.importSummary?.skippedBlockCount) || 0;
+      setWorkspaceNotice(
+        skipped
+          ? `${file.name} uploaded. Automatic language review set aside ${skipped} non-argumentative block${skipped === 1 ? '' : 's'}.`
+          : `${file.name} uploaded as a new document.`,
+      );
     } catch (error) {
       setWorkspaceNotice(error.message || 'Could not upload the document.');
     }
@@ -1391,9 +1764,19 @@ export default function WorkspacePage() {
 
       const response = await analyzeDocumentBlock(documentId, blockId, selectedAnalysisFilters);
       if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
+      const canonicalResponseKey = [
+        blockId,
+        requestBlockText,
+        Number(response.identity?.partitionGeneration
+          ?? activeEditorBlock?.partitionGeneration
+          ?? 0),
+        response.identity?.nlpSnapshotFingerprint ?? activeAnalysisNlpFingerprint,
+        selectedAnalysisFilters.join(','),
+      ].join('|');
       setBlockAnalyses((current) => ({
         ...current,
         [requestKey]: response.analysis,
+        [canonicalResponseKey]: response.analysis,
       }));
       setBlockAnalysisHighlights((current) => ({
         ...current,
@@ -1413,6 +1796,62 @@ export default function WorkspacePage() {
         setAnalysisBusy(false);
         setWorkspaceOwlLoading(false);
       }
+    }
+  }
+
+  function handleAnalysisFaceChange(nextFace) {
+    setAnalysisFace(nextFace);
+    if (
+      nextFace === 'ai'
+      && !currentBlockAnalysis
+      && !analysisBusy
+      && activeEditorBlock?.blockId
+    ) {
+      void analyzeActiveBlock();
+    }
+  }
+
+  async function applySemanticProfile() {
+    if (!selectedDocument?.id || nlpRepartitionBusy) return;
+    setNlpRepartitionBusy(true);
+    setNlpRepartitionStatus('Saving the current document…');
+    try {
+      const persisted = workspaceDirty
+        ? await saveWorkspaceDocument({ automatic: autosaveDocs })
+        : selectedDocument;
+      if (!persisted) {
+        setNlpRepartitionStatus('Save the document before changing sentence grouping.');
+        return;
+      }
+      setNlpRepartitionStatus('Regrouping related sentences…');
+      const { job } = await repartitionDocument(selectedDocument.id, {
+        semanticProfile,
+        expectedRevision: Number(persisted.revision ?? selectedDocument.revision),
+      });
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+        const response = await getDocumentNlpJob(selectedDocument.id, job.id);
+        const status = response.job?.status;
+        if (status === 'completed') {
+          const { document } = await getDocument(selectedDocument.id);
+          openWorkspace(document, { updateRoute: false });
+          setNlpRepartitionStatus('Sentence grouping applied.');
+          return;
+        }
+        if (status === 'failed' || status === 'cancelled') {
+          throw new Error(
+            status === 'cancelled'
+              ? 'The document changed while repartitioning. Save and try again.'
+              : 'Sentence grouping could not be completed.',
+          );
+        }
+        setNlpRepartitionStatus('Repartitioning document…');
+      }
+      throw new Error('Sentence grouping is still running. Its result will arrive automatically.');
+    } catch (error) {
+      setNlpRepartitionStatus(error.message || 'Sentence grouping could not be applied.');
+    } finally {
+      setNlpRepartitionBusy(false);
     }
   }
 
@@ -1983,6 +2422,7 @@ export default function WorkspacePage() {
       || !activeEditorBlock?.blockId
       || !currentBlockAnalysis
       || !practiceInput.trim()
+      || !rewriteNlpEligible
     );
 
     return (
@@ -2145,18 +2585,12 @@ export default function WorkspacePage() {
   }
 
   function renderRewriteCard(card) {
-    const tonePending = card.state === 'queued' || card.state === 'running';
     const skippedOrigin = currentRewriteBlock?.attrs?.resumeStatus === 'skipped'
       || currentRewriteBlock?.resume_status === 'skipped';
     const manuallyEdited = currentRewriteBlock?.attrs?.changeSource === 'manual'
       || currentRewriteBlock?.change_source === 'manual';
-    const automaticMiss = (
-      !card.response
-      && !skippedOrigin
-      && !manuallyEdited
-      && card.state !== 'failed'
-    );
-    const generateLabel = tonePending
+    const processingPrompt = rewriteCardShowsProcessing(card, currentRewriteBlock);
+    const generateLabel = processingPrompt
       ? 'Processing...'
       : card.response
         ? 'Regenerate'
@@ -2168,10 +2602,10 @@ export default function WorkspacePage() {
               ? 'Retry rewrite'
               : 'Processing...';
     const generationDisabled = (
-      tonePending
-      || automaticMiss
+      processingPrompt
       || rewriteCardsLocked
       || rewriteAllCompleted
+      || !rewriteNlpEligible
     );
     return (
       <article
@@ -2195,7 +2629,7 @@ export default function WorkspacePage() {
               : ''}`}
             disabled={generationDisabled}
           >
-            {generateLabel}
+            {rewriteNlpEligible ? generateLabel : 'Review writing checks'}
           </button>
         </div>
         <p className="rewrite-card-best-for">{card.bestFor}</p>
@@ -2275,13 +2709,48 @@ export default function WorkspacePage() {
     setMobileOwlOpen((value) => !value);
   }
 
+  function renderAnalyzingCard() {
+    return (
+      <>
+        {nlpFeatureFlags.NLP_ANALYZING_FLIP_CARD_ENABLED ? (
+          <AnalyzingFlipCard
+            face={analysisFace}
+            onFaceChange={handleAnalysisFaceChange}
+            nlpPanel={(
+              <NlpAnalysisPanel
+                snapshot={activeBlockNlpSnapshot}
+                checkState={nlpCheckState}
+                error={nlpCheckError}
+                documentSummary={documentNlpSummary}
+                onRejectIssue={rejectActiveLanguageIssue}
+                rejectingIssueKey={rejectingLanguageIssueKey}
+              />
+            )}
+            aiPanel={renderAnalysisStats()}
+          />
+        ) : renderAnalysisStats()}
+        {nlpFeatureFlags.MCP_CITATION_V2_ENABLED ? (
+          <CitationReviewPanel
+            key={`${selectedDocument?.id}-${selectedDocument?.revision}-${styleName}`}
+            document={selectedDocument}
+            disabled={styleName === 'Customized'}
+            onDocumentApplied={(document) => {
+              openWorkspace(document, { updateRoute: false });
+              setWorkspaceNotice('Citation patch applied and versioned.');
+            }}
+          />
+        ) : null}
+      </>
+    );
+  }
+
   function renderMobileAssistantPanel() {
     const currentRewriteCard = rewriteCards[mobileRewriteIndex] || rewriteCards[0];
 
     return (
       <section className="workspace-mobile-assistant-panel" aria-label="Mobile owl workspace panel">
         <div className="workspace-mobile-panel-switcher" role="tablist" aria-label="Mobile workspace mode">
-          {['rewriting', 'analyzing', 'practicing'].map((item) => (
+          {WORKSPACE_AI_MODES.map((item) => (
             <button
               key={item}
               type="button"
@@ -2319,7 +2788,7 @@ export default function WorkspacePage() {
           </div>
         ) : mobilePanelMode === 'analyzing' ? (
           <div className="workspace-mobile-panel-body" role="tabpanel" id="mobile-assistant-panel" aria-labelledby="mobile-assistant-tab-analyzing">
-            {renderAnalysisStats()}
+            {renderAnalyzingCard()}
           </div>
         ) : (
           <div className="workspace-mobile-panel-body" role="tabpanel" id="mobile-assistant-panel" aria-labelledby="mobile-assistant-tab-practicing">
@@ -2413,7 +2882,7 @@ export default function WorkspacePage() {
               <section className="analysis-source-lookup">
                 <div className="analysis-source-lookup-heading">
                   <h3>External source check</h3>
-                  <span>MCP · Crossref</span>
+                  <span>Academic publication records</span>
                 </div>
 
                 {sourceLookup.items?.length ? (
@@ -2433,11 +2902,11 @@ export default function WorkspacePage() {
                     ))}
                   </ul>
                 ) : (
-                  <p>Crossref could not be reached. Analysis continued without external metadata.</p>
+                  <p>Publication records could not be reached. The writing review continued without them.</p>
                 )}
 
                 {sourceLookup.status === 'partial' ? (
-                  <small>Some DOI records could not be retrieved.</small>
+                  <small>Some publication details could not be retrieved.</small>
                 ) : null}
               </section>
             ) : null}
@@ -2529,12 +2998,25 @@ export default function WorkspacePage() {
             </section>
           ) : null}
           {mobileOptionsTab === 'styles' ? (
-            <AcademicStylePanel
-              styleName={styleName}
-              customStyle={styleSettings}
-              onTemplateChange={handleTemplateChange}
-              onCustomStyleChange={handleCustomStyleChange}
-            />
+            <>
+              <AcademicStylePanel
+                styleName={styleName}
+                customStyle={styleSettings}
+                onTemplateChange={handleTemplateChange}
+                onCustomModeSelect={handleCustomModeSelect}
+                onCustomStyleChange={handleCustomStyleChange}
+              />
+              {nlpFeatureFlags.NLP_SEMANTIC_PROFILE_ENABLED
+                && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
+                  <SemanticProfileControl
+                    value={semanticProfile}
+                    onChange={setSemanticProfile}
+                    onApply={applySemanticProfile}
+                    busy={nlpRepartitionBusy}
+                    status={nlpRepartitionStatus}
+                  />
+                ) : null}
+            </>
           ) : null}
           {mobileOptionsTab === 'history' ? (
             <HistorySelector
@@ -2560,7 +3042,7 @@ export default function WorkspacePage() {
           {!currentBlockAnalysis ? (
             <p>Select a block, choose your goals, and learn with our AI coach.</p>
           ) : null}
-          {renderAnalysisStats()}
+          {renderAnalyzingCard()}
           </div>
         </section>
       );
@@ -2640,8 +3122,19 @@ export default function WorkspacePage() {
               styleName={styleName}
               customStyle={styleSettings}
               onTemplateChange={handleTemplateChange}
+              onCustomModeSelect={handleCustomModeSelect}
               onCustomStyleChange={handleCustomStyleChange}
             />
+            {nlpFeatureFlags.NLP_SEMANTIC_PROFILE_ENABLED
+              && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
+                <SemanticProfileControl
+                  value={semanticProfile}
+                  onChange={setSemanticProfile}
+                  onApply={applySemanticProfile}
+                  busy={nlpRepartitionBusy}
+                  status={nlpRepartitionStatus}
+                />
+              ) : null}
             <HistorySelector
               documents={recentDocuments}
               expanded={workspaceHistoryExpanded}
@@ -2692,6 +3185,7 @@ export default function WorkspacePage() {
             onBlockStatusChange={handleEditorBlockStatusChange}
             onActiveBlockChange={handleActiveEditorBlockChange}
             analysisHighlights={analysisHighlights}
+            nlpIssues={activeBlockNlpIssues}
             onSave={() => saveWorkspaceDocument()}
             saveDisabled={!workspaceDirty}
             saving={workspaceSaving}
@@ -2712,7 +3206,7 @@ export default function WorkspacePage() {
           />
           <div className="workspace-blackboard-content">
             <div className="workspace-mode-switcher" role="tablist" aria-label="Workspace mode">
-              {['rewriting', 'analyzing', 'practicing'].map((item) => (
+              {WORKSPACE_AI_MODES.map((item) => (
                 <button
                   key={item}
                   type="button"
@@ -2829,6 +3323,33 @@ export default function WorkspacePage() {
                   })}
                 >
                   Normalize to global
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
+        {templateSwitchReview ? (
+          <div className="confirm-backdrop" role="presentation">
+            <section className="confirm-modal template-switch-modal" role="dialog" aria-modal="true" aria-labelledby="template-switch-title">
+              <h2 id="template-switch-title">
+                Switch to {templateSwitchReview.nextStyleName}?
+              </h2>
+              {templateSwitchReview.nextStyleName === 'Customized' ? (
+                <p>
+                  Customized formatting does not define a citation standard. Citation checking will be disabled until APA, MLA, or Chicago is selected.
+                </p>
+              ) : (
+                <p>
+                  The reference list will be converted first. The citation checker will then match those sources and convert the in-text citations to {templateSwitchReview.nextStyleName}. <br/> <strong>Note: After template switching, the document will be automatically saved.</strong>
+                </p>
+              )}
+              {templateSwitchError ? <p className="analysis-error" role="alert">{templateSwitchError}</p> : null}
+              <div className="confirm-actions">
+                <button type="button" onClick={() => setTemplateSwitchReview(null)} disabled={templateSwitchBusy}>
+                  Cancel
+                </button>
+                <button type="button" className="primary" onClick={confirmTemplateSwitch} disabled={templateSwitchBusy}>
+                  {templateSwitchBusy ? 'Switching…' : 'Switch template'}
                 </button>
               </div>
             </section>

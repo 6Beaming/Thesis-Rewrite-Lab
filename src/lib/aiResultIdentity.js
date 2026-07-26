@@ -7,7 +7,9 @@ export function rewriteIdentityMatchesVisible(responseIdentity, visibleIdentity,
     && requestKey === visibleKey
     && visibleIdentity.documentId === responseIdentity.documentId
     && visibleIdentity.blockId === responseIdentity.blockId
-    && Number(visibleIdentity.partitionGeneration) === Number(responseIdentity.partitionGeneration),
+    && Number(visibleIdentity.partitionGeneration) === Number(responseIdentity.partitionGeneration)
+    && (visibleIdentity.nlpSnapshotFingerprint ?? 'none')
+      === (responseIdentity.nlpSnapshotFingerprint ?? 'none'),
   );
 }
 
@@ -16,9 +18,10 @@ export function cacheRewriteResponse(cache, response) {
   const preferenceKey = writingPreferenceCacheKey(
     response?.identity?.effectivePreferences,
   );
+  const nlpFingerprint = response?.identity?.nlpSnapshotFingerprint ?? 'none';
   for (const option of response?.rewrites ?? []) {
     next[
-      `${response.identity?.blockId}|${response.identity?.sourceTextHash}|${preferenceKey}|${option.tone}`
+      `${response.identity?.blockId}|${response.identity?.sourceTextHash}|${preferenceKey}|${nlpFingerprint}|${option.tone}`
     ] = option;
   }
   return next;

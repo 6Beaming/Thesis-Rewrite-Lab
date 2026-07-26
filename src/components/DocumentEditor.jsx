@@ -51,6 +51,11 @@ import {
   trackedTextContentChanged,
 } from '../lib/editorBlockCommands.js';
 import { separateAdjacentBlockRects } from '../lib/blockFrameGeometry.js';
+import { NlpIssueDecorationPlugin } from '../extensions/NlpIssueDecorationPlugin.js';
+import {
+  applyBlockNlpAttrs,
+  invalidateBlockNlpAttrs,
+} from '../lib/nlp/blockNlpSnapshot.js';
 import A4EditorPage from './A4EditorPage.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 
@@ -58,6 +63,7 @@ const A4_PAGE_HEIGHT_PX = 1123;
 const PAGE_GUTTER_HEIGHT_PX = 54;
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const EMPTY_ANALYSIS_HIGHLIGHTS = Object.freeze([]);
+const EMPTY_NLP_ISSUES = Object.freeze([]);
 const PAGINATION_META = 'editorPagination';
 const PAGINATION_PLUGIN_KEY = new PluginKey('paginationDecoration');
 const SKIP_BLOCK_PARTITION_META = 'skipEditorBlockPartition';
@@ -112,15 +118,26 @@ function isStyleableTextNode(node) {
 }
 
 function renderTrackedBlock(tag, HTMLAttributes) {
-  const style = trackedBlockStyle(HTMLAttributes);
+  const {
+    nlpAnalysis: _nlpAnalysis,
+    nlpReasonCodes: _nlpReasonCodes,
+    semanticAnchor: _semanticAnchor,
+    nlpSnapshotFingerprint: _nlpSnapshotFingerprint,
+    nlpTextHash: _nlpTextHash,
+    nlpPipelineVersion: _nlpPipelineVersion,
+    nlpCheckedAt: _nlpCheckedAt,
+    ...renderedAttributes
+  } = HTMLAttributes;
+  const style = trackedBlockStyle(renderedAttributes);
 
   return [
     tag,
     {
-      ...HTMLAttributes,
-      class: `doc-block doc-block--${HTMLAttributes.status || 'unprocessed'}`,
-      'data-block-id': HTMLAttributes.blockId,
-      'data-status': HTMLAttributes.status,
+      ...renderedAttributes,
+      class: `doc-block doc-block--${renderedAttributes.status || 'unprocessed'}`,
+      'data-block-id': renderedAttributes.blockId,
+      'data-status': renderedAttributes.status,
+      'data-nlp-status': renderedAttributes.nlpStatus,
       style,
     },
     0,
@@ -207,6 +224,15 @@ const BlockSegment = Node.create({
       sourceType: { default: 'paragraph' },
       level: { default: null },
       length: { default: 0 },
+      nlpStatus: { default: 'unknown' },
+      nlpReasonCodes: { default: [] },
+      nlpAnalysis: { default: {} },
+      nlpTextHash: { default: null },
+      nlpPipelineVersion: { default: null },
+      nlpSnapshotFingerprint: { default: null },
+      semanticCoherence: { default: null },
+      semanticAnchor: { default: null },
+      nlpCheckedAt: { default: null },
     };
   },
   parseHTML() {
@@ -1017,6 +1043,15 @@ function createEditorSnapshot(editor) {
     change_source: block.attrs.changeSource,
     partition_generation: block.attrs.partitionGeneration,
     format_overrides: block.attrs.formatOverrides,
+    nlp_status: block.attrs.nlpStatus,
+    nlp_reason_codes: block.attrs.nlpReasonCodes,
+    nlp_analysis: block.attrs.nlpAnalysis,
+    nlp_text_hash: block.attrs.nlpTextHash,
+    nlp_pipeline_version: block.attrs.nlpPipelineVersion,
+    nlp_snapshot_fingerprint: block.attrs.nlpSnapshotFingerprint,
+    semantic_coherence: block.attrs.semanticCoherence,
+    semantic_anchor: block.attrs.semanticAnchor,
+    nlp_checked_at: block.attrs.nlpCheckedAt,
   }));
   const currentProcessingBlockId = blocks.find((block) => !block.isEmpty && block.status === 'processing')?.id ?? null;
 
@@ -1027,7 +1062,7 @@ function createEditorSnapshot(editor) {
   };
 }
 
-function reconcileEditorBlocks(editor, _previousSnapshot, documentId, {
+function reconcileEditorBlocks(editor, previousSnapshot, documentId, {
   skipEditedStatusReset = false,
 } = {}) {
   if (!editor || editor.isDestroyed) return editor?.getJSON();
@@ -1081,7 +1116,7 @@ function reconcileEditorBlocks(editor, _previousSnapshot, documentId, {
         }
       }
 
-      const nextAttrs = {
+      const baseAttrs = {
         ...node.attrs,
         ...buildTrackedBlockStyleAttrs(node.attrs),
         blockId,
@@ -1093,6 +1128,10 @@ function reconcileEditorBlocks(editor, _previousSnapshot, documentId, {
         formatOverrides: node.attrs.formatOverrides ?? {},
         length,
       };
+      const nextAttrs = previousSnapshot?.has(blockId)
+        && previousSnapshot.get(blockId) !== text
+        ? invalidateBlockNlpAttrs(baseAttrs)
+        : baseAttrs;
       blocks.push({ pos, nextAttrs, isEmpty, blockId, status });
 
       if (
@@ -1426,6 +1465,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   onBlockStatusChange,
   onActiveBlockChange,
   analysisHighlights = EMPTY_ANALYSIS_HIGHLIGHTS,
+  nlpIssues = EMPTY_NLP_ISSUES,
   onSave,
   saveDisabled = false,
   saving = false,
@@ -1533,6 +1573,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       BlockSegmentEnter,
       BlockSelectionDecoration,
       AnalysisPhraseDecoration,
+      NlpIssueDecorationPlugin,
       PageBreak,
       PaginationDecoration,
       BulletList.configure({ keepMarks: true }),
@@ -1727,6 +1768,17 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       .setMeta('addToHistory', false);
     editor.view.dispatch(transaction);
   }, [editor, analysisHighlights]);
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return;
+    editor.storage.nlpIssueDecoration.issues = Array.isArray(nlpIssues)
+      ? nlpIssues
+      : EMPTY_NLP_ISSUES;
+    editor.view.dispatch(editor.state.tr
+      .setMeta('nlpIssueDecoration', true)
+      .setMeta('addToHistory', false)
+      .setMeta(EDITOR_PRESERVE_SCROLL_META, true));
+  }, [editor, nlpIssues]);
 
   useEffect(() => () => {
     clearTimeout(blockPartitionTimerRef.current);
@@ -2119,6 +2171,37 @@ const DocumentEditor = forwardRef(function DocumentEditor({
 
   useImperativeHandle(ref, () => ({
     applyCurrentBlockStatus,
+    applyBlockNlpResult: (blockId, response) => {
+      if (!editor || editor.isDestroyed || !blockId || !response?.nlp) return null;
+      let applied = false;
+      editor.commands.command(({ state, tr, dispatch }) => {
+        state.doc.descendants((node, pos) => {
+          if (
+            applied
+            || !isTrackedTextBlockNode(node)
+            || node.attrs.blockId !== blockId
+          ) return;
+          tr.setNodeMarkup(pos, undefined, applyBlockNlpAttrs(node.attrs, response));
+          applied = true;
+        });
+        if (!applied) return false;
+        tr
+          .setMeta('addToHistory', false)
+          .setMeta(SKIP_BLOCK_PARTITION_META, true)
+          .setMeta(EDITOR_PRESERVE_SCROLL_META, true)
+          .setMeta('workspaceMutationKind', 'nlp-metadata');
+        suppressProgrammaticUpdateRef.current = true;
+        dispatch?.(tr);
+        return true;
+      });
+      if (!applied) return null;
+      const snapshot = createEditorSnapshot(editor);
+      callbacksRef.current.onChange?.({
+        ...snapshot,
+        mutationKind: 'nlp-metadata',
+      });
+      return snapshot;
+    },
     getScrollPosition: () => ({
       top: paperScrollRef.current?.scrollTop ?? 0,
       left: paperScrollRef.current?.scrollLeft ?? 0,

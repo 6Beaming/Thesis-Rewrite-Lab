@@ -733,11 +733,13 @@ Page numbers are plain dark-green bold numbers, not “Page X” labels. Support
 
 The final order is:
 
-1. Rewriting;
-2. Analyzing;
-3. Practicing.
+1. Analyzing;
+2. Practicing;
+3. Rewriting.
 
 Each mode uses the active block identity, not the visual card position, as its data key.
+Analyzing is the initial mode on desktop and mobile. Its card opens on the live
+NLP diagnostics face and flips to the exact-cache AI coaching face.
 
 ### 6.2 AI context readiness
 
@@ -1410,3 +1412,380 @@ Manual acceptance should verify:
 - Manual save creates a version and version revert restores the complete block snapshot.
 
 This checklist is the release definition of done for the Existing UI/UX Upgrades workflow.
+
+---
+
+## 12. Final Upgrades 2: NLP intelligence and citation workflows
+
+This section records the implementation introduced from
+`local/papers/Final-Upgrades-2.md`. Where it conflicts with earlier sections,
+this section is authoritative.
+
+### 12.1 NLP service boundary and contracts
+
+The Node application now uses a dedicated Python service under
+`server/nlp_service/`. FastAPI exposes:
+
+```text
+GET  /health
+POST /v1/analyze-block
+POST /v1/partition-document
+```
+
+spaCy, sentence-transformers, and the deterministic grammar rules load once
+per service process. Model, grammar, known-term, partition-algorithm,
+contract, and pipeline versions are explicit. The Express-side client applies
+timeouts, request deduplication, Zod validation, text-hash validation, and
+pipeline-version validation. When configured to fail open, an unavailable
+Python service produces a marked degraded deterministic result; it never
+creates a false NLP pass.
+
+No persistent Sentence table was added. Sentence records and code-point
+offsets are temporary values inside a block analysis snapshot.
+
+### 12.2 NLP persistence and status
+
+Migration `009_nlp_block_intelligence_and_citations.sql` adds:
+
+- block NLP status, reason codes, analysis snapshot, exact text hash,
+  pipeline version, snapshot fingerprint, semantic coherence, semantic
+  anchor, and checked time;
+- document semantic profile, NLP status, pipeline snapshot, and independent
+  partition revision;
+- leased `document_nlp_jobs`;
+- NLP-aware analysis and rewrite cache identities;
+- document-level citation workflow cache records.
+
+Block NLP states are `unknown`, `pass`, `warning`, `blocked`, and `skipped`.
+Only current `pass` and `warning` snapshots are rewrite eligible. Automatic
+skip reason codes remain distinguishable from user Skip state.
+
+### 12.3 Uploads, live checks, and semantic repartition
+
+Upload cleanup remains deterministic and occurs before NLP. The NLP
+partitioner:
+
+- segments temporary sentences;
+- preserves each structural block's exact code-point stream;
+- creates contiguous candidates only;
+- applies the selected low, medium, or high semantic profile;
+- isolates auto-skipped non-prose candidates;
+- selects the first eligible block as Processing;
+- returns skipped counts and reasons to the upload UI.
+
+The editor debounces active Processing-block checks by 400 ms. Requests bind
+document, block, exact text hash, partition generation, and pipeline version.
+Late results are rejected. Warning and blocking ranges are non-persistent
+ProseMirror decorations with accessible descriptions; they do not enter
+undo/redo history or document text.
+
+Semantic grouping changes are explicit. The workspace saves first, queues a
+leased repartition job, and polls/reconciles its realtime state. The worker
+verifies document and partition revisions, versions the document before and
+after the operation, preserves exact block IDs where possible, increments
+generation for changed boundaries, invalidates dependent AI state through
+block replacement, and publishes the new revision and ID mapping summary.
+
+### 12.4 NLP-gated AI behavior
+
+Rewrite cache and job identity is now:
+
+```text
+documentId
++ blockId
++ SHA-256(source text)
++ partitionGeneration
++ tone
++ model
++ writing-preference prompt version
++ NLP supplement fingerprint
+```
+
+Unknown NLP is refreshed before a direct rewrite. A blocked, skipped, stale,
+or unavailable result returns `REWRITE_BLOCKED_BY_NLP` and never reaches the
+provider. Prewarming scans past ineligible blocks instead of treating them as
+eligible. Workers revalidate hash, generation, NLP eligibility, and supplement
+fingerprint both before provider work and before persistence.
+
+The deterministic NLP supplement includes at most three high-confidence typo
+corrections and a high-confidence semantic anchor. It is appended after
+writing preferences, fingerprinted, versioned, and stored with each rewrite.
+
+AI Analysis uses prompt version `block-analysis-v6:nlp-v1`. Its exact cache
+identity additionally includes partition generation and NLP snapshot
+fingerprint. Practice requires that exact current AI Analysis record and a
+current NLP `pass` or `warning`; NLP-only output does not unlock Practice.
+
+### 12.5 Analyzing UI
+
+The shared mode order is:
+
+```text
+Analyzing → Practicing → Rewriting
+```
+
+Analyzing is the desktop and mobile default. Public interface copy describes
+the front face as **Automatic language review**, **Writing checks**,
+**Main ideas in this block**, and **Sentence connection level**. Internal
+implementation terms such as NLP, confidence, embeddings, and similarity
+scores are not exposed to the writer. The back face is labelled **Writing
+coach** and automatically requests it only when the exact cache is missing
+and the existing save policy permits the request. Reduced motion removes the
+flip transition.
+
+The new controls deliberately reuse the existing workspace visual system.
+Semantic grouping is contained in the same white, rounded, lightly shadowed
+sidebar card treatment as Academic Style. Its native `<select>` was replaced
+with the shared `DropdownSelect`, giving Broad, Balanced, and Focused the same
+background, selected, hover, pressed, disabled, and keyboard-focus behavior as
+the established workspace dropdowns. Automatic language diagnostics and
+citation review use the existing
+blackboard inset-card treatment: translucent surfaces, restrained borders,
+colored left-edge status accents, compact full-width buttons, and matching
+hover, disabled, and keyboard-focus states. These treatments are shared by
+desktop and mobile layouts so the newer workflows do not appear detached from
+the established cards around them. Each writing suggestion also provides a
+**Reject suggestion** button. Rejection is retained for the same text snapshot
+and the rejected range is removed from both the panel and temporary wavy
+underline decorations.
+
+Live responses are normalized in all three supported shapes: direct service
+results, persisted database rows, and editor block attributes. A direct result
+can therefore no longer display topic terms while incorrectly falling back to
+“Not reviewed” and zero sentences. The owl thinking animation represents only
+an explicit user-requested coaching, rewrite, or practice request, or a visible
+**Processing...** state in AI Writing. Background rewrite prewarming does not
+animate the owl while the writer is viewing another workspace mode.
+
+The Automatic language review / Writing coach switcher uses a two-column grid.
+Each control occupies half of the available width, while a bounded `clamp()`
+font size grows slightly on wider layouts. Both controls retain the same focus
+and selected states as the rest of the blackboard controls.
+
+### 12.6 MCP citation v2 and safe patches
+
+The in-memory MCP server exposes four read-only, idempotent tools:
+
+```text
+lookup_crossref_doi
+search_literature_query
+parse_reference_string
+render_citation_style
+```
+
+Literature search returns Crossref's provider score separately from a local
+title/author/year match score. It does not treat either as proof. Deterministic
+reference parsing returns confidence and warnings. APA 7, MLA 9, and Chicago
+rendering returns `citation-renderer-v2` output and never mutates a document.
+
+Search-result presentation never renders provider markup. Incoming titles and
+publication fields are decoded and stripped of HTML before display, and
+auxiliary results beginning with labels such as `Figure 2` or `Re:` are
+excluded. Candidate cards lead with the article or book title, followed by no
+more than three author names, an optional “et al.” marker, the year, and the
+journal, book, or publisher. Local sources already listed in the document are
+offered before an external search.
+
+Citation checks identify complete alignment, bibliography completion, and
+orphaned-reference conditions without persistent Sentence IDs. Every proposed
+edit uses a block-relative anchor containing the exact block hash, partition
+generation, temporary sentence range, citation range, original text, and
+context hash.
+
+The MCP tools remain non-mutating. Only the explicit
+`citations/apply-patch` route can change a document after the user selects
+**Accept patch**. It locks the document and block, validates document revision,
+partition revision, block hash, generation, range, and original text, then
+applies and versions the patch. Any mismatch returns
+`STALE_CITATION_ANCHOR`; ambiguous metadata requires refinement rather than an
+automatic selection.
+
+Bibliography extraction is paragraph-aware. The `References`, `Bibliography`,
+or `Works Cited` heading becomes a protected structural block, and every
+following source paragraph remains one protected citation-source block. Legacy
+fragments sharing the same imported paragraph index are regrouped before
+parsing. Author or organization names, ellipses, year, title, publication,
+volume/issue/page or article number, and optional DOI/URL therefore remain
+together. Matching uses normalized first-author or organization keys plus year,
+including grouped and narrative in-text citations.
+
+Citation checking now uses `citation-workflow-v4` and proceeds in this order:
+
+1. parse every bibliography entry;
+2. render its expected in-text form using the document's selected APA, MLA, or
+   Chicago template;
+3. locate and associate in-text citations;
+4. compare author form, year, punctuation, and supported secondary-source
+   connectors;
+5. offer an exact block-anchored replacement;
+6. calculate genuinely missing and unused sources only after the associations
+   and format corrections are known.
+
+This ordering prevents a formatting error from being reported twice as both a
+missing source and an unused bibliography entry. The workflow version is part
+of the request fingerprint so older cached alignment results are not reused.
+
+### 12.7 New APIs, errors, flags, and operations
+
+New API surface:
+
+```text
+GET  /api/documents/nlp/health
+GET  /api/documents/:documentId/blocks/:blockId/nlp
+POST /api/documents/:documentId/blocks/:blockId/nlp/check
+POST /api/documents/:documentId/blocks/:blockId/nlp/issues/reject
+POST /api/documents/:documentId/nlp/repartition
+GET  /api/documents/:documentId/nlp/status
+GET  /api/documents/:documentId/nlp/jobs/:jobId
+POST /api/documents/:documentId/citations/check
+POST /api/documents/:documentId/citations/convert-style
+POST /api/documents/:documentId/citations/search
+POST /api/documents/:documentId/citations/render
+POST /api/documents/:documentId/citations/apply-patch
+```
+
+Stable public failures include the `NLP_*`, `REWRITE_*`, `CITATION_*`, and
+`STALE_CITATION_ANCHOR` codes listed in the Final Upgrades 2 plan. Detailed
+causes remain server-side and asynchronous responses include correlation and
+revision identity.
+
+Rollout flags include service, upload partitioning, live checks, rewrite gate,
+Analyzing flip card, semantic profile/repartition, citation v2, and fail-open
+behavior. `compose.yaml` includes the NLP service; `npm run nlp:up` and
+`npm run nlp:logs` support local operation.
+
+### 12.8 Added verification
+
+The automated suite now additionally covers:
+
+- contiguous NLP partition integrity and blocking eligibility;
+- stable block identity mapping across repartition;
+- deterministic NLP rewrite supplement fingerprints;
+- analyzing-first mode order and defaults;
+- citation parsing and versioned rendering;
+- markup-free, title-first publication search results;
+- paragraph-aware bibliography regrouping and grouped in-text citations;
+- bold inline pseudo-title separation and bibliography punctuation retention;
+- live spelling and ending-punctuation suggestions;
+- restoration and rejection of editor-attribute language-review results;
+- block-relative citation anchors and stale rejection;
+- bibliography-first APA/MLA/Chicago conversion and reverse conversion;
+- Python module compilation;
+- all new server modules through `npm run check:server`.
+
+The release checks remain:
+
+```bash
+npm run check:server
+npm run test:ai
+npm run test:unit
+npm run build
+```
+
+### 12.9 Test-Assignment.docx findings and repaired failure paths
+
+`local/papers/Test-Assignment.docx` was inspected through the same Mammoth and
+cleanup pipeline used by uploads. The source paragraphs contain complete
+reference punctuation, article/page numbers, and the full website address.
+Those characters were not missing from the DOCX. They were lost as useful
+units later because the old cleanup and sentence-partition paths treated
+bibliography punctuation and author initials as prose boundaries.
+
+The repaired import produces:
+
+- the assignment title, author, department, course, instructor, and date as
+  independent non-argumentative blocks that do not enter rewriting;
+- the assignment body as reviewable prose;
+- one protected `References` heading;
+- exactly three complete protected bibliography entries, including the final
+  article number, page/article data, and URL.
+
+Four independent causes explained the reported live-workflow failures:
+
+1. A bold title without final punctuation was considered an incomplete
+   continuation and merged into the next paragraph. Fully emphasized
+   standalone titles, and a short bold pseudo-title prefix at the start of a
+   paragraph, are now separated before prose grouping.
+2. Reference paragraphs entered ordinary sentence segmentation, so initials,
+   years, titles, journal details, pages, and links became unrelated fragments.
+   Bibliography structure is now marked before language partitioning and is
+   preserved atomically.
+3. Persisted review data stored in editor block attributes was not read by the
+   display normalizer. This made reviewed blocks appear as “Not reviewed” and
+   could leave the rewrite gate asking for checks that had already run. The
+   normalizer now reads both database-shaped and editor-attribute-shaped
+   snapshots.
+4. Splitting an unsaved block changes its text hash, generation, and sometimes
+   creates a temporary client-only block ID. The former live-check route
+   rejected those valid edits as stale or missing. It now analyzes the
+   submitted active text as a non-persistent snapshot when the document is
+   owned but the edited block topology has not yet been saved; canonical
+   persisted blocks still retain strict hash and generation validation.
+
+Low-information test lines such as “This is a new line.” and “Hello world!”,
+headings, subheadings, pseudo-titles, captions, bibliography content, code, and
+equations receive an explicit **Review not needed** result. Live prose checks
+now include common spelling errors, incomplete fragments, unmatched
+punctuation, and missing ending punctuation. These suggestions remain
+temporary until the writer edits the text or explicitly rejects them.
+
+### 12.10 Follow-up live-review and citation-chain corrections
+
+The follow-up Test-Assignment citation trace now reports four in-text
+citations, three listed sources, two format changes, zero missing sources, and
+zero unused sources. The two changes are:
+
+```text
+(Jennifer et al., 2024)
+→ (Bress et al., 2024)
+
+(Scott et al., 2022, cited by Jennifer et al., 2024)
+→ (Scott et al., 2022, as cited in Bress et al., 2024)
+```
+
+The bibliography identifies the first author as `Bress, J. N.`. The inline
+form had used the author's given name, Jennifer, instead of the family name,
+Bress. The checker now links this safely when a same-year bibliography entry
+has a unique matching first-author initial. It also preserves organization
+authors such as `Weill Cornell Medicine` instead of shortening them to the
+last word. APA secondary-source wording is normalized from “cited by” to “as
+cited in.”
+
+Each format result appears as a separate citation-review card containing the
+current text, expected text, matched source title, explanation, and **Review
+format change** action. Acceptance continues through the existing exact-anchor
+patch route, so stale document content cannot be overwritten.
+
+### 12.11 Confirmed template switching and citation conversion
+
+Selecting a different APA, MLA, or Chicago card now opens a confirmation
+dialog. If there are unsaved editor changes, they are versioned before the
+conversion starts. Confirmation invokes one locked, revision-checked
+transaction with two ordered phases:
+
+1. parse and rewrite each complete reference-list entry in the target style;
+2. rerun the citation association chain against that rewritten bibliography
+   and update the matched in-text citations.
+
+The final document style, reference list, in-text citations, editor blocks,
+and version snapshot commit together. A stale document or partition revision
+rejects the conversion rather than partially applying one phase. Fragmented
+bibliography entries are redistributed across their existing blocks, and
+their source details and DOI or URL are retained by the versioned renderer.
+Existing in-text page locators are also carried between APA forms such as
+`(Smith, 2020, p. 42)` and MLA forms such as `(Smith 42)`.
+
+Selecting **Customized** also requires confirmation. It does not imply a
+citation convention, so the **Check citations** control is disabled in the
+client and the citation-check endpoint rejects direct requests until APA,
+MLA, or Chicago is selected again.
+
+### 12.12 AI Writing processing-animation binding
+
+The AI Writing card label and owl animation now share one front-end processing
+predicate. A visible card that renders **Processing...** because it is queued,
+running, or awaiting its automatic rewrite also sets the owl to thinking.
+Completed, failed, skipped-origin, and manually edited cards do not claim that
+state unless an explicit request is still active. The binding applies to the
+desktop Rewriting panel and the open mobile Rewriting panel, while hidden
+background prewarming remains excluded.

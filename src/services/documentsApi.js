@@ -31,12 +31,18 @@ export function saveDocument(documentId, payload) {
   });
 }
 
-export function uploadDocument(file, academicStyle = 'APA', partitionMode = 'character') {
+export function uploadDocument(
+  file,
+  academicStyle = 'APA',
+  partitionMode = 'character',
+  semanticProfile = 'medium',
+) {
   validateDocumentUploadSize(file);
   const formData = new FormData();
   formData.append('file', file);
   formData.append('academicStyle', academicStyle);
   formData.append('partitionMode', partitionMode);
+  formData.append('semanticProfile', semanticProfile);
   return requestJson('/documents/upload', {
     method: 'POST',
     body: formData,
@@ -76,6 +82,17 @@ export function generateDocumentBlockRewrites(documentId, blockId, {
       ...(preferenceOverrides ? { preferenceOverrides } : {}),
     }),
   });
+}
+
+export function repartitionDocument(documentId, { semanticProfile, expectedRevision }) {
+  return requestJson(`/documents/${documentId}/nlp/repartition`, {
+    method: 'POST',
+    body: JSON.stringify({ semanticProfile, expectedRevision }),
+  });
+}
+
+export function getDocumentNlpJob(documentId, jobId) {
+  return requestJson(`/documents/${documentId}/nlp/jobs/${jobId}`);
 }
 
 export function getDocumentBlockRewrites(documentId, blockId, sourceTextHash = '') {

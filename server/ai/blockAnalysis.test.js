@@ -11,7 +11,7 @@ import {
 } from './blockAnalysis.js';
 
 test('uses the context-sensitive block analysis prompt', () => {
-  assert.equal(BLOCK_ANALYSIS_PROMPT_VERSION, 'block-analysis-v5');
+  assert.equal(BLOCK_ANALYSIS_PROMPT_VERSION, 'block-analysis-v6:nlp-v1');
   assert.deepEqual(Object.keys(ANALYSIS_FILTER_DETAILS), [
     'clarity',
     'conciseness',

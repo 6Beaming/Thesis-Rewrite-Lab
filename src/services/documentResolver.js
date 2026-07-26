@@ -224,6 +224,44 @@ function contentText(content) {
   return content.map((node) => node.type === 'hardBreak' ? '\n' : node.text ?? '').join('');
 }
 
+function splitLeadingEmphasizedTitle(content) {
+  let splitIndex = 0;
+  let sawBoldText = false;
+  while (splitIndex < content.length) {
+    const node = content[splitIndex];
+    if (
+      node.type !== 'text'
+      || !node.marks?.some((mark) => mark.type === 'bold')
+    ) {
+      break;
+    }
+    sawBoldText ||= Boolean(node.text?.trim());
+    splitIndex += 1;
+  }
+  if (!sawBoldText || splitIndex === content.length) return null;
+
+  const titleContent = trimInlineContent(content.slice(0, splitIndex));
+  const bodyContent = trimInlineContent(content.slice(splitIndex));
+  const title = contentText(titleContent);
+  const body = contentText(bodyContent);
+  const titleWords = title.match(/[\p{L}\p{N}]+/gu) ?? [];
+  const likelyStandaloneTitle = (
+    /^(?:assignment|article|chapter|section|part|appendix|abstract|introduction|conclusion|references)\b/iu.test(title)
+    || /[:)]$/u.test(title)
+  );
+  if (
+    !body
+    || titleWords.length > 16
+    || Array.from(title).length > 160
+    || /[.!?]$/u.test(title)
+    || !likelyStandaloneTitle
+    || !/^[\p{Lu}\p{N}]/u.test(body)
+  ) {
+    return null;
+  }
+  return { titleContent, title, bodyContent, body };
+}
+
 function inlineSegments(root) {
   const content = [];
 
@@ -267,6 +305,41 @@ function normalizeNumberedHeading(block) {
   };
 }
 
+function markBibliographyStructure(blocks) {
+  let insideBibliography = false;
+  return blocks.map((block) => {
+    const text = String(block.text ?? '').trim();
+    if (/^(?:references|bibliography|works cited)\s*$/iu.test(text)) {
+      insideBibliography = true;
+      return {
+        ...block,
+        sourceType: 'bibliographyHeading',
+        attrs: {
+          ...(block.attrs ?? {}),
+          sourceType: 'bibliographyHeading',
+          textIndent: '0in',
+          formatOverrides: [
+            ...new Set([...(block.attrs?.formatOverrides ?? []), 'textIndent']),
+          ],
+        },
+      };
+    }
+    if (!insideBibliography) return block;
+    return {
+      ...block,
+      sourceType: 'bibliographyEntry',
+      attrs: {
+        ...(block.attrs ?? {}),
+        sourceType: 'bibliographyEntry',
+        textIndent: '0in',
+        formatOverrides: [
+          ...new Set([...(block.attrs?.formatOverrides ?? []), 'textIndent']),
+        ],
+      },
+    };
+  });
+}
+
 export function blocksFromHtml(html, { integrityMode = 'strict' } = {}) {
   const fragment = parseFragment(String(html ?? ''));
   const blocks = [];
@@ -287,6 +360,24 @@ export function blocksFromHtml(html, { integrityMode = 'strict' } = {}) {
         return;
       }
       for (const content of segments) {
+        const emphasizedPrefix = tagName === 'p'
+          ? splitLeadingEmphasizedTitle(content)
+          : null;
+        if (emphasizedPrefix) {
+          blocks.push(normalizeNumberedHeading(textBlock(
+            emphasizedPrefix.title,
+            'heading',
+            { level: 2 },
+            emphasizedPrefix.titleContent,
+          )));
+          blocks.push(textBlock(
+            emphasizedPrefix.body,
+            'paragraph',
+            {},
+            emphasizedPrefix.bodyContent,
+          ));
+          continue;
+        }
         const text = contentText(content);
         blocks.push(normalizeNumberedHeading(textBlock(
           text,
@@ -301,7 +392,9 @@ export function blocksFromHtml(html, { integrityMode = 'strict' } = {}) {
   }
 
   walk(fragment);
-  return ensureBlocks(cleanExtractedBlocks(blocks, { integrityMode }));
+  return ensureBlocks(markBibliographyStructure(
+    cleanExtractedBlocks(blocks, { integrityMode }),
+  ));
 }
 
 export async function extractDocxBlocks(buffer) {

@@ -2,9 +2,15 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { searchLiteratureQuery } from './tools/searchLiteratureQuery.js';
+import { parseReferenceString } from './tools/parseReferenceString.js';
+import { renderCitationStyle } from './tools/renderCitationStyle.js';
 
 export const ACADEMIC_SOURCES_MCP_SERVER = 'thesis-rewriter-academic-sources';
 export const CROSSREF_LOOKUP_TOOL = 'lookup_crossref_doi';
+export const LITERATURE_SEARCH_TOOL = 'search_literature_query';
+export const REFERENCE_PARSE_TOOL = 'parse_reference_string';
+export const CITATION_RENDER_TOOL = 'render_citation_style';
 export const MAX_CROSSREF_DOIS_PER_BLOCK = 3;
 
 const DOI_PATTERN = /10\.\d{4,9}\/[\-._;()/:a-z0-9]+/gi;
@@ -28,8 +34,18 @@ export function extractDois(text) {
 }
 
 function firstText(value) {
-  if (Array.isArray(value)) return String(value.find(Boolean) ?? '').trim();
-  return String(value ?? '').trim();
+  const text = Array.isArray(value)
+    ? String(value.find(Boolean) ?? '').trim()
+    : String(value ?? '').trim();
+  return text
+    .replace(/<[^>]*>/gu, ' ')
+    .replace(/&(?:amp|#38);/giu, '&')
+    .replace(/&(?:lt|#60);/giu, '<')
+    .replace(/&(?:gt|#62);/giu, '>')
+    .replace(/&(?:quot|#34);/giu, '"')
+    .replace(/&#(?:39|x27);/giu, "'")
+    .replace(/\s+/gu, ' ')
+    .trim();
 }
 
 function publishedYear(work) {
@@ -52,7 +68,7 @@ export function normalizeCrossrefWork(work, requestedDoi) {
 
   return {
     doi,
-    title: firstText(work?.title) || 'Untitled Crossref record',
+    title: firstText(work?.title) || 'Untitled publication',
     authors,
     publishedYear: publishedYear(work),
     publisher: firstText(work?.publisher) || null,
@@ -77,7 +93,7 @@ export async function fetchCrossrefWork(
   } = {},
 ) {
   if (typeof fetchImpl !== 'function') {
-    throw new Error('Crossref lookup requires the Fetch API.');
+    throw new Error('Publication lookup is unavailable in this environment.');
   }
 
   const normalizedDoi = trimDoiPunctuation(doi);
@@ -95,8 +111,8 @@ export async function fetchCrossrefWork(
   if (!response.ok) {
     const error = new Error(
       response.status === 404
-        ? 'Crossref does not have a record for this DOI.'
-        : 'Crossref metadata is temporarily unavailable.',
+        ? 'No publication record was found for this DOI.'
+        : 'Publication details are temporarily unavailable.',
     );
     error.statusCode = response.status;
     throw error;
@@ -104,17 +120,20 @@ export async function fetchCrossrefWork(
 
   const payload = await response.json();
   if (!payload?.message || typeof payload.message !== 'object') {
-    throw new Error('Crossref returned an invalid metadata record.');
+    throw new Error('Publication lookup returned an invalid record.');
   }
   return normalizeCrossrefWork(payload.message, normalizedDoi);
 }
 
 function safeLookupError(error) {
-  if (Number(error?.statusCode) === 404) return 'No Crossref record was found for this DOI.';
-  return 'Crossref metadata lookup failed.';
+  if (Number(error?.statusCode) === 404) return 'No publication record was found for this DOI.';
+  return 'Publication details could not be retrieved.';
 }
 
-export function createAcademicSourcesMcpServer({ lookupWork = fetchCrossrefWork } = {}) {
+export function createAcademicSourcesMcpServer({
+  lookupWork = fetchCrossrefWork,
+  searchLiterature = searchLiteratureQuery,
+} = {}) {
   const server = new McpServer({
     name: ACADEMIC_SOURCES_MCP_SERVER,
     version: '1.0.0',
@@ -150,6 +169,94 @@ export function createAcademicSourcesMcpServer({ lookupWork = fetchCrossrefWork 
               doi: trimDoiPunctuation(doi),
               error: safeLookupError(error),
             }),
+          }],
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    LITERATURE_SEARCH_TOOL,
+    {
+      title: 'Search literature metadata',
+      description: 'Search Crossref metadata without modifying any document.',
+      inputSchema: {
+        query: z.string().trim().min(3).max(500),
+        author: z.string().trim().max(120).optional(),
+        year: z.string().regex(/^(?:19|20)\d{2}$/u).optional(),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (input) => {
+      try {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(await searchLiterature(input)) }],
+        };
+      } catch {
+        return {
+          isError: true,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: 'Citation provider search is unavailable.' }),
+          }],
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    REFERENCE_PARSE_TOOL,
+    {
+      title: 'Parse a reference string',
+      description: 'Deterministically parse bibliographic fields from one reference string.',
+      inputSchema: {
+        rawReferenceText: z.string().trim().min(1).max(4_000),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input) => ({
+      content: [{ type: 'text', text: JSON.stringify(parseReferenceString(input)) }],
+    }),
+  );
+
+  server.registerTool(
+    CITATION_RENDER_TOOL,
+    {
+      title: 'Render a citation style',
+      description: 'Render citation text from supplied metadata without mutating a document.',
+      inputSchema: {
+        metadata: z.record(z.string(), z.unknown()),
+        styleName: z.enum(['APA7', 'MLA9', 'Chicago']),
+        mode: z.enum(['inline', 'bibliography']),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input) => {
+      try {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(renderCitationStyle(input)) }],
+        };
+      } catch {
+        return {
+          isError: true,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: 'Citation rendering failed.' }),
           }],
         };
       }
@@ -201,7 +308,7 @@ export async function lookupAcademicSourcesViaMcp(text, { lookupWork = fetchCros
 
     const listedTools = await client.listTools();
     if (!listedTools.tools.some((tool) => tool.name === CROSSREF_LOOKUP_TOOL)) {
-      throw new Error('The academic source MCP tool is unavailable.');
+      throw new Error('Academic source lookup is unavailable.');
     }
 
     for (const doi of dois) {
@@ -214,7 +321,7 @@ export async function lookupAcademicSourcesViaMcp(text, { lookupWork = fetchCros
       if (result.isError || !payload || payload.error) {
         sourceLookup.errors.push({
           doi,
-          message: payload?.error || 'Crossref metadata lookup failed.',
+          message: payload?.error || 'Publication details could not be retrieved.',
         });
       } else {
         sourceLookup.items.push(payload);
@@ -227,7 +334,7 @@ export async function lookupAcademicSourcesViaMcp(text, { lookupWork = fetchCros
   } catch {
     sourceLookup.errors = dois.map((doi) => ({
       doi,
-      message: 'The academic source MCP workflow was unavailable.',
+      message: 'Academic source lookup was unavailable.',
     }));
     return sourceLookup;
   } finally {

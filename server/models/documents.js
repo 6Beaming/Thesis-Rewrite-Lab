@@ -2,6 +2,7 @@ import { query, withTransaction } from './db.js';
 import {
   createBlockRecords,
   createContentJson,
+  getDocumentNlpSummary,
   insertBlocks,
   recalculateDocumentProgress,
   recalculateUserProgress,
@@ -9,6 +10,10 @@ import {
   updateBlockStatus,
 } from './blocks.js';
 import { appendDocumentVersion } from './versions.js';
+import {
+  CURRENT_NLP_PIPELINE_VERSION,
+  normalizeSemanticProfile,
+} from '../nlp/config.js';
 
 const SORT_MAP = {
   most_recent: 'updated_at desc',
@@ -48,7 +53,9 @@ async function loadDocument(runQuery, documentId, userId) {
       select id, user_id, title, academic_style, style_settings, content_json,
              original_filename, original_mime, completed_chars, total_chars,
              completed_rate, current_processing_block_id, revision, trashed,
-             trashed_at, created_at, updated_at
+             trashed_at, nlp_semantic_profile, nlp_status,
+             nlp_pipeline_version, nlp_document_snapshot, partition_revision,
+             created_at, updated_at
       from documents
       where id = $1
         and user_id = $2
@@ -62,7 +69,10 @@ async function loadDocument(runQuery, documentId, userId) {
     `
       select id, document_id, block_index, text_content, status, resume_status,
              processing_baseline_text, change_source, partition_generation,
-             format_overrides, char_length, attrs, tiptap_node, created_at, updated_at
+             format_overrides, char_length, attrs, tiptap_node,
+             nlp_status, nlp_reason_codes, nlp_analysis, nlp_text_hash,
+             nlp_pipeline_version, nlp_snapshot_fingerprint, semantic_coherence,
+             semantic_anchor, nlp_checked_at, created_at, updated_at
       from document_blocks
       where document_id = $1
       order by block_index asc
@@ -85,6 +95,10 @@ export async function listDocuments({ userId, q = '', sort = 'most_recent', tras
         d.completed_rate,
         d.current_processing_block_id,
         d.revision,
+        d.nlp_semantic_profile,
+        d.nlp_status,
+        d.nlp_pipeline_version,
+        d.partition_revision,
         d.original_filename,
         d.trashed,
         d.trashed_at,
@@ -137,21 +151,26 @@ export async function createDocumentWithBlocks({
   originalFile = null,
   originalFilename = null,
   originalMime = null,
+  semanticProfile = 'medium',
   returnMutation = false,
 }) {
   const safeBlocks = textBlocks.length ? textBlocks : ['Start writing your document.'];
   const blocks = createBlockRecords(safeBlocks, styleSettings);
   const contentJson = createContentJson(blocks);
   const processingBlock = blocks.find((block) => block.status === 'processing') ?? null;
+  const hasNlp = blocks.some((block) => block.nlpPipelineVersion);
+  const degradedNlp = blocks.some((block) => block.nlpAnalysis?.degraded);
+  const normalizedSemanticProfile = normalizeSemanticProfile(semanticProfile);
 
   const mutation = await withTransaction(async (client) => {
     const inserted = await client.query(
       `
         insert into documents (
           user_id, title, academic_style, style_settings, content_json,
-          original_filename, original_mime, original_file, current_processing_block_id
+          original_filename, original_mime, original_file, current_processing_block_id,
+          nlp_semantic_profile, nlp_status, nlp_pipeline_version
         )
-        values ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9)
+        values ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
         returning *
       `,
       [
@@ -164,12 +183,20 @@ export async function createDocumentWithBlocks({
         originalMime,
         originalFile,
         processingBlock?.id ?? null,
+        normalizedSemanticProfile,
+        hasNlp ? (degradedNlp ? 'degraded' : 'ready') : 'pending',
+        hasNlp ? CURRENT_NLP_PIPELINE_VERSION : null,
       ]
     );
 
     const document = inserted.rows[0];
     await insertBlocks(client, document.id, blocks);
     await recalculateDocumentProgress(client, document.id);
+    const nlpSummary = await getDocumentNlpSummary(document.id, client.query.bind(client));
+    await client.query(
+      'update documents set nlp_document_snapshot = $2::jsonb where id = $1',
+      [document.id, JSON.stringify(nlpSummary)],
+    );
     const version = await appendDocumentVersion(client, document.id, 'Initial import');
     const committedDocument = await loadDocument(client.query.bind(client), document.id, userId);
     return { document: committedDocument, version };

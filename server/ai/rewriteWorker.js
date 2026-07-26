@@ -66,7 +66,16 @@ export function createRewriteWorker({
         compilerVersion: job.preference_compiler_version ?? 'writing-preferences-v1',
         promptVersion: job.prompt_version,
       };
-      const generated = await generateBlockRewriteSet({ context, preferenceContext });
+      const nlpContext = {
+        fingerprint: job.nlp_supplement_fingerprint ?? 'none',
+        supplement: job.compiled_nlp_supplement ?? '',
+        snapshot: job.nlp_snapshot ?? {},
+      };
+      const generated = await generateBlockRewriteSet({
+        context,
+        preferenceContext,
+        nlpContext,
+      });
       const freshContext = await getRewriteJobContext(job);
       if (!rewriteJobContextMatches(job, freshContext)) {
         const cancelled = await cancelRewriteJob(job.id);
@@ -101,6 +110,9 @@ export function createRewriteWorker({
         effectivePreferences: preferenceContext.effectivePreferences,
         preferenceSchemaVersion: preferenceContext.schemaVersion,
         preferenceCompilerVersion: preferenceContext.compilerVersion,
+        nlpSupplementFingerprint: nlpContext.fingerprint,
+        compiledNlpSupplement: nlpContext.supplement,
+        nlpSnapshot: nlpContext.snapshot,
       })));
       const completed = await completeRewriteJob(job.id);
       publish(publisher, context, completed);

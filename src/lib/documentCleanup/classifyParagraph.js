@@ -16,6 +16,16 @@ function titleCaseRatio(text) {
   return titleWords.length / words.length;
 }
 
+function isFullyEmphasized(block) {
+  const textNodes = (block?.content ?? []).filter((node) => (
+    node?.type === 'text' && String(node.text ?? '').trim()
+  ));
+  return Boolean(
+    textNodes.length
+    && textNodes.every((node) => node.marks?.some((mark) => mark.type === 'bold')),
+  );
+}
+
 export function isHeadingCandidate(text) {
   const value = String(text ?? '').trim();
   if (!value || Array.from(value).length > 80) return false;
@@ -28,6 +38,13 @@ export function classifyParagraph(block, context = {}) {
   const text = String(block?.text ?? '').trim();
   if (block?.sourceType === 'boundary') return 'boundary';
   if (block?.sourceType === 'heading') return 'heading';
+  if (
+    isFullyEmphasized(block)
+    && Array.from(text).length <= 160
+    && !/[.!?]$/u.test(text)
+  ) {
+    return 'heading';
+  }
   if (FORMAL_FIGURE_CAPTION.test(text)) return 'figureCaption';
   if (CROSS_REFERENCE.test(text)) return 'crossReference';
   if (PANEL_OR_LIST_MARKER.test(text)) return 'annotation';
@@ -49,4 +66,3 @@ export function isFormalFigureCaption(text) {
 export function isAnnotation(text) {
   return PANEL_OR_LIST_MARKER.test(String(text ?? '').trim());
 }
-

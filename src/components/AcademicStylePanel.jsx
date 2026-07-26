@@ -90,15 +90,20 @@ export default function AcademicStylePanel({
   styleName = 'APA',
   customStyle = DEFAULT_CUSTOM_STYLE,
   onTemplateChange,
+  onCustomModeSelect,
   onCustomStyleChange,
 }) {
-  const [mode, setMode] = useState('templates');
+  const [mode, setMode] = useState(styleName === 'Customized' ? 'custom' : 'templates');
   const customSignature = useMemo(() => JSON.stringify(customStyle ?? {}), [customStyle]);
   const [custom, setCustom] = useState(() => normalizeLegacyStyle(customStyle));
 
   useEffect(() => {
     setCustom(normalizeLegacyStyle(customStyle));
   }, [customSignature]);
+
+  useEffect(() => {
+    if (styleName === 'Customized') setMode('custom');
+  }, [styleName]);
 
   function updateCustom(key, value) {
     let next = { ...custom, [key]: value };
@@ -121,7 +126,14 @@ export default function AcademicStylePanel({
         <button type="button" className={mode === 'templates' ? 'is-active' : ''} onClick={() => setMode('templates')}>
           Templates
         </button>
-        <button type="button" className={mode === 'custom' ? 'is-active' : ''} onClick={() => setMode('custom')}>
+        <button
+          type="button"
+          className={mode === 'custom' ? 'is-active' : ''}
+          onClick={() => {
+            setMode('custom');
+            onCustomModeSelect?.();
+          }}
+        >
           Customized
         </button>
       </div>

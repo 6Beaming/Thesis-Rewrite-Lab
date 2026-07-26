@@ -15,6 +15,11 @@ const SAFE_DOCUMENT_FIELDS = new Set([
   'completed_rate',
   'current_processing_block_id',
   'revision',
+  'nlp_semantic_profile',
+  'nlp_status',
+  'nlp_pipeline_version',
+  'nlp_document_snapshot',
+  'partition_revision',
   'trashed',
   'trashed_at',
   'created_at',
@@ -216,6 +221,55 @@ export function createEventPublisher(io, { now = () => new Date(), nextId = rand
             errorCode: job.safe_error_code,
             updatedAt: job.updated_at,
           },
+        },
+        documentId,
+      });
+    },
+    publishNlpJob({ authUserId, documentId, job, revision = null, partitionRevision = null }) {
+      return emit({
+        authUserId,
+        type: 'document:nlp-status',
+        resourceId: job.id,
+        revision,
+        data: {
+          documentId,
+          partitionRevision: Number(partitionRevision) || 0,
+          job: {
+            id: job.id,
+            operation: job.operation,
+            requestedProfile: job.requested_profile,
+            pipelineVersion: job.pipeline_version,
+            status: job.status,
+            attemptCount: Number(job.attempt_count),
+            errorCode: job.safe_error_code,
+            correlationId: job.correlation_id,
+            summary: job.summary_json ?? {},
+            updatedAt: job.updated_at,
+          },
+        },
+        documentId,
+      });
+    },
+    publishCitationWorkflow({
+      authUserId,
+      documentId,
+      revision,
+      partitionRevision,
+      workflow,
+      status,
+      correlationId,
+    }) {
+      return emit({
+        authUserId,
+        type: 'citation:workflow-updated',
+        resourceId: documentId,
+        revision,
+        data: {
+          documentId,
+          partitionRevision: Number(partitionRevision) || 0,
+          workflow,
+          status,
+          correlationId,
         },
         documentId,
       });

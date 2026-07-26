@@ -1,11 +1,21 @@
 import { randomUUID } from 'crypto';
-import { query } from './db.js';
+import { query, withTransaction } from './db.js';
 import { countCharacters } from '../../src/lib/blockSegmentation/index.js';
 import {
   normalizeBlockStatus,
   normalizeChangeSource,
   normalizeResumeStatus,
 } from '../../src/lib/blockState.js';
+import {
+  blockNlpFields,
+  isRewriteEligibleBlock,
+  nlpAttrs,
+  normalizePersistedBlockNlp,
+  persistedNlpSnapshot,
+} from '../nlp/blockAggregation.js';
+import { CURRENT_NLP_PIPELINE_VERSION } from '../nlp/config.js';
+import { hashNlpText } from '../nlp/hash.js';
+import { applyLanguageIssueRejections } from '../../src/lib/nlp/issueRejections.js';
 
 const DEFAULT_BLOCK_ATTRS = {
   lineHeight: '2.0',
@@ -52,6 +62,8 @@ function normalizeBlockInput(input) {
       text: input,
       attrs: { paragraphIndex: null },
       content: input ? [{ type: 'text', text: input }] : [],
+      initialStatus: null,
+      nlp: null,
     };
   }
 
@@ -64,21 +76,44 @@ function normalizeBlockInput(input) {
     text,
     attrs: input?.attrs ?? {},
     content,
+    initialStatus: input?.initialStatus ?? null,
+    nlp: input?.nlp ?? input?.nlpAnalysis ?? null,
   };
 }
 
 export function createBlockRecords(textBlocks, styleSettings = {}) {
   const mergedAttrs = { ...DEFAULT_BLOCK_ATTRS, ...styleSettings };
-  return textBlocks.map((blockInput, index) => {
-    const normalized = normalizeBlockInput(blockInput);
+  const normalizedBlocks = textBlocks.map(normalizeBlockInput);
+  const hasExplicitNlp = normalizedBlocks.some((block) => block.nlp?.pipelineVersion);
+  const firstEligibleIndex = hasExplicitNlp
+    ? normalizedBlocks.findIndex((block) => (
+      block.initialStatus !== 'skipped'
+      && ['pass', 'warning'].includes(block.nlp?.status)
+    ))
+    : 0;
+  return normalizedBlocks.map((normalized, index) => {
     const id = randomUUID();
-    const status = index === 0 ? 'processing' : 'unprocessed';
-    const resumeStatus = index === 0 ? 'unprocessed' : null;
-    const processingBaselineText = index === 0 ? normalized.text : null;
+    const baseStatus = normalized.initialStatus === 'skipped' ? 'skipped' : 'unprocessed';
+    const status = index === firstEligibleIndex ? 'processing' : baseStatus;
+    const resumeStatus = index === firstEligibleIndex ? baseStatus : null;
+    const processingBaselineText = index === firstEligibleIndex ? normalized.text : null;
     const charLength = countCharacters(normalized.text);
     const formatOverrides = Array.isArray(normalized.attrs.formatOverrides)
       ? [...new Set(normalized.attrs.formatOverrides)]
       : [];
+    const normalizedNlp = normalized.nlp?.pipelineVersion
+      ? persistedNlpSnapshot(normalized.nlp, normalized.attrs.semanticProfile ?? 'medium')
+      : {
+        nlpStatus: normalized.initialStatus === 'skipped' ? 'skipped' : 'unknown',
+        nlpReasonCodes: normalized.nlp?.reasonCodes ?? [],
+        nlpAnalysis: normalized.nlp ?? {},
+        nlpTextHash: normalized.nlp?.textHash ?? null,
+        nlpPipelineVersion: normalized.nlp?.pipelineVersion ?? null,
+        nlpSnapshotFingerprint: null,
+        semanticCoherence: normalized.nlp?.semanticCoherence ?? null,
+        semanticAnchor: normalized.nlp?.semanticAnchor ?? null,
+        nlpCheckedAt: null,
+      };
     const attrs = {
       ...mergedAttrs,
       ...normalized.attrs,
@@ -93,6 +128,7 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
       partitionGeneration: 0,
       formatOverrides,
       length: charLength,
+      ...nlpAttrs(normalizedNlp),
     };
 
     return {
@@ -106,6 +142,7 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
       partitionGeneration: 0,
       formatOverrides,
       charLength,
+      ...normalizedNlp,
       attrs,
       tiptapNode: {
         type: 'blockSegment',
@@ -175,10 +212,14 @@ export async function insertBlocks(client, documentId, blocks) {
         insert into document_blocks (
           id, document_id, block_index, text_content, status, resume_status,
           processing_baseline_text, change_source, partition_generation,
-          format_overrides, char_length, attrs, tiptap_node
+          format_overrides, char_length, attrs, tiptap_node,
+          nlp_status, nlp_reason_codes, nlp_analysis, nlp_text_hash,
+          nlp_pipeline_version, nlp_snapshot_fingerprint, semantic_coherence,
+          semantic_anchor, nlp_checked_at
         )
         values (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::jsonb
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::jsonb,
+          $14, $15::jsonb, $16::jsonb, $17, $18, $19, $20, $21::jsonb, $22
         )
       `,
       [
@@ -195,6 +236,15 @@ export async function insertBlocks(client, documentId, blocks) {
         block.charLength,
         JSON.stringify(block.attrs),
         JSON.stringify(block.tiptapNode),
+        block.nlpStatus ?? 'unknown',
+        JSON.stringify(block.nlpReasonCodes ?? []),
+        JSON.stringify(block.nlpAnalysis ?? {}),
+        block.nlpTextHash ?? null,
+        block.nlpPipelineVersion ?? null,
+        block.nlpSnapshotFingerprint ?? null,
+        block.semanticCoherence ?? null,
+        JSON.stringify(block.semanticAnchor ?? null),
+        block.nlpCheckedAt ?? null,
       ]
     );
   }
@@ -205,7 +255,10 @@ export async function getBlocksByDocument(documentId) {
     `
       select id, document_id, block_index, text_content, status, resume_status,
              processing_baseline_text, change_source, partition_generation,
-             format_overrides, char_length, attrs, tiptap_node, created_at, updated_at
+             format_overrides, char_length, attrs, tiptap_node,
+             nlp_status, nlp_reason_codes, nlp_analysis, nlp_text_hash,
+             nlp_pipeline_version, nlp_snapshot_fingerprint, semantic_coherence,
+             semantic_anchor, nlp_checked_at, created_at, updated_at
       from document_blocks
       where document_id = $1
       order by block_index asc
@@ -284,7 +337,9 @@ export async function recalculateUserProgress(client, userId) {
 export async function chooseNextProcessingBlock(client, documentId, fromBlockId = null) {
   const blocks = await client.query(
     `
-      select id, block_index, status
+      select id, block_index, text_content, status, resume_status,
+             partition_generation, nlp_status, nlp_text_hash,
+             nlp_pipeline_version, nlp_snapshot_fingerprint, attrs
       from document_blocks
       where document_id = $1
       order by block_index asc
@@ -294,9 +349,17 @@ export async function chooseNextProcessingBlock(client, documentId, fromBlockId 
 
   const rows = blocks.rows;
   const currentIndex = rows.find((row) => row.id === fromBlockId)?.block_index ?? -1;
-  const below = rows.find((row) => row.status === 'unprocessed' && row.block_index > currentIndex);
-  const fallback = rows.find((row) => row.status === 'unprocessed');
-  const next = below ?? fallback ?? null;
+  const eligible = rows.filter((row) => (
+    row.status === 'unprocessed'
+    && isRewriteEligibleBlock(row)
+  ));
+  const below = eligible.find((row) => row.block_index > currentIndex);
+  const wrapped = eligible[0] ?? null;
+  const repair = rows.find((row) => (
+    row.status === 'unprocessed'
+    && !isRewriteEligibleBlock(row)
+  ));
+  const next = below ?? wrapped ?? repair ?? null;
 
   await client.query(
     `
@@ -595,15 +658,31 @@ export async function replaceBlocksFromSnapshot(client, documentId, blocks) {
   await client.query('delete from document_blocks where document_id = $1', [documentId]);
 
   for (const block of blocks) {
+    const restoredNlp = normalizePersistedBlockNlp(block);
+    const restoredAttrs = {
+      ...(block.attrs ?? {}),
+      ...nlpAttrs(restoredNlp),
+    };
+    const restoredNode = {
+      ...(block.tiptap_node ?? {}),
+      attrs: {
+        ...(block.tiptap_node?.attrs ?? block.attrs ?? {}),
+        ...nlpAttrs(restoredNlp),
+      },
+    };
     await client.query(
       `
         insert into document_blocks (
           id, document_id, block_index, text_content, status, resume_status,
           processing_baseline_text, change_source, partition_generation,
-          format_overrides, char_length, attrs, tiptap_node
+          format_overrides, char_length, attrs, tiptap_node,
+          nlp_status, nlp_reason_codes, nlp_analysis, nlp_text_hash,
+          nlp_pipeline_version, nlp_snapshot_fingerprint, semantic_coherence,
+          semantic_anchor, nlp_checked_at
         )
         values (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::jsonb
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::jsonb,
+          $14, $15::jsonb, $16::jsonb, $17, $18, $19, $20, $21::jsonb, $22
         )
       `,
       [
@@ -618,8 +697,17 @@ export async function replaceBlocksFromSnapshot(client, documentId, blocks) {
         block.partition_generation ?? block.attrs?.partitionGeneration ?? 0,
         JSON.stringify(block.format_overrides ?? block.attrs?.formatOverrides ?? []),
         block.char_length,
-        JSON.stringify(block.attrs),
-        JSON.stringify(block.tiptap_node),
+        JSON.stringify(restoredAttrs),
+        JSON.stringify(restoredNode),
+        restoredNlp.nlpStatus,
+        JSON.stringify(restoredNlp.nlpReasonCodes),
+        JSON.stringify(restoredNlp.nlpAnalysis),
+        restoredNlp.nlpTextHash,
+        restoredNlp.nlpPipelineVersion,
+        restoredNlp.nlpSnapshotFingerprint,
+        restoredNlp.semanticCoherence,
+        JSON.stringify(restoredNlp.semanticAnchor),
+        restoredNlp.nlpCheckedAt,
       ]
     );
   }
@@ -650,6 +738,10 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
       ? [...new Set(existingAttrs.formatOverrides.filter((value) => typeof value === 'string'))]
       : Object.keys(existingAttrs.formatOverrides ?? {});
     const charLength = countCharacters(textContent);
+    const normalizedNlp = normalizePersistedBlockNlp({
+      text_content: textContent,
+      attrs: existingAttrs,
+    });
     const attrs = {
       ...styleAttrs,
       ...existingAttrs,
@@ -664,6 +756,7 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
       partitionGeneration,
       formatOverrides,
       length: charLength,
+      ...nlpAttrs(normalizedNlp),
     };
     const tiptapNode = {
       ...node,
@@ -682,6 +775,7 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
       partitionGeneration,
       formatOverrides,
       charLength,
+      ...normalizedNlp,
       attrs,
       tiptapNode,
     });
@@ -710,6 +804,19 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
         } : {}),
         ...(attrs.formatOverrides ? { formatOverrides: attrs.formatOverrides } : {}),
         ...(Number.isInteger(attrs.paragraphIndex) ? { paragraphIndex: attrs.paragraphIndex } : {}),
+        ...(attrs.nlpStatus ? { nlpStatus: attrs.nlpStatus } : {}),
+        ...(attrs.nlpReasonCodes ? { nlpReasonCodes: attrs.nlpReasonCodes } : {}),
+        ...(attrs.nlpAnalysis ? { nlpAnalysis: attrs.nlpAnalysis } : {}),
+        ...(attrs.nlpTextHash ? { nlpTextHash: attrs.nlpTextHash } : {}),
+        ...(attrs.nlpPipelineVersion ? { nlpPipelineVersion: attrs.nlpPipelineVersion } : {}),
+        ...(attrs.nlpSnapshotFingerprint
+          ? { nlpSnapshotFingerprint: attrs.nlpSnapshotFingerprint }
+          : {}),
+        ...(attrs.semanticCoherence != null
+          ? { semanticCoherence: attrs.semanticCoherence }
+          : {}),
+        ...(attrs.semanticAnchor ? { semanticAnchor: attrs.semanticAnchor } : {}),
+        ...(attrs.nlpCheckedAt ? { nlpCheckedAt: attrs.nlpCheckedAt } : {}),
       },
       content: Array.isArray(node?.content) ? node.content : [],
     };
@@ -798,10 +905,14 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
         insert into document_blocks (
           id, document_id, block_index, text_content, status, resume_status,
           processing_baseline_text, change_source, partition_generation,
-          format_overrides, char_length, attrs, tiptap_node
+          format_overrides, char_length, attrs, tiptap_node,
+          nlp_status, nlp_reason_codes, nlp_analysis, nlp_text_hash,
+          nlp_pipeline_version, nlp_snapshot_fingerprint, semantic_coherence,
+          semantic_anchor, nlp_checked_at
         )
         values (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::jsonb
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13::jsonb,
+          $14, $15::jsonb, $16::jsonb, $17, $18, $19, $20, $21::jsonb, $22
         )
       `,
       [
@@ -818,6 +929,15 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
         entry.charLength,
         JSON.stringify(entry.attrs),
         JSON.stringify(entry.tiptapNode),
+        entry.nlpStatus ?? 'unknown',
+        JSON.stringify(entry.nlpReasonCodes ?? []),
+        JSON.stringify(entry.nlpAnalysis ?? {}),
+        entry.nlpTextHash ?? null,
+        entry.nlpPipelineVersion ?? null,
+        entry.nlpSnapshotFingerprint ?? null,
+        entry.semanticCoherence ?? null,
+        JSON.stringify(entry.semanticAnchor ?? null),
+        entry.nlpCheckedAt ?? null,
       ]
     );
   }
@@ -853,4 +973,186 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     contentJson: normalized.contentJson,
     currentProcessingBlockId: normalized.currentProcessingBlockId,
   };
+}
+
+export async function getOwnedBlockForNlp({ documentId, blockId, userId }) {
+  const result = await query(
+    `
+      select db.*, d.revision, d.partition_revision, d.nlp_semantic_profile,
+             d.nlp_status as document_nlp_status, d.nlp_document_snapshot
+      from document_blocks db
+      join documents d on d.id = db.document_id
+      where db.document_id = $1
+        and db.id = $2
+        and d.user_id = $3
+        and d.trashed = false
+    `,
+    [documentId, blockId, userId],
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function getDocumentNlpSummary(documentId, runQuery = query) {
+  const result = await runQuery(
+    `
+      select
+        count(*)::int as block_count,
+        count(*) filter (where nlp_status = 'pass')::int as pass_count,
+        count(*) filter (where nlp_status = 'warning')::int as warning_count,
+        count(*) filter (where nlp_status = 'blocked')::int as blocked_count,
+        count(*) filter (where nlp_status = 'skipped')::int as skipped_count,
+        count(*) filter (where nlp_status = 'unknown')::int as unknown_count,
+        coalesce(sum((nlp_analysis->'issueCounts'->>'warning')::int), 0)::int
+          as warning_issue_count,
+        coalesce(sum((nlp_analysis->'issueCounts'->>'blocking')::int), 0)::int
+          as blocking_issue_count,
+        max(nlp_checked_at) as checked_at
+      from document_blocks
+      where document_id = $1
+    `,
+    [documentId],
+  );
+  const row = result.rows[0] ?? {};
+  return {
+    blockCount: Number(row.block_count) || 0,
+    passCount: Number(row.pass_count) || 0,
+    warningCount: Number(row.warning_count) || 0,
+    blockedCount: Number(row.blocked_count) || 0,
+    skippedCount: Number(row.skipped_count) || 0,
+    unknownCount: Number(row.unknown_count) || 0,
+    warningIssueCount: Number(row.warning_issue_count) || 0,
+    blockingIssueCount: Number(row.blocking_issue_count) || 0,
+    checkedAt: row.checked_at ?? null,
+  };
+}
+
+export async function saveBlockNlpResult({
+  documentId,
+  blockId,
+  userId,
+  expectedTextHash,
+  expectedPartitionGeneration,
+  result,
+}) {
+  return withTransaction(async (client) => {
+    const owned = await client.query(
+      `
+        select db.*, d.revision, d.partition_revision, d.nlp_semantic_profile
+        from document_blocks db
+        join documents d on d.id = db.document_id
+        where db.document_id = $1
+          and db.id = $2
+          and d.user_id = $3
+          and d.trashed = false
+        for update of db, d
+      `,
+      [documentId, blockId, userId],
+    );
+    const block = owned.rows[0];
+    if (!block) return { found: false };
+    const sourceTextHash = hashNlpText(block.text_content);
+    if (
+      sourceTextHash !== expectedTextHash
+      || result.textHash !== sourceTextHash
+      || Number(block.partition_generation) !== Number(expectedPartitionGeneration)
+      || result.pipelineVersion !== CURRENT_NLP_PIPELINE_VERSION
+    ) {
+      return {
+        found: true,
+        stale: true,
+        identity: {
+          documentId,
+          blockId,
+          sourceTextHash,
+          partitionGeneration: Number(block.partition_generation),
+          pipelineVersion: CURRENT_NLP_PIPELINE_VERSION,
+        },
+      };
+    }
+
+    const reviewedResult = applyLanguageIssueRejections(
+      result,
+      block.nlp_analysis?.rejectedIssues ?? [],
+    );
+    const snapshot = persistedNlpSnapshot(reviewedResult, block.nlp_semantic_profile);
+    const attrs = {
+      ...(block.attrs ?? {}),
+      ...nlpAttrs(snapshot),
+    };
+    const tiptapNode = {
+      ...(block.tiptap_node ?? {}),
+      attrs: {
+        ...(block.tiptap_node?.attrs ?? block.attrs ?? {}),
+        ...nlpAttrs(snapshot),
+      },
+    };
+    const updated = await client.query(
+      `
+        update document_blocks
+        set nlp_status = $3,
+            nlp_reason_codes = $4::jsonb,
+            nlp_analysis = $5::jsonb,
+            nlp_text_hash = $6,
+            nlp_pipeline_version = $7,
+            nlp_snapshot_fingerprint = $8,
+            semantic_coherence = $9,
+            semantic_anchor = $10::jsonb,
+            nlp_checked_at = $11,
+            attrs = $12::jsonb,
+            tiptap_node = $13::jsonb
+        where document_id = $1 and id = $2
+        returning *
+      `,
+      [
+        documentId,
+        blockId,
+        snapshot.nlpStatus,
+        JSON.stringify(snapshot.nlpReasonCodes),
+        JSON.stringify(snapshot.nlpAnalysis),
+        snapshot.nlpTextHash,
+        snapshot.nlpPipelineVersion,
+        snapshot.nlpSnapshotFingerprint,
+        snapshot.semanticCoherence,
+        JSON.stringify(snapshot.semanticAnchor),
+        snapshot.nlpCheckedAt,
+        JSON.stringify(attrs),
+        JSON.stringify(tiptapNode),
+      ],
+    );
+    const summary = await getDocumentNlpSummary(
+      documentId,
+      client.query.bind(client),
+    );
+    await client.query(
+      `
+        update documents
+        set nlp_status = $2,
+            nlp_pipeline_version = $3,
+            nlp_document_snapshot = $4::jsonb
+        where id = $1
+      `,
+      [
+        documentId,
+        result.degraded ? 'degraded' : 'ready',
+        CURRENT_NLP_PIPELINE_VERSION,
+        JSON.stringify(summary),
+      ],
+    );
+    return {
+      found: true,
+      stale: false,
+      block: updated.rows[0],
+      summary,
+      identity: {
+        documentId,
+        blockId,
+        sourceTextHash,
+        partitionGeneration: Number(block.partition_generation),
+        pipelineVersion: CURRENT_NLP_PIPELINE_VERSION,
+        nlpSnapshotFingerprint: snapshot.nlpSnapshotFingerprint,
+        documentRevision: Number(block.revision),
+        partitionRevision: Number(block.partition_revision),
+      },
+    };
+  });
 }
