@@ -18,3 +18,7 @@ dist/
 *.test.sqlite3
 coverage/
 test-results/
+
+# Python NLP service bytecode is always local.
+**/__pycache__/
+*.py[cod]
