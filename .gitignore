@@ -1,11 +1,12 @@
 local/
 AGENTS.md
 .env
+.env.*
+!.env.example
 
 node_modules/
 dist/
 
-!.env.example
 .DS_Store
 
 # Local-only verification sources, artifacts, and test database settings.

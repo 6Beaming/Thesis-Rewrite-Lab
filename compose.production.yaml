@@ -1,0 +1,102 @@
+name: thesis-rewriter
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - backend
+
+  nlp:
+    image: ${NLP_IMAGE_REF:?NLP_IMAGE_REF is required}
+    init: true
+    environment:
+      SENTENCE_TRANSFORMER_MODEL: ${SENTENCE_TRANSFORMER_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      SENTENCE_TRANSFORMER_REVISION: ${SENTENCE_TRANSFORMER_REVISION:-c9745ed1d9f207416be6d2e6f8de32d1f16199bf}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)
+      interval: 20s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: ${NLP_MEMORY_LIMIT:-2g}
+    cpus: ${NLP_CPU_LIMIT:-2.0}
+    networks:
+      - backend
+
+  app:
+    image: ${APP_IMAGE_REF:?APP_IMAGE_REF is required}
+    init: true
+    env_file:
+      - ${APP_ENV_FILE:-./.env.production}
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      TRUST_PROXY_HOPS: "1"
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      NLP_SERVICE_URL: http://nlp:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+      nlp:
+        condition: service_healthy
+        restart: true
+    ports:
+      - 127.0.0.1:3001:3001
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3001/api/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  postgres_data:
