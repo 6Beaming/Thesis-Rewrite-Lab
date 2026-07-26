@@ -92,6 +92,7 @@ ufw --force enable
 nginx -t
 systemctl enable --now docker
 systemctl enable --now nginx
+systemctl reload nginx
 systemctl enable --now certbot.timer
 
 docker version
