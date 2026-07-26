@@ -1,6 +1,7 @@
 import path from 'node:path';
 import mammoth from 'mammoth';
 import { parseFragment } from 'parse5';
+import { cleanExtractedBlocks } from '../lib/documentCleanup/index.js';
 
 export const SUPPORTED_DOCUMENT_EXTENSIONS = new Set(['.txt', '.md', '.docx']);
 
@@ -121,7 +122,7 @@ export function extractTextBlocks(text) {
     .map((section) => section.trim())
     .filter(Boolean)
     .map((section) => textBlock(section));
-  return ensureBlocks(coalesceContinuationBlocks(blocks));
+  return ensureBlocks(cleanExtractedBlocks(blocks));
 }
 
 function markdownMetadata(line) {
@@ -266,7 +267,7 @@ function normalizeNumberedHeading(block) {
   };
 }
 
-export function blocksFromHtml(html) {
+export function blocksFromHtml(html, { integrityMode = 'strict' } = {}) {
   const fragment = parseFragment(String(html ?? ''));
   const blocks = [];
 
@@ -274,6 +275,17 @@ export function blocksFromHtml(html) {
     const tagName = node.tagName?.toLowerCase();
     if (BLOCK_TAGS.has(tagName)) {
       const segments = inlineSegments(node);
+      if (!segments.length && tagName === 'p') {
+        if (blocks.at(-1)?.sourceType !== 'boundary') {
+          blocks.push({
+            sourceType: 'boundary',
+            text: '',
+            attrs: { sourceType: 'boundary' },
+            content: [],
+          });
+        }
+        return;
+      }
       for (const content of segments) {
         const text = contentText(content);
         blocks.push(normalizeNumberedHeading(textBlock(
@@ -289,7 +301,7 @@ export function blocksFromHtml(html) {
   }
 
   walk(fragment);
-  return ensureBlocks(coalesceContinuationBlocks(blocks));
+  return ensureBlocks(cleanExtractedBlocks(blocks, { integrityMode }));
 }
 
 export async function extractDocxBlocks(buffer) {

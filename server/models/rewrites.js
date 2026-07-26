@@ -33,6 +33,11 @@ export async function saveBlockRewrite({
   usage,
   model,
   promptVersion,
+  effectivePreferences = {},
+  compiledPreferenceSupplement = '',
+  preferenceWarnings = [],
+  preferenceSchemaVersion = 1,
+  preferenceCompilerVersion = 'writing-preferences-v1',
 }) {
   const result = await query(
     `
@@ -48,9 +53,17 @@ export async function saveBlockRewrite({
         warnings_json,
         usage_json,
         model,
-        prompt_version
+        prompt_version,
+        effective_preferences,
+        compiled_preference_supplement,
+        preference_warnings,
+        preference_schema_version,
+        preference_compiler_version
       )
-      values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, $12)
+      values (
+        $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10::jsonb,
+        $11, $12, $13::jsonb, $14, $15::jsonb, $16, $17
+      )
       on conflict (document_id, block_id, source_text_hash, tone, model, prompt_version)
       do update set
         rewritten_text = excluded.rewritten_text,
@@ -59,6 +72,11 @@ export async function saveBlockRewrite({
         meaning_preserved = excluded.meaning_preserved,
         warnings_json = excluded.warnings_json,
         usage_json = excluded.usage_json,
+        effective_preferences = excluded.effective_preferences,
+        compiled_preference_supplement = excluded.compiled_preference_supplement,
+        preference_warnings = excluded.preference_warnings,
+        preference_schema_version = excluded.preference_schema_version,
+        preference_compiler_version = excluded.preference_compiler_version,
         accepted_at = null,
         created_at = now()
       returning *
@@ -76,6 +94,11 @@ export async function saveBlockRewrite({
       JSON.stringify(usage),
       model,
       promptVersion,
+      JSON.stringify(effectivePreferences),
+      compiledPreferenceSupplement,
+      JSON.stringify(preferenceWarnings),
+      preferenceSchemaVersion,
+      preferenceCompilerVersion,
     ],
   );
   return result.rows[0];
@@ -117,6 +140,11 @@ export function formatBlockRewrite(row) {
     warnings: row.warnings_json,
     model: row.model,
     promptVersion: row.prompt_version,
+    effectivePreferences: row.effective_preferences ?? {},
+    compiledPreferenceSupplement: row.compiled_preference_supplement ?? '',
+    preferenceWarnings: row.preference_warnings ?? [],
+    preferenceSchemaVersion: Number(row.preference_schema_version) || 1,
+    preferenceCompilerVersion: row.preference_compiler_version ?? 'writing-preferences-v1',
     acceptedAt: row.accepted_at,
     createdAt: row.created_at,
   };

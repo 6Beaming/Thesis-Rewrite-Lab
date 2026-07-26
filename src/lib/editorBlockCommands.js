@@ -111,6 +111,11 @@ export function hasUnfinishedBlocks(blocks) {
   ));
 }
 
+export function trackedTextContentChanged(previousSnapshot, nextSnapshot) {
+  const textSequence = (snapshot) => Array.from(snapshot?.values?.() ?? []).join('');
+  return textSequence(previousSnapshot) !== textSequence(nextSnapshot);
+}
+
 export function chooseNextUnfinishedBlock(blocks, currentBlockId) {
   const currentIndex = blocks.findIndex((block) => block.blockId === currentBlockId);
   const orderedBlocks = currentIndex >= 0
@@ -299,6 +304,131 @@ export function insertTextIntoSelectedSegment(state, dispatch, text) {
   const toSegment = selectedSegment(state.selection.$to);
   if (!fromSegment || fromSegment !== toSegment) return false;
 
-  dispatch?.(state.tr.insertText(text).scrollIntoView());
+  dispatch?.(state.tr
+    .insertText(text)
+    .setMeta('editorTextMutation', 'manual'));
+  return true;
+}
+
+function structuralNodeAtPosition($position) {
+  for (let depth = $position.depth; depth > 0; depth -= 1) {
+    const node = $position.node(depth);
+    if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type.name)) continue;
+    return {
+      node,
+      pos: $position.before(depth),
+      offset: $position.pos - $position.start(depth),
+    };
+  }
+  return null;
+}
+
+function structuralNodeWithContent(source, content) {
+  const text = content.textBetween(0, content.size, '\n', '\n');
+  return text.length ? source.type.create(source.attrs, content, source.marks) : null;
+}
+
+/**
+ * Isolates partial structural selections before list/quote commands. Splitting
+ * happens in the same history group as the immediately-following transform, so
+ * Undo restores both the text blocks and their prior structure.
+ */
+export function isolateSelectionInTransaction(state, transaction = state?.tr) {
+  if (!state || !transaction || transaction.selection.empty) return false;
+  const start = structuralNodeAtPosition(transaction.selection.$from);
+  const end = structuralNodeAtPosition(transaction.selection.$to);
+  if (!start || !end) return false;
+  const splitStart = start.offset > 0;
+  const splitEnd = end.offset < end.node.content.size;
+  if (!splitStart && !splitEnd) return false;
+
+  let selectionStartPos = start.pos;
+  let selectionEndPos = end.pos + end.node.nodeSize;
+
+  if (start.pos === end.pos) {
+    const before = structuralNodeWithContent(
+      start.node,
+      start.node.content.cut(0, start.offset),
+    );
+    const selected = structuralNodeWithContent(
+      start.node,
+      start.node.content.cut(start.offset, end.offset),
+    );
+    const after = structuralNodeWithContent(
+      start.node,
+      start.node.content.cut(end.offset, start.node.content.size),
+    );
+    if (!selected) return false;
+    const replacements = [before, selected, after].filter(Boolean);
+    transaction.replaceWith(
+      start.pos,
+      start.pos + start.node.nodeSize,
+      Fragment.fromArray(replacements),
+    );
+    selectionStartPos = start.pos + (before?.nodeSize ?? 0);
+    selectionEndPos = selectionStartPos + selected.nodeSize;
+  } else {
+    if (splitStart) {
+      const before = structuralNodeWithContent(
+        start.node,
+        start.node.content.cut(0, start.offset),
+      );
+      const selectedStart = structuralNodeWithContent(
+        start.node,
+        start.node.content.cut(start.offset, start.node.content.size),
+      );
+      const replacements = [before, selectedStart].filter(Boolean);
+      transaction.replaceWith(
+        start.pos,
+        start.pos + start.node.nodeSize,
+        Fragment.fromArray(replacements),
+      );
+      selectionStartPos = start.pos + (before?.nodeSize ?? 0);
+    }
+
+    const mappedEndPos = transaction.mapping.map(end.pos, 1);
+    if (splitEnd) {
+      const selectedEnd = structuralNodeWithContent(
+        end.node,
+        end.node.content.cut(0, end.offset),
+      );
+      const after = structuralNodeWithContent(
+        end.node,
+        end.node.content.cut(end.offset, end.node.content.size),
+      );
+      const replacements = [selectedEnd, after].filter(Boolean);
+      transaction.replaceWith(
+        mappedEndPos,
+        mappedEndPos + end.node.nodeSize,
+        Fragment.fromArray(replacements),
+      );
+      selectionEndPos = mappedEndPos + (selectedEnd?.nodeSize ?? 0);
+    } else {
+      selectionEndPos = mappedEndPos + end.node.nodeSize;
+    }
+  }
+
+  const fromSelection = TextSelection.near(
+    transaction.doc.resolve(Math.min(transaction.doc.content.size, selectionStartPos + 1)),
+    1,
+  );
+  const toSelection = TextSelection.near(
+    transaction.doc.resolve(Math.max(0, selectionEndPos - 1)),
+    -1,
+  );
+  transaction.setSelection(TextSelection.create(
+    transaction.doc,
+    fromSelection.from,
+    Math.max(fromSelection.from, toSelection.to),
+  ));
+  transaction.setMeta('editorStructuralSelection', true);
+  return true;
+}
+
+export function isolateSelectionForBlockTransform(editor) {
+  if (!editor || editor.isDestroyed || editor.state.selection.empty) return false;
+  const transaction = editor.state.tr;
+  if (!isolateSelectionInTransaction(editor.state, transaction)) return false;
+  editor.view.dispatch(transaction.scrollIntoView());
   return true;
 }

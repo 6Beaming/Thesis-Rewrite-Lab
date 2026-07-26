@@ -15,8 +15,16 @@ import {
   convertLegacyTrackedBlocks,
 } from '../lib/editorBlockCommands.js';
 import { countCharacters } from '../lib/blockSegmentation/index.js';
+import { createDocumentMutationCoordinator } from '../lib/documentMutationCoordinator.js';
+import {
+  aiSavePolicy,
+  shouldScheduleWorkspaceAutosave,
+  workspaceLeavePolicy,
+  WORKSPACE_AUTOSAVE_DELAY_MS,
+} from '../lib/workspaceSavePolicy.js';
 import {
   activeBlockInfoFromDraft,
+  clearBlockAiCaches,
   cachePracticeResponse,
   cacheRewriteResponse,
   hashAiSourceText,
@@ -42,6 +50,7 @@ import {
   uploadDocument,
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
+import { writingPreferenceCacheKey } from '../../shared/writingPreferences.js';
 
 const PRACTICE_MAX_CHARS = 4000;
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
@@ -463,6 +472,7 @@ export default function WorkspacePage() {
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [workspaceNotice, setWorkspaceNotice] = useState('');
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
+  const [workspaceAiContextDirty, setWorkspaceAiContextDirty] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [showUnsavedBackPrompt, setShowUnsavedBackPrompt] = useState(false);
   const [formatReview, setFormatReview] = useState(null);
@@ -470,7 +480,8 @@ export default function WorkspacePage() {
   const [workspaceDraft, setWorkspaceDraft] = useState(null);
   const [workspaceSidebarOpen, setWorkspaceSidebarOpen] = useState(true);
   const [workspaceMode, setWorkspaceMode] = useState('rewriting');
-  const [workspaceOwlLoading, setWorkspaceOwlLoading] = useState(false);
+  const [workspaceOwlRequestLoading, setWorkspaceOwlLoading] = useState(false);
+  const [rewritePrewarmLoading, setRewritePrewarmLoading] = useState(false);
   const [workspaceOwlError, setWorkspaceOwlError] = useState(false);
   const [workspaceOwlErrorKey, setWorkspaceOwlErrorKey] = useState(0);
   const [styleName, setStyleName] = useState('APA');
@@ -478,6 +489,14 @@ export default function WorkspacePage() {
   const [editorContent, setEditorContent] = useState(null);
   const [activeEditorBlock, setActiveEditorBlock] = useState({ blockId: null, status: 'unprocessed' });
   const [rewriteCards, setRewriteCards] = useState(createRewriteCards);
+  const rewriteCardsProcessing = rewriteCards.some((card) => (
+    card.state === 'queued' || card.state === 'running'
+  ));
+  const workspaceOwlLoading = (
+    workspaceOwlRequestLoading
+    || rewritePrewarmLoading
+    || rewriteCardsProcessing
+  );
   const [rewriteCardsLocked, setRewriteCardsLocked] = useState(false);
   const [rewriteAllCompleted, setRewriteAllCompleted] = useState(false);
   const [rewriteApplyBusy, setRewriteApplyBusy] = useState(false);
@@ -509,16 +528,23 @@ export default function WorkspacePage() {
   const workspaceOwlAnimatorRef = useRef(null);
   const mobileWorkspaceOwlAnimatorRef = useRef(null);
   const documentEditorRef = useRef(null);
+  const pendingEditorScrollRestoreRef = useRef(null);
+  const workspaceEditGenerationRef = useRef(0);
   const mobileDragEndedAtRef = useRef(0);
-  const rewriteRefreshTimerRef = useRef(null);
   const rewriteContextKeyRef = useRef('');
+  const rewriteCardsContextKeyRef = useRef('');
   const rewriteVisibleIdentityRef = useRef(null);
   const practiceContextKeyRef = useRef('');
+  const aiBlockEpochRef = useRef(new Map());
   const wandHoverTimerRef = useRef(null);
+  const autosaveTimerRef = useRef(null);
   const workspaceUploadInputRef = useRef(null);
   const mobileOptionsPanelRef = useRef(null);
   const mobileOptionsButtonRef = useRef(null);
-  const pendingDocumentMutationsRef = useRef(new Set());
+  const documentMutationCoordinatorRef = useRef(null);
+  if (!documentMutationCoordinatorRef.current) {
+    documentMutationCoordinatorRef.current = createDocumentMutationCoordinator();
+  }
   const localDocumentRevisionsRef = useRef(new Map());
   const blackboardStyle = getBlackboardCssVars();
   const {
@@ -562,8 +588,12 @@ export default function WorkspacePage() {
     ?? null;
   const currentRewriteBlock = workspaceDraft?.blocks?.find((block) => block.id === currentRewriteBlockId)
     ?? null;
+  const currentWritingPreferenceKey = writingPreferenceCacheKey(
+    realtimeState.profile?.writingPreferences,
+    realtimeState.profile?.useWritingPreferences !== false,
+  );
   const currentRewriteKey = selectedDocument?.id && currentRewriteBlockId
-    ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}`
+    ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}|${currentWritingPreferenceKey}`
     : '';
   rewriteContextKeyRef.current = currentRewriteKey;
   rewriteVisibleIdentityRef.current = selectedDocument?.id && currentRewriteBlockId
@@ -581,6 +611,7 @@ export default function WorkspacePage() {
     : '';
   const currentPracticeRequestKey = `${currentPracticeKey}|${practiceInput}`;
   practiceContextKeyRef.current = currentPracticeRequestKey;
+  const autosaveDocs = Boolean(realtimeState.profile?.autosaveDocs);
 
   useEffect(() => {
     setAnalysisError('');
@@ -591,8 +622,11 @@ export default function WorkspacePage() {
     let alive = true;
     hashAiSourceText(currentRewriteBlock.text).then((sourceTextHash) => {
       if (!alive) return;
+      rewriteCardsContextKeyRef.current = currentRewriteKey;
       setRewriteCards((cards) => cards.map((card) => {
-        const option = rewriteCache[`${sourceTextHash}|${card.tone}`];
+        const option = rewriteCache[
+          `${currentRewriteBlockId}|${sourceTextHash}|${currentWritingPreferenceKey}|${card.tone}`
+        ];
         if (!option) return resetRewriteCard(card);
         return {
           ...card,
@@ -610,22 +644,41 @@ export default function WorkspacePage() {
     return () => {
       alive = false;
     };
-  }, [currentRewriteBlock?.text, rewriteCache, workspaceDirty]);
+  }, [
+    currentRewriteBlock?.text,
+    currentRewriteBlockId,
+    currentRewriteKey,
+    currentWritingPreferenceKey,
+    rewriteCache,
+    workspaceDirty,
+  ]);
 
   useEffect(() => {
     let alive = true;
     let refreshTimer = null;
     setRewriteError('');
-    setRewriteCards(createRewriteCards());
-    if (!selectedDocument?.id || !currentRewriteBlockId || workspaceDirty) {
+    if (rewriteCardsContextKeyRef.current !== currentRewriteKey) {
+      rewriteCardsContextKeyRef.current = currentRewriteKey;
+      setRewriteCards(createRewriteCards());
+    }
+    if (!selectedDocument?.id || !currentRewriteBlockId || workspaceAiContextDirty) {
+      setRewritePrewarmLoading(false);
       return () => {
         alive = false;
       };
     }
+    setRewritePrewarmLoading(true);
+    setRewriteCards((cards) => cards.map((card) => (
+      card.response ? card : { ...card, state: 'queued', error: '' }
+    )));
 
     const visibleAtStart = { ...rewriteVisibleIdentityRef.current };
+    const requestEpoch = getAiBlockEpoch(selectedDocument.id, currentRewriteBlockId);
     const applyState = (response) => {
       if (!alive) return false;
+      if (getAiBlockEpoch(selectedDocument.id, currentRewriteBlockId) !== requestEpoch) {
+        return false;
+      }
       const visible = rewriteVisibleIdentityRef.current;
       if (
         !visible
@@ -644,8 +697,13 @@ export default function WorkspacePage() {
       const failedJob = response.jobs?.find((job) => job.status === 'failed');
       setRewriteCache((cache) => {
         const next = { ...cache };
+        const preferenceKey = writingPreferenceCacheKey(
+          response.identity.effectivePreferences,
+        );
         for (const rewrite of response.rewrites ?? []) {
-          next[`${response.identity.sourceTextHash}|${rewrite.tone}`] = rewrite;
+          next[
+            `${response.identity.blockId}|${response.identity.sourceTextHash}|${preferenceKey}|${rewrite.tone}`
+          ] = rewrite;
         }
         return next;
       });
@@ -670,7 +728,8 @@ export default function WorkspacePage() {
           error: failedJob?.errorCode ? 'Automatic rewrite generation failed.' : '',
         };
       }));
-      setWorkspaceOwlLoading(Boolean(activeJob));
+      rewriteCardsContextKeyRef.current = visible.localKey;
+      setRewritePrewarmLoading(Boolean(activeJob));
       return Boolean(activeJob);
     };
 
@@ -693,7 +752,7 @@ export default function WorkspacePage() {
         setRewriteCards((cards) => cards.map((card) => (
           card.response ? card : { ...card, state: 'failed', error: error.message }
         )));
-        setWorkspaceOwlLoading(false);
+        setRewritePrewarmLoading(false);
       }
     };
     void refresh({ enqueue: true });
@@ -706,7 +765,7 @@ export default function WorkspacePage() {
     currentRewriteKey,
     currentRewriteBlockId,
     selectedDocument?.id,
-    workspaceDirty,
+    workspaceAiContextDirty,
   ]);
 
   useEffect(() => {
@@ -730,13 +789,51 @@ export default function WorkspacePage() {
   }, [currentPracticeRequestKey, practiceCache]);
 
   useEffect(() => () => {
-    if (rewriteRefreshTimerRef.current) {
-      clearTimeout(rewriteRefreshTimerRef.current);
-    }
     if (wandHoverTimerRef.current) {
       clearTimeout(wandHoverTimerRef.current);
     }
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+    }
   }, []);
+
+  useEffect(() => {
+    clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = null;
+    if (!shouldScheduleWorkspaceAutosave({
+      autosaveDocs,
+      workspaceOpen: view === 'workspace',
+      workspaceDirty,
+      workspaceSaving,
+      hasDocument: Boolean(selectedDocument?.id),
+      leavePromptOpen: showUnsavedBackPrompt,
+      formatReviewOpen: Boolean(formatReview),
+    })) {
+      return undefined;
+    }
+
+    const editGeneration = workspaceEditGenerationRef.current;
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null;
+      if (workspaceEditGenerationRef.current !== editGeneration) return;
+      void saveWorkspaceDocument({ automatic: true });
+    }, WORKSPACE_AUTOSAVE_DELAY_MS);
+    return () => {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    };
+  }, [
+    autosaveDocs,
+    editorContent,
+    formatReview,
+    selectedDocument?.id,
+    showUnsavedBackPrompt,
+    styleName,
+    styleSettings,
+    view,
+    workspaceDirty,
+    workspaceSaving,
+  ]);
 
   useEffect(() => {
     if (!documentId) {
@@ -776,7 +873,7 @@ export default function WorkspacePage() {
       realtimeState.trashDocuments.some((document) => document.id === documentId)
       || realtimeState.deletedDocumentIds.some((document) => document.id === documentId)
     ) {
-      setWorkspaceDirty(false);
+      resetWorkspaceDirty();
       setWorkspaceNotice('This document was removed from the workspace in another session.');
       setView('home');
       navigate('/');
@@ -788,14 +885,18 @@ export default function WorkspacePage() {
       remoteDocument
       && Number(remoteDocument.revision) > Number(selectedDocument.revision ?? 0)
       && Number(remoteDocument.revision) > (localDocumentRevisionsRef.current.get(documentId) ?? 0)
-      && !pendingDocumentMutationsRef.current.has(documentId)
+      && !documentMutationCoordinatorRef.current.isPending(documentId)
     ) {
+      if (workspaceDirty) {
+        setWorkspaceNotice('A newer remote revision is available. Save or discard local edits before loading it.');
+        return;
+      }
       // A keyed editor remount loads this canonical document as initial state, so
       // Tiptap does not emit an onUpdate/save cycle for a remote replacement.
       openWorkspace(remoteDocument, { updateRoute: false });
       setWorkspaceNotice('Updated from another session.');
     }
-  }, [documentId, navigate, realtimeState.deletedDocumentIds, realtimeState.documentDetails, realtimeState.trashDocuments, selectedDocument?.id, selectedDocument?.revision, view]);
+  }, [documentId, navigate, realtimeState.deletedDocumentIds, realtimeState.documentDetails, realtimeState.trashDocuments, selectedDocument?.id, selectedDocument?.revision, view, workspaceDirty]);
 
   useEffect(() => {
     if (!mobileOptionsOpen) return undefined;
@@ -843,6 +944,13 @@ export default function WorkspacePage() {
   function openWorkspace(document, { updateRoute = true } = {}) {
     const hydratedDocument = hydrateWorkspaceDocument(document);
     if (!hydratedDocument) return;
+    if (hydratedDocument.id === selectedDocument?.id) {
+      pendingEditorScrollRestoreRef.current = (
+        documentEditorRef.current?.getScrollPosition?.() ?? null
+      );
+    } else {
+      pendingEditorScrollRestoreRef.current = null;
+    }
 
     const nextStyleName = hydratedDocument?.academic_style || 'APA';
     const nextStyleSettings = {
@@ -852,13 +960,14 @@ export default function WorkspacePage() {
     const nextDraft = draftFromDocument(hydratedDocument, nextStyleSettings);
 
     setWorkspaceDraft(nextDraft);
+    workspaceEditGenerationRef.current = 0;
     setSelectedDocument(documentFromWorkspaceDraft(hydratedDocument, nextDraft, nextStyleName, nextStyleSettings));
     setEditorContent(nextDraft.contentJson ?? null);
     setActiveEditorBlock(activeBlockInfoFromDraft(nextDraft));
     setEditorReloadKey((value) => value + 1);
     setStyleName(nextStyleName);
     setStyleSettings(nextStyleSettings);
-    setWorkspaceDirty(false);
+    resetWorkspaceDirty();
     setWorkspaceNotice('');
     setBlockAnalyses({});
     setBlockAnalysisHighlights({});
@@ -866,6 +975,7 @@ export default function WorkspacePage() {
     setRewriteCardsLocked(false);
     setRewriteAllCompleted(false);
     setRewriteCards((cards) => cards.map(resetRewriteCard));
+    rewriteCardsContextKeyRef.current = '';
     setRewriteError('');
     setPracticeInput('');
     setPracticeFeedback(null);
@@ -882,18 +992,29 @@ export default function WorkspacePage() {
   function handleTemplateChange(nextStyleName) {
     setStyleName(nextStyleName);
     setStyleSettings(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? TEMPLATE_STYLE_SETTINGS.APA);
-    setWorkspaceDirty(true);
+    markWorkspaceDirty('ai-context');
   }
 
   function handleCustomStyleChange(nextSettings) {
     setStyleName('Customized');
     setStyleSettings({ ...DEFAULT_CUSTOM_STYLE, ...nextSettings });
-    setWorkspaceDirty(true);
+    markWorkspaceDirty('ai-context');
   }
 
   function handleWorkspaceTitleChange(nextTitle) {
     setSelectedDocument((document) => (document ? { ...document, title: nextTitle } : document));
+    markWorkspaceDirty('document');
+  }
+
+  function markWorkspaceDirty(kind = 'document') {
+    workspaceEditGenerationRef.current += 1;
     setWorkspaceDirty(true);
+    if (kind === 'ai-context') setWorkspaceAiContextDirty(true);
+  }
+
+  function resetWorkspaceDirty() {
+    setWorkspaceDirty(false);
+    setWorkspaceAiContextDirty(false);
   }
 
   function handleEditorChange(change) {
@@ -916,7 +1037,7 @@ export default function WorkspacePage() {
         refreshRewriteCardsFromDocument(normalized.document);
       }
     }
-    setWorkspaceDirty(true);
+    markWorkspaceDirty(payload.mutationKind === 'text' ? 'ai-context' : 'document');
   }
 
   const handleActiveEditorBlockChange = useCallback((info) => {
@@ -944,55 +1065,76 @@ export default function WorkspacePage() {
     return documentFromWorkspaceDraft(selectedDocument, fallbackDraft, styleName, styleSettings);
   }
 
-  async function persistWorkspaceDocument(document, versionLabel) {
+  async function persistWorkspaceDocument(
+    document,
+    versionLabel,
+    { createVersion = true } = {},
+  ) {
     if (!document?.id) throw new Error('No persisted document is open.');
 
-    pendingDocumentMutationsRef.current.add(document.id);
-    try {
-      const result = await saveDocument(document.id, {
-        title: document.title,
-        academicStyle: document.academic_style || styleName,
-        styleSettings: document.style_settings || styleSettings,
-        contentJson: document.content_json,
-        createVersion: true,
-        versionLabel,
-      });
-      const persistedDocument = result.document ?? document;
-      const persistedStyleName = persistedDocument.academic_style || styleName;
-      const persistedStyleSettings = {
-        ...(TEMPLATE_STYLE_SETTINGS[persistedStyleName] ?? DEFAULT_CUSTOM_STYLE),
-        ...(persistedDocument.style_settings ?? styleSettings),
-      };
-      const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
-      setWorkspaceDraft(persistedDraft);
-      setSelectedDocument(documentFromWorkspaceDraft(
-        persistedDocument,
-        persistedDraft,
-        persistedStyleName,
-        persistedStyleSettings,
-      ));
-      setEditorContent(persistedDraft.contentJson ?? document.content_json);
-      setActiveEditorBlock(activeBlockInfoFromDraft(persistedDraft));
-      setStyleName(persistedStyleName);
-      setStyleSettings(persistedStyleSettings);
-      setWorkspaceDirty(false);
-      const revision = Number(persistedDocument.revision);
-      if (Number.isFinite(revision)) {
-        localDocumentRevisionsRef.current.set(persistedDocument.id, revision);
-      }
-      applyDocument('document:updated', persistedDocument);
-      return persistedDocument;
-    } finally {
-      pendingDocumentMutationsRef.current.delete(document.id);
-    }
+    const documentId = document.id;
+    const requestedEditGeneration = workspaceEditGenerationRef.current;
+    return documentMutationCoordinatorRef.current.enqueue(
+      documentId,
+      async ({ isLatest }) => {
+        const result = await saveDocument(documentId, {
+          title: document.title,
+          academicStyle: document.academic_style || styleName,
+          styleSettings: document.style_settings || styleSettings,
+          contentJson: document.content_json,
+          createVersion,
+          versionLabel,
+        });
+        const persistedDocument = result.document ?? document;
+        const revision = Number(persistedDocument.revision);
+        if (Number.isFinite(revision)) {
+          localDocumentRevisionsRef.current.set(
+            persistedDocument.id,
+            Math.max(
+              revision,
+              localDocumentRevisionsRef.current.get(persistedDocument.id) ?? 0,
+            ),
+          );
+        }
+        applyDocument('document:updated', persistedDocument);
+
+        if (
+          !isLatest()
+          || workspaceEditGenerationRef.current !== requestedEditGeneration
+        ) {
+          return persistedDocument;
+        }
+
+        const persistedStyleName = persistedDocument.academic_style || styleName;
+        const persistedStyleSettings = {
+          ...(TEMPLATE_STYLE_SETTINGS[persistedStyleName] ?? DEFAULT_CUSTOM_STYLE),
+          ...(persistedDocument.style_settings ?? styleSettings),
+        };
+        const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
+        setWorkspaceDraft(persistedDraft);
+        setSelectedDocument(documentFromWorkspaceDraft(
+          persistedDocument,
+          persistedDraft,
+          persistedStyleName,
+          persistedStyleSettings,
+        ));
+        setEditorContent(persistedDraft.contentJson ?? document.content_json);
+        setActiveEditorBlock(activeBlockInfoFromDraft(persistedDraft));
+        setStyleName(persistedStyleName);
+        setStyleSettings(persistedStyleSettings);
+        resetWorkspaceDirty();
+        return persistedDocument;
+      },
+    );
   }
 
   async function saveWorkspaceDocument({
     leaveAfterSave = false,
     formatDecision = null,
+    automatic = false,
   } = {}) {
     const audit = documentEditorRef.current?.getFormatAudit?.();
-    if (!formatDecision && audit?.hasDifferences) {
+    if (!automatic && !formatDecision && audit?.hasDifferences) {
       setFormatReview({ audit, leaveAfterSave });
       return false;
     }
@@ -1024,8 +1166,12 @@ export default function WorkspacePage() {
 
     setWorkspaceSaving(true);
     try {
-      await persistWorkspaceDocument(document, 'Manual save');
-      setWorkspaceNotice('Saved');
+      await persistWorkspaceDocument(
+        document,
+        automatic ? 'Autosave' : 'Manual save',
+        { createVersion: !automatic },
+      );
+      setWorkspaceNotice(automatic ? 'Autosaved' : 'Saved');
       setShowUnsavedBackPrompt(false);
       setFormatReview(null);
       if (leaveAfterSave) {
@@ -1041,8 +1187,25 @@ export default function WorkspacePage() {
     }
   }
 
+  async function ensureWorkspaceSavedForAi(setError) {
+    const policy = aiSavePolicy({ aiContextDirty: workspaceAiContextDirty, autosaveDocs });
+    if (policy === 'ready') return true;
+    if (policy === 'manual-save-required') {
+      const message = 'Save the current document before using AI, or enable Autosave for docs in Writing preferences.';
+      setError?.(message);
+      setWorkspaceNotice(message);
+      return false;
+    }
+    return saveWorkspaceDocument({ automatic: true });
+  }
+
   function requestWorkspaceBack() {
-    if (workspaceDirty) {
+    const policy = workspaceLeavePolicy({ workspaceDirty, autosaveDocs });
+    if (policy === 'autosave-and-leave') {
+      void saveWorkspaceDocument({ automatic: true, leaveAfterSave: true });
+      return;
+    }
+    if (policy === 'prompt') {
       setShowUnsavedBackPrompt(true);
       return;
     }
@@ -1056,7 +1219,7 @@ export default function WorkspacePage() {
     setWorkspaceDraft(null);
     setEditorContent(null);
     setActiveEditorBlock({ blockId: null, status: 'unprocessed' });
-    setWorkspaceDirty(false);
+    resetWorkspaceDirty();
     setView('home');
     navigate('/');
   }
@@ -1083,8 +1246,102 @@ export default function WorkspacePage() {
     setRewriteAllCompleted(false);
     setRewriteCardsLocked(false);
     setRewriteCards((cards) => cards.map(resetRewriteCard));
+    rewriteCardsContextKeyRef.current = '';
     setRewriteError('');
     if (notice) setWorkspaceNotice(notice);
+  }
+
+  function getAiBlockEpoch(documentId, blockId) {
+    return aiBlockEpochRef.current.get(`${documentId}|${blockId}`) ?? 0;
+  }
+
+  function clearSkippedBlockAiState(documentId, blockId) {
+    const epochKey = `${documentId}|${blockId}`;
+    aiBlockEpochRef.current.set(epochKey, getAiBlockEpoch(documentId, blockId) + 1);
+    setRewriteCache((current) => clearBlockAiCaches({
+      rewriteCache: current,
+      documentId,
+      blockId,
+    }).rewriteCache);
+    setBlockAnalyses((current) => clearBlockAiCaches({
+      blockAnalyses: current,
+      documentId,
+      blockId,
+    }).blockAnalyses);
+    setPracticeCache((current) => clearBlockAiCaches({
+      practiceCache: current,
+      documentId,
+      blockId,
+    }).practiceCache);
+    setBlockAnalysisHighlights((current) => {
+      if (!current[blockId]) return current;
+      const next = { ...current };
+      delete next[blockId];
+      return next;
+    });
+    setPracticeFeedback((current) => (
+      current?.identity?.blockId === blockId ? null : current
+    ));
+    setPracticeInput('');
+    setPracticeError('');
+    setAnalysisError('');
+    setRewriteError('');
+    setRewriteCards(createRewriteCards());
+    rewriteCardsContextKeyRef.current = '';
+    setAnalysisBusy(false);
+    setPracticeBusy(false);
+    setWorkspaceOwlLoading(false);
+    setRewritePrewarmLoading(false);
+  }
+
+  function canonicalizeStatusSnapshot(payload, blockId, status) {
+    const terminal = status === 'processed' || status === 'skipped';
+    const canonicalizeAttrs = (attrs = {}) => ({
+      ...attrs,
+      status,
+      ...(terminal ? {
+        resumeStatus: null,
+        processingBaselineText: null,
+      } : {}),
+    });
+    const contentJson = payload.contentJson
+      ? mapEditableBlocks(payload.contentJson, (node) => (
+        node.attrs?.blockId === blockId
+          ? { ...node, attrs: canonicalizeAttrs(node.attrs) }
+          : node
+      ))
+      : payload.contentJson;
+    const blocks = Array.isArray(payload.blocks)
+      ? payload.blocks.map((block) => {
+        const candidateId = block.id ?? block.blockId ?? block.attrs?.blockId;
+        if (candidateId !== blockId) return block;
+        return {
+          ...block,
+          status,
+          ...(terminal ? {
+            resume_status: null,
+            processing_baseline_text: null,
+          } : {}),
+          attrs: canonicalizeAttrs(block.attrs),
+          tiptap_node: block.tiptap_node
+            ? {
+              ...block.tiptap_node,
+              attrs: canonicalizeAttrs(block.tiptap_node.attrs),
+            }
+            : block.tiptap_node,
+        };
+      })
+      : payload.blocks;
+    return { contentJson, blocks };
+  }
+
+  function restoreEditorScroll(position) {
+    if (!position) return;
+    const restore = () => {
+      documentEditorRef.current?.restoreScrollPosition?.(position);
+    };
+    restore();
+    window.requestAnimationFrame(restore);
   }
 
   async function handleWorkspaceUploadFile(file) {
@@ -1119,6 +1376,7 @@ export default function WorkspacePage() {
     if (analysisBusy) return;
 
     const requestKey = currentAnalysisKey;
+    const requestEpoch = getAiBlockEpoch(documentId, blockId);
     const requestBlockText = activeSourceText
       ?? workspaceDraft?.blocks?.find((block) => block.id === blockId)?.text
       ?? '';
@@ -1129,12 +1387,10 @@ export default function WorkspacePage() {
     setWorkspaceOwlLoading(true);
 
     try {
-      if (workspaceDirty) {
-        const saved = await saveWorkspaceDocument();
-        if (!saved) return;
-      }
+      if (!await ensureWorkspaceSavedForAi(setAnalysisError)) return;
 
       const response = await analyzeDocumentBlock(documentId, blockId, selectedAnalysisFilters);
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
       setBlockAnalyses((current) => ({
         ...current,
         [requestKey]: response.analysis,
@@ -1149,40 +1405,48 @@ export default function WorkspacePage() {
       }));
       setWorkspaceNotice(response.cached ? 'Loaded saved block analysis.' : 'Block analysis complete.');
     } catch (error) {
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
       setAnalysisError(error.message || 'AI analysis is temporarily unavailable.');
       triggerWorkspaceError();
     } finally {
-      setAnalysisBusy(false);
-      setWorkspaceOwlLoading(false);
+      if (getAiBlockEpoch(documentId, blockId) === requestEpoch) {
+        setAnalysisBusy(false);
+        setWorkspaceOwlLoading(false);
+      }
     }
   }
 
-  async function handleEditorBlockStatusChange({ blockId, status }) {
-    const payload = arguments[0] ?? {};
+  async function handleEditorBlockStatusChange(payload = {}) {
+    const { blockId, status } = payload;
 
-    // Rewrites are saved from the complete editor snapshot after the replacement
-    // is applied. A separate status-only request here could publish the old block
-    // text and overwrite the local rewrite before that save finishes.
+    // Replacement workflows already update the complete local snapshot. The
+    // profile save policy decides whether that dirty snapshot is saved later.
     if (payload.replacementText !== null && payload.replacementText !== undefined) {
-      setWorkspaceDirty(true);
+      markWorkspaceDirty('ai-context');
       return;
     }
 
-    const nextDocument = payload.contentJson && selectedDocument
+    const snapshot = canonicalizeStatusSnapshot(payload, blockId, status);
+    if (status === 'skipped' && selectedDocument?.id && blockId) {
+      clearSkippedBlockAiState(selectedDocument.id, blockId);
+    }
+    restoreEditorScroll(payload.paperScrollPosition);
+
+    const nextDocument = snapshot.contentJson && selectedDocument
       ? documentFromContent(
         selectedDocument,
-        payload.contentJson,
+        snapshot.contentJson,
         styleName,
         styleSettings,
-        payload.blocks ?? workspaceDraft?.blocks ?? null,
+        snapshot.blocks ?? workspaceDraft?.blocks ?? null,
         payload.currentProcessingBlockId ?? workspaceDraft?.currentProcessingBlockId ?? null
       )
       : null;
-    const nextDraft = payload.contentJson && selectedDocument
+    const nextDraft = snapshot.contentJson && selectedDocument
       ? normalizeWorkspaceDraft(
         selectedDocument,
-        payload.contentJson,
-        payload.blocks ?? workspaceDraft?.blocks ?? [],
+        snapshot.contentJson,
+        snapshot.blocks ?? workspaceDraft?.blocks ?? [],
         styleSettings,
         payload.currentProcessingBlockId ?? workspaceDraft?.currentProcessingBlockId ?? null
       )
@@ -1196,38 +1460,20 @@ export default function WorkspacePage() {
         block.status === 'processing' || block.status === 'unprocessed'
       ));
       const actionNotice = status === 'processing'
-        ? ''
+        ? autosaveDocs
+          ? ''
+          : 'Block selected. Save to keep this status change.'
         : status === 'skipped'
-          ? 'Skipped block. Moved to the next block.'
-          : 'Completed block. Moved to the next block.';
+          ? `Skipped block. Moved to the next block.${autosaveDocs ? '' : ' Save to keep this change.'}`
+          : `Completed block. Moved to the next block.${autosaveDocs ? '' : ' Save to keep this change.'}`;
       refreshRewriteCardsFromDocument(nextDocument, hasRemainingBlocks ? actionNotice : '');
     }
 
-    if (!selectedDocument?.id) {
-      if (status !== 'processing') {
-        setWorkspaceNotice(`Marked block as ${status}.`);
-      } else {
-        setWorkspaceNotice('');
-      }
-      setWorkspaceDirty(true);
-      return;
-    }
-
     if (!nextDocument) {
-      setWorkspaceNotice('Could not save the block status from the editor.');
+      setWorkspaceNotice('Could not update the block status in the editor.');
       return;
     }
-
-    try {
-      const versionLabel = status === 'processing'
-        ? 'Selected processing block'
-        : status === 'skipped'
-          ? 'Skipped block'
-          : 'Completed block';
-      await persistWorkspaceDocument(nextDocument, versionLabel);
-    } catch (error) {
-      setWorkspaceNotice(error.message || 'Could not update the block status.');
-    }
+    markWorkspaceDirty('document');
   }
 
   function getWorkspaceOwlAnimator() {
@@ -1336,6 +1582,7 @@ export default function WorkspacePage() {
     ) return;
 
     const requestKey = currentRewriteKey;
+    const requestEpoch = getAiBlockEpoch(documentId, blockId);
     setRewriteCards((cards) => cards.map((card) => (
       card.tone === tone ? { ...card, state: 'running', error: '' } : card
     )));
@@ -1345,13 +1592,10 @@ export default function WorkspacePage() {
     setWorkspaceOwlLoading(true);
 
     try {
-      if (workspaceDirty) {
-        const saved = await saveWorkspaceDocument();
-        if (!saved) return;
-      }
+      if (!await ensureWorkspaceSavedForAi(setRewriteError)) return;
 
       const response = await generateDocumentBlockRewrites(documentId, blockId, { tone, force });
-      setRewriteCache((cache) => cacheRewriteResponse(cache, response));
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
       const visible = rewriteVisibleIdentityRef.current;
       const stillVisible = rewriteIdentityMatchesVisible(
         response.identity,
@@ -1360,10 +1604,12 @@ export default function WorkspacePage() {
         rewriteContextKeyRef.current,
       );
       if (!stillVisible) {
+        setRewriteCache((cache) => cacheRewriteResponse(cache, response));
         setWorkspaceNotice('Rewrite finished and was saved for the earlier block state.');
         return;
       }
 
+      setRewriteCache((cache) => cacheRewriteResponse(cache, response));
       setRewriteCards((cards) => cards.map((card) => {
         const option = response.rewrites.find((rewrite) => rewrite.tone === card.tone);
         if (!option) return card;
@@ -1382,18 +1628,21 @@ export default function WorkspacePage() {
       }));
       setWorkspaceNotice(response.cached ? 'Loaded the saved rewrite.' : 'Rewrite is ready.');
     } catch (error) {
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
       setRewriteError(error.message || 'AI rewriting is temporarily unavailable.');
       setRewriteCards((cards) => cards.map((card) => (
         card.tone === tone ? { ...card, state: 'failed', error: error.message } : card
       )));
       triggerWorkspaceError();
     } finally {
-      setWorkspaceOwlLoading(false);
-      setRewriteCards((cards) => cards.map((card) => (
-        card.tone === tone && card.state === 'running'
-          ? { ...card, state: card.response ? 'completed' : 'idle' }
-          : card
-      )));
+      if (getAiBlockEpoch(documentId, blockId) === requestEpoch) {
+        setWorkspaceOwlLoading(false);
+        setRewriteCards((cards) => cards.map((card) => (
+          card.tone === tone && card.state === 'running'
+            ? { ...card, state: card.response ? 'completed' : 'idle' }
+            : card
+        )));
+      }
     }
   }
 
@@ -1422,7 +1671,6 @@ export default function WorkspacePage() {
       if (!document) {
         throw new Error('The selected block could not be updated. Please select it and try again.');
       }
-      await persistWorkspaceDocument(document, `Accepted ${card.title} rewrite`);
       void runWorkspaceMagic(animationTarget).catch(() => {});
     } catch (error) {
       setRewriteError(error.message || 'The rewrite could not be applied.');
@@ -1434,16 +1682,11 @@ export default function WorkspacePage() {
   }
 
   function resetRewriteCardsForNextBlock(nextNotice = 'Cards refreshed for the next processing block.') {
-    if (rewriteRefreshTimerRef.current) {
-      clearTimeout(rewriteRefreshTimerRef.current);
-    }
-
-    rewriteRefreshTimerRef.current = setTimeout(() => {
-      setRewriteCards((cards) => cards.map(resetRewriteCard));
-      setRewriteError('');
-      setRewriteCardsLocked(false);
-      setWorkspaceNotice(nextNotice);
-    }, 650);
+    setRewriteCards((cards) => cards.map(resetRewriteCard));
+    rewriteCardsContextKeyRef.current = '';
+    setRewriteError('');
+    setRewriteCardsLocked(false);
+    setWorkspaceNotice(nextNotice);
   }
 
   function lockOrCompleteRewriteCards(document, nextNotice) {
@@ -1492,7 +1735,7 @@ export default function WorkspacePage() {
         document.current_processing_block_id,
         nextStatus,
       ));
-      setWorkspaceDirty(true);
+      markWorkspaceDirty(replacementText === null ? 'document' : 'ai-context');
       return document;
     }
 
@@ -1599,7 +1842,7 @@ export default function WorkspacePage() {
       document.current_processing_block_id,
       nextStatus,
     ));
-    setWorkspaceDirty(true);
+    markWorkspaceDirty(replacementText === null ? 'document' : 'ai-context');
     return document;
   }
 
@@ -1634,6 +1877,7 @@ export default function WorkspacePage() {
     if (practiceBusy) return;
 
     const requestKey = currentPracticeRequestKey;
+    const requestEpoch = getAiBlockEpoch(documentId, blockId);
     setPracticeBusy(true);
     setPracticeError('');
     setWorkspaceNotice('');
@@ -1642,15 +1886,10 @@ export default function WorkspacePage() {
     if (showMobileFeedback) setMobilePracticeIndex(1);
 
     try {
-      if (workspaceDirty) {
-        const saved = await saveWorkspaceDocument();
-        if (!saved) {
-          setPracticeError('Save the current document before requesting AI feedback.');
-          return;
-        }
-      }
+      if (!await ensureWorkspaceSavedForAi(setPracticeError)) return;
 
       const response = await requestDocumentBlockPracticeFeedback(documentId, blockId, attemptText);
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
       const savedFeedback = {
         ...response.practice,
         identity: response.identity,
@@ -1678,6 +1917,7 @@ export default function WorkspacePage() {
       setPracticeFeedback(savedFeedback);
       setWorkspaceNotice(response.cached ? 'Loaded saved practice feedback.' : 'Practice feedback is ready.');
     } catch (error) {
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
       if (practiceContextKeyRef.current === requestKey) {
         setPracticeError(
           `${error.message || 'AI practice feedback is temporarily unavailable.'}${error.correlationId
@@ -1687,8 +1927,10 @@ export default function WorkspacePage() {
       }
       triggerWorkspaceError();
     } finally {
-      setWorkspaceOwlLoading(false);
-      setPracticeBusy(false);
+      if (getAiBlockEpoch(documentId, blockId) === requestEpoch) {
+        setWorkspaceOwlLoading(false);
+        setPracticeBusy(false);
+      }
     }
   }
 
@@ -1721,7 +1963,6 @@ export default function WorkspacePage() {
         'practice-replacement',
       );
       if (!document) throw new Error('The reviewed revision could not be applied.');
-      await persistWorkspaceDocument(document, 'Applied reviewed Practice revision');
       lockOrCompleteRewriteCards(
         document,
         'Your reviewed revision was applied. Suggestions are warming for the next block.',
@@ -1949,9 +2190,9 @@ export default function WorkspacePage() {
               event.stopPropagation();
               regenerateRewriteCard(card.id);
             }}
-            className={generationDisabled
-              ? 'ai-action-disabled'
-              : ''}
+            className={`rewrite-card-generate${generationDisabled
+              ? ' ai-action-disabled'
+              : ''}`}
             disabled={generationDisabled}
           >
             {generateLabel}
@@ -2454,6 +2695,10 @@ export default function WorkspacePage() {
             onSave={() => saveWorkspaceDocument()}
             saveDisabled={!workspaceDirty}
             saving={workspaceSaving}
+            initialScrollPosition={pendingEditorScrollRestoreRef.current}
+            onInitialScrollRestored={() => {
+              pendingEditorScrollRestoreRef.current = null;
+            }}
           />
         </section>
 

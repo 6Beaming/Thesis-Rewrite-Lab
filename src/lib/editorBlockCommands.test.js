@@ -9,7 +9,9 @@ import {
   hasUnfinishedBlocks,
   insertSegmentedLineBreak,
   insertTextIntoSelectedSegment,
+  isolateSelectionInTransaction,
   splitSegmentedTextBlock,
+  trackedTextContentChanged,
 } from './editorBlockCommands.js';
 
 const BlockSegment = Node.create({
@@ -180,6 +182,44 @@ test('a second consecutive Enter creates a hard structural boundary', () => {
   editor.destroy();
 });
 
+test('a partial selection is isolated before applying a list transform', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'blockSegment',
+        attrs: { blockId: 'block-1', status: 'processing' },
+        content: [{ type: 'text', text: 'Hello world' }],
+      }],
+    }],
+  });
+
+  editor.commands.setTextSelection({ from: 4, to: 8 });
+  const applied = editor.chain()
+    .command(({ state, tr }) => {
+      assert.equal(isolateSelectionInTransaction(state, tr), true);
+      return true;
+    })
+    .toggleBulletList()
+    .run();
+
+  assert.equal(applied, true);
+  const content = editor.getJSON().content;
+  assert.deepEqual(content.map((node) => node.type), [
+    'paragraph',
+    'bulletList',
+    'paragraph',
+  ]);
+  assert.equal(content[0].content[0].content[0].text, 'He');
+  assert.equal(
+    content[1].content[0].content[0].content[0].content[0].text,
+    'llo ',
+  );
+  assert.equal(content[2].content[0].content[0].text, 'world');
+  editor.destroy();
+});
+
 test('converts legacy paragraph and heading blocks into block segments', () => {
   const normalized = convertLegacyTrackedBlocks({
     type: 'doc',
@@ -259,4 +299,26 @@ test('completed documents have no unfinished block to select', () => {
 
   assert.equal(hasUnfinishedBlocks(blocks), false);
   assert.equal(chooseNextUnfinishedBlock(blocks, 'block-2'), null);
+});
+
+test('partition eligibility ignores formatting and block-boundary identity changes', () => {
+  const before = new Map([
+    ['block-1', 'A complete sentence.'],
+    ['block-2', ' Another sentence.'],
+  ]);
+  const formattingOnly = new Map([
+    ['block-1', 'A complete sentence.'],
+    ['block-2', ' Another sentence.'],
+  ]);
+  const reassignedBoundaries = new Map([
+    ['replacement-block', 'A complete sentence. Another sentence.'],
+  ]);
+  const textEdit = new Map([
+    ['block-1', 'A complete revised sentence.'],
+    ['block-2', ' Another sentence.'],
+  ]);
+
+  assert.equal(trackedTextContentChanged(before, formattingOnly), false);
+  assert.equal(trackedTextContentChanged(before, reassignedBoundaries), false);
+  assert.equal(trackedTextContentChanged(before, textEdit), true);
 });

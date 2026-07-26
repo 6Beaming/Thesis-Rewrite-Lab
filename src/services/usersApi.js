@@ -17,3 +17,10 @@ export function uploadProfilePicture(file) {
     body: formData,
   });
 }
+
+export function updateWritingPreferences(settings) {
+  return requestJson('/users/me/writing-preferences', {
+    method: 'PATCH',
+    body: JSON.stringify(settings),
+  });
+}

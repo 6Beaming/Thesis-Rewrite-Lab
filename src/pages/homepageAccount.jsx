@@ -1,6 +1,7 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import owlUrl from '../assets/owl.svg';
 import StreakAnimation from '../components/StreakAnimation.jsx';
+import HomepageWritingPreferences from './HomepageWritingPreferences.jsx';
 
 function UploadIcon() {
   return (
@@ -12,8 +13,15 @@ function UploadIcon() {
   );
 }
 
-export default function HomepageAccount({ user, onClose, onLogout, onUploadProfile }) {
+export default function HomepageAccount({
+  user,
+  onClose,
+  onLogout,
+  onUploadProfile,
+  onUpdateWritingPreferences,
+}) {
   const inputRef = useRef(null);
+  const [activeView, setActiveView] = useState('profile');
   const streakDays = Math.max(0, Number(user?.stats?.streak_day_count ?? 0));
   const avatarSrc = user?.profilePictureUrl || (user?.hasProfilePicture ? '/api/users/me/profile-picture' : owlUrl);
   const hasCustomAvatar = Boolean(user?.profilePictureUrl || user?.hasProfilePicture);
@@ -28,10 +36,18 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
   return (
     <div className="account-overlay" role="presentation" onPointerDown={onClose}>
       <aside
-        className="account-panel"
+        className={`account-panel${activeView === 'writing-preferences' ? ' account-panel--writing' : ''}`}
         aria-label="Account panel"
         onPointerDown={(event) => event.stopPropagation()}
       >
+        {activeView === 'writing-preferences' ? (
+          <HomepageWritingPreferences
+            user={user}
+            onBack={() => setActiveView('profile')}
+            onSave={onUpdateWritingPreferences}
+          />
+        ) : (
+          <>
         <div className={`account-profile${hasCustomAvatar ? '' : ' is-default-owl'}`}>
           <span className={`account-profile-avatar${hasCustomAvatar ? '' : ' account-profile-avatar--owl'}`} aria-hidden={!hasCustomAvatar}>
             <img
@@ -61,11 +77,13 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
           </div>
         </section>
         <div className="account-settings">
-          {['Writing preferences'].map((item) => (
-            <button type="button" key={item}>{item}</button>
-          ))}
+          <button type="button" onClick={() => setActiveView('writing-preferences')}>
+            Writing preferences
+          </button>
         </div>
         <button type="button" className="account-logout" onClick={onLogout}>Log out</button>
+          </>
+        )}
       </aside>
     </div>
   );

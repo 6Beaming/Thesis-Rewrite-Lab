@@ -25,6 +25,7 @@ export function DropdownSelect({
   wrapperClassName = 'dropdown-select',
   arrowClassName = 'sort-dropdown-arrow',
   menuRole = 'menu',
+  disabled = false,
 }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
@@ -46,19 +47,26 @@ export function DropdownSelect({
     };
   }, []);
 
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
   return (
     <div className={wrapperClassName} ref={menuRef}>
       <button
         type="button"
         className={triggerClassName}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          if (!disabled) setOpen((current) => !current);
+        }}
+        disabled={disabled}
         aria-expanded={open}
         aria-label={ariaLabel}
       >
-        {selected.label}
+        <span className="dropdown-select-label">{selected.label}</span>
         <DownArrowIcon className={arrowClassName} />
       </button>
-      {open ? (
+      {open && !disabled ? (
         <div className={menuClassName} role={menuRole}>
           {dropdownOptions.map((option) => (
             <button

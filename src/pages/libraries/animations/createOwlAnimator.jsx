@@ -685,15 +685,18 @@ export function createOwlAnimator(stageRoot) {
 
   async function startThinking() {
     if (!beginThinkingRequest(state)) return;
+    // Expose request state immediately. The physical owl transition still
+    // waits for an in-flight magic sequence so the two motions never fight.
+    ctx.setIndicator('thinking', true);
     await ctx.wand.waitForMagicPriority();
     if (!canStartRequestedThinking(state)) {
+      ctx.setIndicator('thinking', false);
       return;
     }
     stopPassiveAnimations({ keepBlink: true, keepWand: true });
     state.mode = 'thinking';
     state.thinking = true;
     state.error = false;
-    ctx.setIndicator('thinking', true);
     const direction = Math.random() > 0.5 ? 'left' : 'right';
     ctx.eyes.startEyeThinking(direction);
     ctx.head.headThinkRotation(direction);
@@ -704,8 +707,10 @@ export function createOwlAnimator(stageRoot) {
   }
 
   async function endThinking() {
+    const wasRequested = state.thinkingRequested;
     cancelThinkingRequest(state);
     if (!state.thinking) {
+      if (wasRequested) ctx.setIndicator('thinking', false);
       return;
     }
     const keepWand = state.wand !== 'hidden';
@@ -725,11 +730,12 @@ export function createOwlAnimator(stageRoot) {
 
   async function triggerError() {
     const wasThinking = state.thinking;
+    const wasThinkingRequested = state.thinkingRequested;
     cancelThinkingRequest(state);
     state.error = true;
     state.mode = 'error';
 
-    if (wasThinking) {
+    if (wasThinking || wasThinkingRequested) {
       state.thinking = false;
       ctx.setIndicator('thinking', false);
     }

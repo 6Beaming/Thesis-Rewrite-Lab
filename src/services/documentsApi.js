@@ -61,10 +61,20 @@ export function analyzeDocumentBlock(documentId, blockId, filters) {
   });
 }
 
-export function generateDocumentBlockRewrites(documentId, blockId, { tone, force = false }) {
+export function generateDocumentBlockRewrites(documentId, blockId, {
+  tone,
+  force = false,
+  useSavedPreferences,
+  preferenceOverrides,
+}) {
   return requestJson(`/documents/${documentId}/blocks/${blockId}/rewrites`, {
     method: 'POST',
-    body: JSON.stringify({ tone, force }),
+    body: JSON.stringify({
+      tone,
+      force,
+      ...(typeof useSavedPreferences === 'boolean' ? { useSavedPreferences } : {}),
+      ...(preferenceOverrides ? { preferenceOverrides } : {}),
+    }),
   });
 }
 

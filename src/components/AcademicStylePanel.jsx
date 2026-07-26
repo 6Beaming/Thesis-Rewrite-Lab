@@ -39,8 +39,6 @@ export const TEMPLATE_STYLE_SETTINGS = {
 };
 
 const styleOptions = {
-  font: ['Times New Roman', 'Georgia', 'Garamond', 'Cambria', 'Arial', 'Calibri', 'Helvetica', 'Verdana', 'Courier New'],
-  spacing: ['1.0', '1.15', '1.5', '2.0'],
   indentation: ['0in', '0.25in', '0.5in'],
   pageNumber: ['Bottom center', 'Top right', 'Bottom right'],
 };

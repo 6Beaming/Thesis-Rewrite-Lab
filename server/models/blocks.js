@@ -76,6 +76,9 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
     const resumeStatus = index === 0 ? 'unprocessed' : null;
     const processingBaselineText = index === 0 ? normalized.text : null;
     const charLength = countCharacters(normalized.text);
+    const formatOverrides = Array.isArray(normalized.attrs.formatOverrides)
+      ? [...new Set(normalized.attrs.formatOverrides)]
+      : [];
     const attrs = {
       ...mergedAttrs,
       ...normalized.attrs,
@@ -88,7 +91,7 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
       processingBaselineText,
       changeSource: 'none',
       partitionGeneration: 0,
-      formatOverrides: [],
+      formatOverrides,
       length: charLength,
     };
 
@@ -101,7 +104,7 @@ export function createBlockRecords(textBlocks, styleSettings = {}) {
       processingBaselineText,
       changeSource: 'none',
       partitionGeneration: 0,
-      formatOverrides: [],
+      formatOverrides,
       charLength,
       attrs,
       tiptapNode: {
@@ -148,11 +151,20 @@ export function createContentJson(blocks) {
 
   return {
     type: 'doc',
-    content: paragraphs.map((paragraph) => ({
-      type: 'paragraph',
-      attrs: paragraph.attrs,
-      content: paragraph.content,
-    })),
+    content: paragraphs.map((paragraph) => {
+      const firstSegment = paragraph.content.find((node) => node.type === 'blockSegment');
+      const sourceType = firstSegment?.attrs?.sourceType ?? 'paragraph';
+      const isHeading = sourceType === 'heading';
+      return {
+        type: isHeading ? 'heading' : 'paragraph',
+        attrs: {
+          ...paragraph.attrs,
+          outlineLevel: isHeading ? String(firstSegment?.attrs?.level ?? 1) : 'none',
+          ...(isHeading ? { level: Number(firstSegment?.attrs?.level) || 1 } : {}),
+        },
+        content: paragraph.content,
+      };
+    }),
   };
 }
 
@@ -521,24 +533,7 @@ export async function updateBlockStatus(client, { documentId, blockId, status })
   }
 
   if (status === 'skipped') {
-    await client.query(
-      'delete from block_rewrite_options where document_id = $1 and block_id = $2',
-      [documentId, blockId],
-    );
-    await client.query(
-      'delete from block_analyses where document_id = $1 and block_id = $2',
-      [documentId, blockId],
-    );
-    await client.query(
-      'delete from block_practice_attempts where document_id = $1 and block_id = $2',
-      [documentId, blockId],
-    );
-    await client.query(
-      `update block_rewrite_jobs
-       set status = 'cancelled', safe_error_code = 'BLOCK_SKIPPED'
-       where document_id = $1 and block_id = $2 and status in ('queued', 'running')`,
-      [documentId, blockId],
-    );
+    await clearBlockAiState(client, documentId, [blockId]);
   }
 
   let next = null;
@@ -565,6 +560,35 @@ export async function updateBlockStatus(client, { documentId, blockId, status })
 
   await recalculateDocumentProgress(client, documentId);
   return { found: true, next };
+}
+
+async function clearBlockAiState(client, documentId, blockIds) {
+  const uniqueBlockIds = [...new Set((blockIds ?? []).filter(Boolean))];
+  if (!uniqueBlockIds.length) return;
+
+  await client.query(
+    'delete from block_rewrite_options where document_id = $1 and block_id = any($2::uuid[])',
+    [documentId, uniqueBlockIds],
+  );
+  await client.query(
+    'delete from block_analyses where document_id = $1 and block_id = any($2::uuid[])',
+    [documentId, uniqueBlockIds],
+  );
+  await client.query(
+    'delete from block_practice_attempts where document_id = $1 and block_id = any($2::uuid[])',
+    [documentId, uniqueBlockIds],
+  );
+  await client.query(
+    `update block_rewrite_jobs
+     set status = 'cancelled',
+         safe_error_code = 'BLOCK_SKIPPED',
+         lease_owner = null,
+         lease_expires_at = null
+     where document_id = $1
+       and block_id = any($2::uuid[])
+       and status in ('queued', 'running')`,
+    [documentId, uniqueBlockIds],
+  );
 }
 
 export async function replaceBlocksFromSnapshot(client, documentId, blocks) {
@@ -797,6 +821,14 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
       ]
     );
   }
+
+  await clearBlockAiState(
+    client,
+    documentId,
+    normalized.blockEntries
+      .filter((entry) => entry.status === 'skipped')
+      .map((entry) => entry.id),
+  );
 
   await client.query(
     `update block_rewrite_jobs jobs

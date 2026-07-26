@@ -1,4 +1,4 @@
-import { Extension, Node } from '@tiptap/core';
+import { Extension, mergeAttributes, Node } from '@tiptap/core';
 import Blockquote from '@tiptap/extension-blockquote';
 import BulletList from '@tiptap/extension-bullet-list';
 import Color from '@tiptap/extension-color';
@@ -15,7 +15,15 @@ import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { buildAnalysisPhraseDecorations } from '../lib/analysisPhraseDecorations.js';
 import {
   countCharacters,
@@ -29,12 +37,20 @@ import {
 } from '../lib/blockState.js';
 import { auditDocumentFormatting } from '../lib/formatAudit.js';
 import {
+  cancelScheduledAnimationFrame,
+  EDITOR_PRESERVE_SCROLL_META,
+  scheduleAnimationFrameOnce,
+  shouldRestoreEditorScroll,
+} from '../lib/editorScrollGuard.js';
+import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
   hasUnfinishedBlocks,
   insertSegmentedLineBreak,
   insertTextIntoSelectedSegment,
+  trackedTextContentChanged,
 } from '../lib/editorBlockCommands.js';
+import { separateAdjacentBlockRects } from '../lib/blockFrameGeometry.js';
 import A4EditorPage from './A4EditorPage.jsx';
 import EditorToolbar from './EditorToolbar.jsx';
 
@@ -44,6 +60,7 @@ const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const EMPTY_ANALYSIS_HIGHLIGHTS = Object.freeze([]);
 const PAGINATION_META = 'editorPagination';
 const PAGINATION_PLUGIN_KEY = new PluginKey('paginationDecoration');
+const SKIP_BLOCK_PARTITION_META = 'skipEditorBlockPartition';
 
 function generateBlockId(prefix) {
   const randomId = globalThis.crypto?.randomUUID?.();
@@ -139,6 +156,7 @@ const AcademicParagraph = Paragraph.extend({
       textAlign: { default: 'left' },
       fontFamily: { default: 'Times New Roman' },
       fontSize: { default: '12pt' },
+      outlineLevel: { default: 'none' },
     };
   },
   renderHTML({ HTMLAttributes }) {
@@ -155,6 +173,7 @@ const AcademicHeading = Heading.extend({
       textAlign: { default: 'left' },
       fontFamily: { default: 'Times New Roman' },
       fontSize: { default: '12pt' },
+      outlineLevel: { default: '1' },
     };
   },
   renderHTML({ node, HTMLAttributes }) {
@@ -185,6 +204,8 @@ const BlockSegment = Node.create({
       textAlign: { default: 'left' },
       fontFamily: { default: 'Times New Roman' },
       fontSize: { default: '12pt' },
+      sourceType: { default: 'paragraph' },
+      level: { default: null },
       length: { default: 0 },
     };
   },
@@ -229,6 +250,71 @@ const PageBreak = Node.create({
   },
   renderHTML() {
     return ['hr', { 'data-page-break': 'true', class: 'page-break-node' }];
+  },
+});
+
+const AcademicOrderedList = OrderedList.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      restartNumbering: {
+        default: false,
+        parseHTML: (element) => element.hasAttribute('data-restart-numbering'),
+      },
+    };
+  },
+  renderHTML({ HTMLAttributes }) {
+    const {
+      start,
+      type,
+      restartNumbering,
+      ...attributes
+    } = HTMLAttributes;
+    const rendered = mergeAttributes(this.options.HTMLAttributes, attributes);
+    if (start !== 1) rendered.start = start;
+    if (type && type !== '1') rendered.type = type;
+    if (restartNumbering) rendered['data-restart-numbering'] = 'true';
+    rendered['data-renumberable'] = 'true';
+    rendered['aria-label'] = 'Ordered list. Click a number or right-click to renumber from 1.';
+    return ['ol', rendered, 0];
+  },
+});
+
+const OrderedListNumbering = Extension.create({
+  name: 'orderedListNumbering',
+  addProseMirrorPlugins() {
+    return [new Plugin({
+      key: new PluginKey('orderedListNumbering'),
+      appendTransaction(transactions, _oldState, newState) {
+        if (
+          !transactions.some((transaction) => transaction.docChanged)
+          || transactions.some((transaction) => transaction.getMeta('orderedListNumbering'))
+        ) {
+          return null;
+        }
+        let nextStart = 1;
+        let changed = false;
+        const transaction = newState.tr;
+        newState.doc.descendants((node, pos) => {
+          if (node.type.name !== 'orderedList' || newState.doc.resolve(pos).depth !== 0) return;
+          if (node.attrs.restartNumbering) nextStart = 1;
+          if (node.attrs.start !== nextStart) {
+            transaction.setNodeMarkup(pos, undefined, {
+              ...node.attrs,
+              start: nextStart,
+            });
+            changed = true;
+          }
+          nextStart += node.childCount;
+          return false;
+        });
+        if (!changed) return null;
+        transaction
+          .setMeta('orderedListNumbering', true)
+          .setMeta('addToHistory', false);
+        return transaction;
+      },
+    })];
   },
 });
 
@@ -448,8 +534,186 @@ function selectedBlockDecorationRange(state) {
   return null;
 }
 
+function lineRectsForBlock(blockElement) {
+  const range = window.document.createRange();
+  range.selectNodeContents(blockElement);
+  return Array.from(range.getClientRects())
+    .filter((rect) => rect.width > 0 && rect.height > 0)
+    .sort((a, b) => a.top - b.top || a.left - b.left)
+    .reduce((lines, rect) => {
+      const currentLine = lines.at(-1);
+      const overlapHeight = currentLine
+        ? Math.min(rect.bottom, currentLine.bottom) - Math.max(rect.top, currentLine.top)
+        : 0;
+      const overlapsCurrentLine = currentLine
+        && overlapHeight > Math.min(rect.height, currentLine.bottom - currentLine.top) / 2;
+      if (!overlapsCurrentLine) {
+        lines.push({
+          left: rect.left,
+          top: rect.top,
+          right: rect.right,
+          bottom: rect.bottom,
+        });
+        return lines;
+      }
+
+      currentLine.left = Math.min(currentLine.left, rect.left);
+      currentLine.top = Math.min(currentLine.top, rect.top);
+      currentLine.right = Math.max(currentLine.right, rect.right);
+      currentLine.bottom = Math.max(currentLine.bottom, rect.bottom);
+      return lines;
+    }, []);
+}
+
+function expandedBlockRects(blockElement, frameGap = 5) {
+  const lines = lineRectsForBlock(blockElement);
+  if (!lines.length) return [];
+  const lineHeight = Number.parseFloat(getComputedStyle(blockElement).lineHeight);
+  const expanded = lines.map((rect) => {
+    const verticalGap = Number.isFinite(lineHeight)
+      ? Math.max(frameGap, ((lineHeight - (rect.bottom - rect.top)) / 2) + 1)
+      : frameGap;
+    return {
+      left: rect.left - frameGap,
+      top: rect.top - verticalGap,
+      right: rect.right + frameGap,
+      bottom: rect.bottom + verticalGap,
+    };
+  });
+
+  for (let index = 1; index < expanded.length; index += 1) {
+    const boundary = (lines[index - 1].bottom + lines[index].top) / 2;
+    expanded[index - 1].bottom = boundary;
+    expanded[index].top = boundary;
+  }
+  return expanded;
+}
+
+function polygonPointsForRects(rects, left, top) {
+  const relative = rects.map((rect) => ({
+    left: rect.left - left,
+    top: rect.top - top,
+    right: rect.right - left,
+    bottom: rect.bottom - top,
+  }));
+  const points = [
+    [relative[0].left, relative[0].top],
+    [relative[0].right, relative[0].top],
+  ];
+  for (let index = 0; index < relative.length; index += 1) {
+    const rect = relative[index];
+    const next = relative[index + 1];
+    points.push([rect.right, rect.bottom]);
+    if (next) points.push([next.right, rect.bottom], [next.right, next.top]);
+  }
+  points.push([relative.at(-1).left, relative.at(-1).bottom]);
+  for (let index = relative.length - 1; index > 0; index -= 1) {
+    const rect = relative[index];
+    const previous = relative[index - 1];
+    points.push([rect.left, rect.top], [previous.left, rect.top], [previous.left, previous.bottom]);
+  }
+  return points;
+}
+
+function syncBlockStatusFrames(editor, pageElement) {
+  if (!pageElement || !editor?.view?.dom) return;
+  const existingFrames = new Map(Array.from(
+    pageElement.querySelectorAll(':scope > .block-status-frame'),
+    (frame) => [frame.dataset.blockId, frame],
+  ));
+  const pageRect = pageElement.getBoundingClientRect();
+
+  const frameGeometry = Array.from(
+    editor.view.dom.querySelectorAll('.doc-block[data-block-id]'),
+  ).map((blockElement) => ({
+    blockId: blockElement.dataset.blockId,
+    status: normalizeBlockStatus(blockElement.dataset.status),
+    selected: blockElement.classList.contains('doc-block--selected'),
+    rects: expandedBlockRects(blockElement),
+  })).filter(({ blockId, rects }) => blockId && rects.length);
+
+  separateAdjacentBlockRects(frameGeometry).forEach(({
+    blockId,
+    status,
+    selected,
+    rects,
+  }) => {
+    const left = Math.min(...rects.map((rect) => rect.left));
+    const top = Math.min(...rects.map((rect) => rect.top));
+    const right = Math.max(...rects.map((rect) => rect.right));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    const width = Math.max(1, right - left);
+    const height = Math.max(1, bottom - top);
+    let frame = existingFrames.get(blockId);
+
+    if (!frame) {
+      frame = window.document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      frame.setAttribute('class', 'block-status-frame');
+      frame.setAttribute('aria-hidden', 'true');
+      frame.setAttribute('preserveAspectRatio', 'none');
+      const shape = window.document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      shape.classList.add('block-status-frame__shape');
+      frame.append(shape);
+      pageElement.append(frame);
+    }
+
+    frame.dataset.blockId = blockId;
+    frame.dataset.status = status;
+    frame.dataset.selected = selected ? 'true' : 'false';
+    frame.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    frame.querySelector('.block-status-frame__shape').setAttribute(
+      'points',
+      polygonPointsForRects(rects, left, top)
+        .map(([x, y]) => `${x},${y}`)
+        .join(' '),
+    );
+    frame.style.left = `${left - pageRect.left}px`;
+    frame.style.top = `${top - pageRect.top}px`;
+    frame.style.width = `${width}px`;
+    frame.style.height = `${height}px`;
+    existingFrames.delete(blockId);
+  });
+
+  existingFrames.forEach((frame) => frame.remove());
+}
+
+function orderedListPositionForElement(editor, listElement) {
+  if (!editor?.view?.dom || !listElement) return null;
+  const rawPosition = editor.view.posAtDOM(listElement, 0);
+  for (const candidate of [rawPosition, rawPosition - 1]) {
+    if (
+      candidate >= 0
+      && candidate <= editor.state.doc.content.size
+      && editor.state.doc.nodeAt(candidate)?.type.name === 'orderedList'
+    ) {
+      return candidate;
+    }
+  }
+
+  const $position = editor.state.doc.resolve(Math.max(
+    0,
+    Math.min(editor.state.doc.content.size, rawPosition),
+  ));
+  for (let depth = $position.depth; depth > 0; depth -= 1) {
+    if ($position.node(depth).type.name === 'orderedList') {
+      return $position.before(depth);
+    }
+  }
+  return null;
+}
+
+function isOrderedListMarkerClick(event, listItem) {
+  const content = listItem?.querySelector?.('.doc-block');
+  if (!content) return false;
+  const contentRect = content.getBoundingClientRect();
+  const listRect = listItem.closest('ol')?.getBoundingClientRect();
+  const markerLeft = Math.min(listRect?.left ?? contentRect.left - 44, contentRect.left - 44);
+  return event.clientX >= markerLeft - 4 && event.clientX <= contentRect.left - 2;
+}
+
 function syncSelectedBlockFrame(editor, blockId, pageElement) {
   if (!pageElement) return;
+  syncBlockStatusFrames(editor, pageElement);
 
   let frame = pageElement.querySelector(':scope > .selected-block-frame');
   let actions = pageElement.querySelector(':scope > .selected-block-actions');
@@ -899,6 +1163,7 @@ function activateSelectedEditorBlock(editor) {
     }
     if (!changed) return false;
     tr.setMeta('blockStateTransition', 'select');
+    tr.setMeta('addToHistory', false);
     dispatch?.(tr);
     return true;
   });
@@ -988,6 +1253,16 @@ function normalizeEditorBlockNodes(editor, documentId) {
   return true;
 }
 
+function structuralAncestorPosition(state, position) {
+  const $position = state.doc.resolve(Math.min(state.doc.content.size, position + 1));
+  for (let depth = $position.depth; depth > 0; depth -= 1) {
+    if (STRUCTURAL_TEXT_BLOCK_TYPES.has($position.node(depth).type.name)) {
+      return $position.before(depth);
+    }
+  }
+  return null;
+}
+
 function repartitionAffectedEditorBlock(editor, documentId, blockId) {
   if (!editor || editor.isDestroyed) return false;
   const blocks = collectTrackedBlocks(editor.state).filter((block) => !block.isEmpty);
@@ -998,6 +1273,9 @@ function repartitionAffectedEditorBlock(editor, documentId, blockId) {
 
   if (block.length <= DEFAULT_SEGMENTATION_POLICY.maxChars) {
     const previous = blocks[blockIndex - 1];
+    const sharesStructuralContainer = previous
+      && structuralAncestorPosition(editor.state, previous.pos)
+        === structuralAncestorPosition(editor.state, block.pos);
     const previousEnd = previous ? previous.pos + previous.node.nodeSize : 0;
     const separatorText = previous
       ? editor.state.doc.textBetween(previousEnd, block.pos, '\n', '\n')
@@ -1006,6 +1284,7 @@ function repartitionAffectedEditorBlock(editor, documentId, blockId) {
     if (
       block.length >= DEFAULT_SEGMENTATION_POLICY.minChars
       || !previous
+      || !sharesStructuralContainer
       || previous.attrs.paragraphIndex !== block.attrs.paragraphIndex
       || /\n[^\S\r\n]*\n/.test(separatorText)
       || countCharacters(combinedText) > DEFAULT_SEGMENTATION_POLICY.maxChars
@@ -1124,15 +1403,20 @@ function selectedParagraphFromState(state) {
   return null;
 }
 
-function paragraphTextSnapshot(editor) {
+function paragraphTextSnapshotFromState(state) {
   const snapshot = new Map();
-  if (!editor || editor.isDestroyed) return snapshot;
+  if (!state?.doc) return snapshot;
 
-  editor.state.doc.descendants((node) => {
+  state.doc.descendants((node) => {
     if (!isTrackedTextBlockNode(node) || !node.attrs.blockId) return;
     snapshot.set(node.attrs.blockId, trackedNodeText(node));
   });
   return snapshot;
+}
+
+function paragraphTextSnapshot(editor) {
+  if (!editor || editor.isDestroyed) return new Map();
+  return paragraphTextSnapshotFromState(editor.state);
 }
 
 const DocumentEditor = forwardRef(function DocumentEditor({
@@ -1145,23 +1429,93 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   onSave,
   saveDisabled = false,
   saving = false,
+  initialScrollPosition = null,
+  onInitialScrollRestored,
 }, ref) {
   const normalizedStyle = useMemo(() => normalizeStyleSettings(styleSettings), [styleSettings]);
   const styleSignature = useMemo(() => JSON.stringify(normalizedStyle), [normalizedStyle]);
   const paperScrollRef = useRef(null);
   const pageRef = useRef(null);
+  const frameSyncRafRef = useRef(null);
+  const scrollGuardRafRef = useRef(null);
+  const scrollGuardTimerRef = useRef(null);
+  const scrollGuardRef = useRef(null);
   const paragraphTextSnapshotRef = useRef(new Map());
   const suppressEditedStatusResetRef = useRef(false);
+  const suppressProgrammaticPartitionRef = useRef(false);
   const blockPartitionTimerRef = useRef(null);
   const suppressProgrammaticUpdateRef = useRef(false);
   const callbacksRef = useRef({ onChange, onBlockStatusChange, onActiveBlockChange });
   callbacksRef.current = { onChange, onBlockStatusChange, onActiveBlockChange };
   const [pageCount, setPageCount] = useState(1);
-  const processingBlockId = useMemo(() => {
-    if (document?.current_processing_block_id) return document.current_processing_block_id;
-    const processingBlock = document?.blocks?.find((block) => block.status === 'processing');
-    return processingBlock?.id ?? null;
-  }, [document]);
+  const [orderedListMenu, setOrderedListMenu] = useState(null);
+
+  function captureEditorScrollPosition() {
+    return {
+      paper: {
+        top: paperScrollRef.current?.scrollTop ?? 0,
+        left: paperScrollRef.current?.scrollLeft ?? 0,
+      },
+      window: {
+        top: window.scrollY,
+        left: window.scrollX,
+      },
+    };
+  }
+
+  function restoreGuardedEditorScroll() {
+    const guard = scrollGuardRef.current;
+    if (!guard) return;
+    if (guard.expiresAt < performance.now()) {
+      scrollGuardRef.current = null;
+      return;
+    }
+    const paper = paperScrollRef.current;
+    const current = captureEditorScrollPosition();
+    if (paper && shouldRestoreEditorScroll(guard.position.paper, current.paper, {
+      preserveExact: guard.preserveExact,
+      viewportHeight: paper.clientHeight,
+      viewportWidth: paper.clientWidth,
+    })) {
+      paper.scrollTop = guard.position.paper.top;
+      paper.scrollLeft = guard.position.paper.left;
+    }
+    if (shouldRestoreEditorScroll(guard.position.window, current.window, {
+      preserveExact: guard.preserveExact,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth,
+    })) {
+      window.scrollTo(guard.position.window.left, guard.position.window.top);
+    }
+  }
+
+  function scheduleGuardedEditorScrollRestore() {
+    if (scrollGuardRafRef.current) cancelAnimationFrame(scrollGuardRafRef.current);
+    if (scrollGuardTimerRef.current) clearTimeout(scrollGuardTimerRef.current);
+    restoreGuardedEditorScroll();
+    scrollGuardRafRef.current = requestAnimationFrame(() => {
+      restoreGuardedEditorScroll();
+      scrollGuardRafRef.current = requestAnimationFrame(() => {
+        scrollGuardRafRef.current = null;
+        restoreGuardedEditorScroll();
+      });
+    });
+    scrollGuardTimerRef.current = setTimeout(() => {
+      scrollGuardTimerRef.current = null;
+      restoreGuardedEditorScroll();
+      scrollGuardRef.current = null;
+    }, 160);
+  }
+
+  function scheduleBlockFrameSync(activeEditor) {
+    if (!activeEditor || activeEditor.isDestroyed || !pageRef.current) return;
+    scheduleAnimationFrameOnce(frameSyncRafRef, requestAnimationFrame, () => {
+      if (activeEditor.isDestroyed || !pageRef.current) return;
+      const info = selectedParagraphInfo(activeEditor);
+      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
+    });
+  }
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -1182,7 +1536,8 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       PageBreak,
       PaginationDecoration,
       BulletList.configure({ keepMarks: true }),
-      OrderedList.configure({ keepMarks: true }),
+      AcademicOrderedList.configure({ keepMarks: true }),
+      OrderedListNumbering,
       ListItem,
       Blockquote,
       TextStyle,
@@ -1199,10 +1554,40 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         class: 'document-editor-surface',
       },
     },
+    onBeforeTransaction({ editor: activeEditor, transaction, nextState }) {
+      const textChanged = trackedTextContentChanged(
+        paragraphTextSnapshotFromState(activeEditor.state),
+        paragraphTextSnapshotFromState(nextState),
+      );
+      const existingGuard = scrollGuardRef.current;
+      const now = performance.now();
+      const reuseExactGuard = Boolean(
+        existingGuard?.preserveExact && existingGuard.expiresAt >= now,
+      );
+      const preserveExact = Boolean(
+        transaction.getMeta(EDITOR_PRESERVE_SCROLL_META)
+        || transaction.getMeta(SKIP_BLOCK_PARTITION_META)
+        || transaction.getMeta('blockStateTransition')
+        || (transaction.docChanged && !textChanged),
+      );
+      scrollGuardRef.current = {
+        position: reuseExactGuard
+          ? existingGuard.position
+          : captureEditorScrollPosition(),
+        preserveExact: preserveExact || reuseExactGuard,
+        expiresAt: reuseExactGuard ? existingGuard.expiresAt : now + 240,
+      };
+    },
+    onTransaction() {
+      scheduleGuardedEditorScrollRestore();
+    },
     onUpdate({ editor: activeEditor, transaction }) {
+      const previousTextSnapshot = paragraphTextSnapshotRef.current;
+      const suppressProgrammaticPartition = suppressProgrammaticPartitionRef.current;
       if (suppressProgrammaticUpdateRef.current) {
         suppressProgrammaticUpdateRef.current = false;
         paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
+        suppressProgrammaticPartitionRef.current = false;
         return;
       }
       normalizeEditorBlockNodes(activeEditor, document?.id);
@@ -1222,12 +1607,32 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         activeEditor.storage.blockSelectionDecoration.active = true;
       }
       const info = selectedParagraphInfo(activeEditor);
-      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
+      scheduleBlockFrameSync(activeEditor);
       const snapshot = createEditorSnapshot(activeEditor);
+      const nextTextSnapshot = paragraphTextSnapshot(activeEditor);
+      const changedTextBlockIds = new Set([
+        ...Array.from(previousTextSnapshot.keys()).filter((
+          blockId,
+        ) => previousTextSnapshot.get(blockId) !== nextTextSnapshot.get(blockId)),
+        ...Array.from(nextTextSnapshot.keys()).filter((
+          blockId,
+          ) => previousTextSnapshot.get(blockId) !== nextTextSnapshot.get(blockId)),
+      ]);
+      const textContentChanged = trackedTextContentChanged(
+        previousTextSnapshot,
+        nextTextSnapshot,
+      );
+      const mutationKind = transaction.getMeta('workspaceMutationKind')
+        ?? (transaction.getMeta('blockStateTransition')
+          ? 'block-status'
+          : textContentChanged
+            ? 'text'
+            : 'formatting');
       callbacksRef.current.onChange?.({
         ...snapshot,
         contentJson: normalizedJson,
         activeBlock: info,
+        mutationKind,
       });
       callbacksRef.current.onActiveBlockChange?.(info);
       if (
@@ -1242,24 +1647,35 @@ const DocumentEditor = forwardRef(function DocumentEditor({
           ...snapshot,
         });
       }
-      paragraphTextSnapshotRef.current = paragraphTextSnapshot(activeEditor);
+      paragraphTextSnapshotRef.current = nextTextSnapshot;
 
       if (
         transaction.docChanged
+        && textContentChanged
+        && changedTextBlockIds.size > 0
         && !transaction.getMeta('editorBlockPartition')
         && !transaction.getMeta('editorBlockNormalization')
+        && !transaction.getMeta('editorStructuralSelection')
+        && !transaction.getMeta(SKIP_BLOCK_PARTITION_META)
+        && !suppressProgrammaticPartition
       ) {
-        const affectedBlockId = info.blockId;
+        const affectedBlockId = changedTextBlockIds.has(info.blockId)
+          ? info.blockId
+          : Array.from(changedTextBlockIds).find((blockId) => nextTextSnapshot.has(blockId));
         clearTimeout(blockPartitionTimerRef.current);
-        blockPartitionTimerRef.current = setTimeout(() => {
-          repartitionAffectedEditorBlock(activeEditor, document?.id, affectedBlockId);
-        }, 120);
+        if (affectedBlockId) {
+          blockPartitionTimerRef.current = setTimeout(() => {
+            blockPartitionTimerRef.current = null;
+            repartitionAffectedEditorBlock(activeEditor, document?.id, affectedBlockId);
+          }, 120);
+        }
       }
+      suppressProgrammaticPartitionRef.current = false;
     },
     onSelectionUpdate({ editor: activeEditor }) {
       activateSelectedEditorBlock(activeEditor);
       const info = selectedParagraphInfo(activeEditor);
-      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
+      scheduleBlockFrameSync(activeEditor);
       callbacksRef.current.onActiveBlockChange?.(info);
     },
   }, [document?.id]);
@@ -1267,9 +1683,38 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   useEffect(() => {
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
     const info = selectedParagraphInfo(editor);
-    syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
+    scheduleBlockFrameSync(editor);
     onActiveBlockChange?.(info);
   }, [editor, document?.id, onActiveBlockChange]);
+
+  useLayoutEffect(() => {
+    if (!initialScrollPosition || !paperScrollRef.current) return undefined;
+    let secondFrame = null;
+    const restore = () => {
+      if (paperScrollRef.current) {
+        paperScrollRef.current.scrollTop = Number(initialScrollPosition.top) || 0;
+        paperScrollRef.current.scrollLeft = Number(initialScrollPosition.left) || 0;
+      }
+      window.scrollTo(
+        Number(initialScrollPosition.windowX) || 0,
+        Number(initialScrollPosition.windowY) || 0,
+      );
+    };
+    restore();
+    const firstFrame = requestAnimationFrame(() => {
+      restore();
+      secondFrame = requestAnimationFrame(restore);
+    });
+    const timer = setTimeout(() => {
+      restore();
+      onInitialScrollRestored?.();
+    }, 180);
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) cancelAnimationFrame(secondFrame);
+      clearTimeout(timer);
+    };
+  }, [editor, document?.id, initialScrollPosition]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
@@ -1285,15 +1730,20 @@ const DocumentEditor = forwardRef(function DocumentEditor({
 
   useEffect(() => () => {
     clearTimeout(blockPartitionTimerRef.current);
+    clearTimeout(scrollGuardTimerRef.current);
+    cancelScheduledAnimationFrame(frameSyncRafRef, cancelAnimationFrame);
+    if (scrollGuardRafRef.current !== null) {
+      cancelAnimationFrame(scrollGuardRafRef.current);
+      scrollGuardRafRef.current = null;
+    }
+    scrollGuardTimerRef.current = null;
+    scrollGuardRef.current = null;
   }, [document?.id]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed || !pageRef.current) return undefined;
 
-    const refreshFrame = () => {
-      const info = selectedParagraphInfo(editor);
-      syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
-    };
+    const refreshFrame = () => scheduleBlockFrameSync(editor);
     const observer = new ResizeObserver(refreshFrame);
     observer.observe(editor.view.dom);
     window.addEventListener('resize', refreshFrame);
@@ -1326,7 +1776,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         .setMeta('addToHistory', false));
       activateSelectedEditorBlock(editor);
       const info = selectedParagraphInfo(editor);
-      syncSelectedBlockFrame(editor, info.blockId, pageRef.current);
+      scheduleBlockFrameSync(editor);
       onActiveBlockChange?.(info);
     };
 
@@ -1334,6 +1784,44 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     eventRoot.addEventListener('click', handleEditorBlockClick);
     return () => eventRoot.removeEventListener('click', handleEditorBlockClick);
   }, [editor, onActiveBlockChange, onBlockStatusChange]);
+
+  useEffect(() => {
+    if (!editor || editor.isDestroyed) return undefined;
+    const eventRoot = pageRef.current ?? editor.view.dom;
+
+    const closeMenu = () => setOrderedListMenu(null);
+    const openOrderedListMenu = (event, listElement) => {
+      if (!listElement || !editor.view.dom.contains(listElement)) return;
+      const listPos = orderedListPositionForElement(editor, listElement);
+      if (listPos == null) return;
+      event.preventDefault();
+      setOrderedListMenu({
+        left: Math.min(event.clientX, window.innerWidth - 190),
+        top: Math.min(event.clientY, window.innerHeight - 64),
+        listPos,
+      });
+    };
+    const handleOrderedListContextMenu = (event) => {
+      openOrderedListMenu(event, event.target.closest?.('ol'));
+    };
+    const handleOrderedListMarkerClick = (event) => {
+      if (event.button !== 0) return;
+      const listItem = event.target.closest?.('li');
+      if (!listItem || !isOrderedListMarkerClick(event, listItem)) return;
+      openOrderedListMenu(event, listItem.closest('ol'));
+    };
+
+    eventRoot.addEventListener('contextmenu', handleOrderedListContextMenu);
+    eventRoot.addEventListener('click', handleOrderedListMarkerClick);
+    window.addEventListener('pointerdown', closeMenu);
+    window.addEventListener('scroll', closeMenu, true);
+    return () => {
+      eventRoot.removeEventListener('contextmenu', handleOrderedListContextMenu);
+      eventRoot.removeEventListener('click', handleOrderedListMarkerClick);
+      window.removeEventListener('pointerdown', closeMenu);
+      window.removeEventListener('scroll', closeMenu, true);
+    };
+  }, [editor]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
@@ -1366,37 +1854,15 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       });
 
       if (changed) {
-        tr.setMeta('addToHistory', false);
+        tr
+          .setMeta('addToHistory', false)
+          .setMeta(EDITOR_PRESERVE_SCROLL_META, true);
         suppressProgrammaticUpdateRef.current = true;
         dispatch?.(tr);
       }
       return true;
     });
   }, [editor, styleSignature, normalizedStyle]);
-
-  useEffect(() => {
-    if (!editor || editor.isDestroyed || !paperScrollRef.current) return undefined;
-
-    const timer = setTimeout(() => {
-      const selector = processingBlockId
-        ? `.doc-block[data-block-id="${CSS.escape(processingBlockId)}"]`
-        : '.doc-block--processing';
-      const target = paperScrollRef.current.querySelector(selector)
-        ?? paperScrollRef.current.querySelector('.doc-block--processing');
-
-      if (!target) return;
-
-      target.scrollIntoView({ block: 'center', inline: 'nearest' });
-      target.classList.add('doc-block--jump-target');
-      setTimeout(() => {
-        target.classList.remove('doc-block--jump-target');
-      }, 1800);
-    }, 120);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [editor, document?.id]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed || !pageRef.current) return undefined;
@@ -1485,11 +1951,20 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   } = {}) {
     if (!editor || editor.isDestroyed) return;
 
+    const paperScrollPosition = {
+      top: paperScrollRef.current?.scrollTop ?? 0,
+      left: paperScrollRef.current?.scrollLeft ?? 0,
+      windowX: window.scrollX,
+      windowY: window.scrollY,
+    };
     let updatedBlockId = selectedParagraphInfo(editor).blockId;
     let nextLocalProcessingId = null;
     let applied = false;
 
+    clearTimeout(blockPartitionTimerRef.current);
+    blockPartitionTimerRef.current = null;
     suppressEditedStatusResetRef.current = true;
+    suppressProgrammaticPartitionRef.current = true;
     editor.commands.command(({ state, tr, dispatch }) => {
       const paragraphs = collectParagraphs(state);
       const selected = selectedParagraphFromState(state);
@@ -1602,16 +2077,32 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         tr.setNodeMarkup(target.pos, undefined, { ...target.node.attrs, status });
       }
 
-      dispatch?.(tr.scrollIntoView());
+      tr.setMeta(SKIP_BLOCK_PARTITION_META, true);
+      tr.setMeta(
+        'workspaceMutationKind',
+        replacementText === null ? 'block-status' : 'text',
+      );
+      if (replacementText === null) tr.setMeta('addToHistory', false);
+      dispatch?.(tr);
       applied = true;
       return true;
     });
     if (!applied) {
       suppressEditedStatusResetRef.current = false;
+      suppressProgrammaticPartitionRef.current = false;
     }
 
     const snapshot = createEditorSnapshot(editor);
     paragraphTextSnapshotRef.current = paragraphTextSnapshot(editor);
+    const restoreCapturedScroll = () => {
+      if (paperScrollRef.current) {
+        paperScrollRef.current.scrollTop = paperScrollPosition.top;
+        paperScrollRef.current.scrollLeft = paperScrollPosition.left;
+      }
+      window.scrollTo(paperScrollPosition.windowX, paperScrollPosition.windowY);
+    };
+    restoreCapturedScroll();
+    window.requestAnimationFrame(restoreCapturedScroll);
     if (applied && updatedBlockId) {
       onBlockStatusChange?.({
         blockId: updatedBlockId,
@@ -1619,6 +2110,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         replacementText,
         changeSource,
         nextProcessingBlockId: nextLocalProcessingId,
+        paperScrollPosition,
         ...snapshot,
       });
     }
@@ -1627,6 +2119,20 @@ const DocumentEditor = forwardRef(function DocumentEditor({
 
   useImperativeHandle(ref, () => ({
     applyCurrentBlockStatus,
+    getScrollPosition: () => ({
+      top: paperScrollRef.current?.scrollTop ?? 0,
+      left: paperScrollRef.current?.scrollLeft ?? 0,
+      windowX: window.scrollX,
+      windowY: window.scrollY,
+    }),
+    restoreScrollPosition: (position) => {
+      if (!position) return;
+      if (paperScrollRef.current) {
+        paperScrollRef.current.scrollTop = Number(position.top) || 0;
+        paperScrollRef.current.scrollLeft = Number(position.left) || 0;
+      }
+      window.scrollTo(Number(position.windowX) || 0, Number(position.windowY) || 0);
+    },
     getSnapshot: () => createEditorSnapshot(editor),
     getFormatAudit: () => auditDocumentFormatting(editor?.getJSON(), normalizedStyle),
     normalizeFormatting: () => {
@@ -1654,7 +2160,8 @@ const DocumentEditor = forwardRef(function DocumentEditor({
             }));
           }
         });
-        dispatch?.(tr.scrollIntoView());
+        tr.setMeta(SKIP_BLOCK_PARTITION_META, true);
+        dispatch?.(tr);
         return true;
       });
       return createEditorSnapshot(editor);
@@ -1683,6 +2190,24 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     applyCurrentBlockStatus({ status, targetBlockId: blockId });
   }
 
+  function restartOrderedListNumbering() {
+    if (!orderedListMenu || !editor || editor.isDestroyed) return;
+    editor.commands.command(({ state, tr, dispatch }) => {
+      const list = state.doc.nodeAt(orderedListMenu.listPos);
+      if (list?.type.name !== 'orderedList') return false;
+      tr.setNodeMarkup(orderedListMenu.listPos, undefined, {
+        ...list.attrs,
+        start: 1,
+        restartNumbering: true,
+      });
+      tr.setMeta('orderedListRestart', true);
+      tr.setMeta(SKIP_BLOCK_PARTITION_META, true);
+      dispatch?.(tr);
+      return true;
+    });
+    setOrderedListMenu(null);
+  }
+
   return (
     <div className="document-editor">
       <EditorToolbar
@@ -1691,7 +2216,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         saveDisabled={saveDisabled}
         saving={saving}
       />
-      <div className="paper-scroll" ref={paperScrollRef}>
+      <div ref={paperScrollRef} className="paper-scroll">
         <A4EditorPage
           ref={pageRef}
           pageCount={pageCount}
@@ -1701,6 +2226,18 @@ const DocumentEditor = forwardRef(function DocumentEditor({
           <EditorContent editor={editor} />
         </A4EditorPage>
       </div>
+      {orderedListMenu ? (
+        <div
+          className="editor-context-menu"
+          role="menu"
+          style={{ left: orderedListMenu.left, top: orderedListMenu.top }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button type="button" role="menuitem" onClick={restartOrderedListNumbering}>
+            Renumber from 1
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 });

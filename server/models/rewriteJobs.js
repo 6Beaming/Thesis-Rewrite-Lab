@@ -2,19 +2,30 @@ import { randomUUID } from 'node:crypto';
 import { hashBlockText } from '../ai/blockAnalysis.js';
 import {
   BLOCK_REWRITE_PROMPT_VERSION,
+  createRewritePreferenceContext,
   REWRITE_TONES,
 } from '../ai/blockRewrites.js';
 import { query, withTransaction } from './db.js';
 import { findCachedBlockRewrites } from './rewrites.js';
 
 const ACTIVE_JOB_STATUSES = ['queued', 'running'];
+export const DEFAULT_REWRITE_PREWARM_LIMIT = 6;
+export const PREFERENCE_REWRITE_PREWARM_LIMIT = 3;
+
+export function rewritePrewarmLimit(preferenceContext) {
+  return Object.keys(preferenceContext?.effectivePreferences ?? {}).length
+    ? PREFERENCE_REWRITE_PREWARM_LIMIT
+    : DEFAULT_REWRITE_PREWARM_LIMIT;
+}
 
 export async function enqueueRewriteWindow({
   documentId,
   userId,
   blockId,
   model = process.env.OPENAI_REWRITE_MODEL || 'gpt-5.4-mini',
-  promptVersion = BLOCK_REWRITE_PROMPT_VERSION,
+  preferenceContext = createRewritePreferenceContext(),
+  promptVersion = preferenceContext.promptVersion ?? BLOCK_REWRITE_PROMPT_VERSION,
+  candidateLimit = rewritePrewarmLimit(preferenceContext),
 }) {
   const candidates = await query(
     `
@@ -37,9 +48,9 @@ export async function enqueueRewriteWindow({
         )
         and not (db.status = 'processing' and db.resume_status = 'skipped')
       order by db.block_index
-      limit 6
+      limit $4
     `,
-    [documentId, blockId, userId],
+    [documentId, blockId, userId, candidateLimit],
   );
 
   const jobs = [];
@@ -68,9 +79,14 @@ export async function enqueueRewriteWindow({
       `
         insert into block_rewrite_jobs (
           id, document_id, user_id, block_id, source_text_hash,
-          partition_generation, requested_tones, model, prompt_version
+          partition_generation, requested_tones, model, prompt_version,
+          effective_preferences, preference_warnings,
+          preference_schema_version, preference_compiler_version
         )
-        values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+        values (
+          $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9,
+          $10::jsonb, $11::jsonb, $12, $13
+        )
         on conflict (
           document_id, block_id, source_text_hash, partition_generation, model, prompt_version
         ) where status in ('queued', 'running')
@@ -87,6 +103,10 @@ export async function enqueueRewriteWindow({
         JSON.stringify(REWRITE_TONES),
         model,
         promptVersion,
+        JSON.stringify(preferenceContext.effectivePreferences ?? {}),
+        JSON.stringify(preferenceContext.warnings ?? []),
+        preferenceContext.schemaVersion ?? 1,
+        preferenceContext.compilerVersion ?? 'writing-preferences-v1',
       ],
     );
     if (inserted.rows[0]) {
@@ -124,7 +144,8 @@ export async function getRewriteIdentityState({
   blockId,
   sourceTextHash,
   model = process.env.OPENAI_REWRITE_MODEL || 'gpt-5.4-mini',
-  promptVersion = BLOCK_REWRITE_PROMPT_VERSION,
+  preferenceContext = createRewritePreferenceContext(),
+  promptVersion = preferenceContext.promptVersion ?? BLOCK_REWRITE_PROMPT_VERSION,
 }) {
   const owned = await query(
     `
@@ -167,6 +188,11 @@ export async function getRewriteIdentityState({
       partitionGeneration: Number(block.partition_generation),
       model,
       promptVersion,
+      effectivePreferences: preferenceContext.effectivePreferences ?? {},
+      preferenceSchemaVersion: preferenceContext.schemaVersion ?? 1,
+      preferenceCompilerVersion: preferenceContext.compilerVersion
+        ?? 'writing-preferences-v1',
+      preferenceWarnings: preferenceContext.warnings ?? [],
     },
     canonical: requestedHash === canonicalHash,
     rewrites,

@@ -59,7 +59,14 @@ export function createRewriteWorker({
         jobId: job.id,
         sourceTextHash: job.source_text_hash,
       });
-      const generated = await generateBlockRewriteSet({ context });
+      const preferenceContext = {
+        effectivePreferences: job.effective_preferences ?? {},
+        warnings: job.preference_warnings ?? [],
+        schemaVersion: Number(job.preference_schema_version) || 1,
+        compilerVersion: job.preference_compiler_version ?? 'writing-preferences-v1',
+        promptVersion: job.prompt_version,
+      };
+      const generated = await generateBlockRewriteSet({ context, preferenceContext });
       const freshContext = await getRewriteJobContext(job);
       if (!rewriteJobContextMatches(job, freshContext)) {
         const cancelled = await cancelRewriteJob(job.id);
@@ -75,6 +82,15 @@ export function createRewriteWorker({
         sourceTextHash: job.source_text_hash,
       });
       await Promise.all(generated.options.map((option) => saveBlockRewrite({
+        ...(generated.preferenceResults?.[option.tone]
+          ? {
+              compiledPreferenceSupplement: generated.preferenceResults[option.tone].supplement,
+              preferenceWarnings: [
+                ...(preferenceContext.warnings ?? []),
+                ...(generated.preferenceResults[option.tone].warnings ?? []),
+              ],
+            }
+          : {}),
         documentId: job.document_id,
         blockId: job.block_id,
         sourceTextHash: job.source_text_hash,
@@ -82,6 +98,9 @@ export function createRewriteWorker({
         usage: generated.usage,
         model: job.model,
         promptVersion: job.prompt_version,
+        effectivePreferences: preferenceContext.effectivePreferences,
+        preferenceSchemaVersion: preferenceContext.schemaVersion,
+        preferenceCompilerVersion: preferenceContext.compilerVersion,
       })));
       const completed = await completeRewriteJob(job.id);
       publish(publisher, context, completed);

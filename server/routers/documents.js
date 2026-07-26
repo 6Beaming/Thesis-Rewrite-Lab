@@ -34,7 +34,7 @@ import {
   normalizeAnalysisFilters,
 } from '../ai/blockAnalysis.js';
 import {
-  BLOCK_REWRITE_PROMPT_VERSION,
+  createRewritePreferenceContext,
   generateBlockRewrites,
   normalizeRewriteTone,
 } from '../ai/blockRewrites.js';
@@ -87,6 +87,15 @@ function invalidInput(message) {
 function mutationIdFromRequest(req) {
   const value = String(req.get('x-mutation-id') ?? '');
   return UUID_PATTERN_LOWERCASE.test(value) ? value : null;
+}
+
+function rewritePreferenceContextForUser(user, request = {}) {
+  return createRewritePreferenceContext({
+    savedPreferences: user.writing_preferences,
+    savedPreferencesEnabled: user.use_writing_preferences !== false,
+    useSavedPreferences: request.useSavedPreferences ?? true,
+    preferenceOverrides: request.preferenceOverrides,
+  });
 }
 
 function aiRoute(handler) {
@@ -503,12 +512,15 @@ router.get('/:id/blocks/:blockId/rewrites', aiRoute(async (req, res, ai) => {
   requireUuid(req.params.id, 'Document ID');
   requireUuid(req.params.blockId, 'Block ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const preferenceContext = rewritePreferenceContextForUser(user);
   ai.stage('cache-lookup', { sourceTextHash: req.query.sourceTextHash ?? null });
   const state = await getRewriteIdentityState({
     documentId: req.params.id,
     userId: user.id,
     blockId: req.params.blockId,
     sourceTextHash: String(req.query.sourceTextHash ?? ''),
+    preferenceContext,
+    promptVersion: preferenceContext.promptVersion,
   });
   if (!state) {
     res.status(404).json({ error: 'Document block not found' });
@@ -516,6 +528,8 @@ router.get('/:id/blocks/:blockId/rewrites', aiRoute(async (req, res, ai) => {
   }
   res.json({
     ...state,
+    effectivePreferences: preferenceContext.effectivePreferences,
+    preferenceWarnings: preferenceContext.warnings,
     rewrites: state.rewrites.map(formatBlockRewrite),
     jobs: state.jobs.map((job) => ({
       id: job.id,
@@ -539,6 +553,7 @@ router.post('/:id/blocks/:blockId/rewrites/prewarm', aiRoute(async (req, res, ai
   requireUuid(req.params.id, 'Document ID');
   requireUuid(req.params.blockId, 'Block ID');
   const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const preferenceContext = rewritePreferenceContextForUser(user);
   ai.stage('context-lookup');
   const context = await getOwnedBlockContext({
     documentId: req.params.id,
@@ -554,6 +569,8 @@ router.post('/:id/blocks/:blockId/rewrites/prewarm', aiRoute(async (req, res, ai
     documentId: req.params.id,
     userId: user.id,
     blockId: req.params.blockId,
+    preferenceContext,
+    promptVersion: preferenceContext.promptVersion,
   });
   res.status(202).json({ jobs, correlationId: ai.correlationId });
 }));
@@ -570,6 +587,7 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, aiRoute(async (req, 
   }
 
   const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const preferenceContext = rewritePreferenceContextForUser(user, req.body);
   ai.stage('context-lookup');
   const context = await getOwnedBlockContext({
     documentId: req.params.id,
@@ -588,11 +606,14 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, aiRoute(async (req, 
     documentId: context.document_id,
     blockId: context.id,
     sourceTextHash,
-    promptVersion: BLOCK_ANALYSIS_PROMPT_VERSION,
     partitionGeneration: Number(context.partition_generation) || 0,
     tone,
     model,
-    promptVersion: BLOCK_REWRITE_PROMPT_VERSION,
+    promptVersion: preferenceContext.promptVersion,
+    effectivePreferences: preferenceContext.effectivePreferences,
+    preferenceSchemaVersion: preferenceContext.schemaVersion,
+    preferenceCompilerVersion: preferenceContext.compilerVersion,
+    preferenceWarnings: preferenceContext.warnings,
   };
 
   if (!force) {
@@ -603,7 +624,7 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, aiRoute(async (req, 
       sourceTextHash,
       tones,
       model,
-      promptVersion: BLOCK_REWRITE_PROMPT_VERSION,
+      promptVersion: preferenceContext.promptVersion,
     });
     if (cached.length === tones.length) {
       const order = new Map(tones.map((item, index) => [item, index]));
@@ -612,6 +633,8 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, aiRoute(async (req, 
         rewrites: cached.map(formatBlockRewrite),
         cached: true,
         identity,
+        effectivePreferences: preferenceContext.effectivePreferences,
+        preferenceWarnings: preferenceContext.warnings,
         correlationId: ai.correlationId,
       });
       return;
@@ -619,7 +642,7 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, aiRoute(async (req, 
   }
 
   ai.stage('provider-request', { sourceTextHash });
-  const generated = await generateBlockRewrites({ context, tone });
+  const generated = await generateBlockRewrites({ context, tone, preferenceContext });
   ai.stage('context-recheck', { sourceTextHash });
   const freshContext = await getOwnedBlockContext({
     documentId: req.params.id,
@@ -637,20 +660,33 @@ router.post('/:id/blocks/:blockId/rewrites', aiRateLimiter, aiRoute(async (req, 
     });
   }
   ai.stage('persistence', { sourceTextHash });
-  const saved = await Promise.all(generated.options.map((option) => saveBlockRewrite({
-    documentId: context.document_id,
-    blockId: context.id,
-    sourceTextHash,
-    option,
-    usage: generated.usage,
-    model: generated.model,
-    promptVersion: BLOCK_REWRITE_PROMPT_VERSION,
-  })));
+  const saved = await Promise.all(generated.options.map((option) => {
+    const preferenceResult = generated.preferenceResults?.[option.tone];
+    return saveBlockRewrite({
+      documentId: context.document_id,
+      blockId: context.id,
+      sourceTextHash,
+      option,
+      usage: generated.usage,
+      model: generated.model,
+      promptVersion: preferenceContext.promptVersion,
+      effectivePreferences: preferenceContext.effectivePreferences,
+      compiledPreferenceSupplement: preferenceResult?.supplement ?? '',
+      preferenceWarnings: [
+        ...(preferenceContext.warnings ?? []),
+        ...(preferenceResult?.warnings ?? []),
+      ],
+      preferenceSchemaVersion: preferenceContext.schemaVersion,
+      preferenceCompilerVersion: preferenceContext.compilerVersion,
+    });
+  }));
 
   res.status(201).json({
     rewrites: saved.map(formatBlockRewrite),
     cached: false,
     identity,
+    effectivePreferences: preferenceContext.effectivePreferences,
+    preferenceWarnings: preferenceContext.warnings,
     correlationId: ai.correlationId,
   });
 }));

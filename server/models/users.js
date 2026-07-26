@@ -1,4 +1,8 @@
 import { query, withTransaction } from './db.js';
+import {
+  normalizeWritingPreferences,
+  WRITING_PREFERENCE_SCHEMA_VERSION,
+} from '../../shared/writingPreferences.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -61,7 +65,9 @@ export async function getOrCreateUserFromSession(sessionUser, runQuery = query) 
         email = excluded.email,
         display_name = coalesce(excluded.display_name, users.display_name),
         updated_at = now()
-      returning id, auth_user_id, email, display_name, profile_picture_mime, created_at, updated_at
+      returning id, auth_user_id, email, display_name, profile_picture_mime,
+                autosave_docs, use_writing_preferences, writing_preferences,
+                preference_schema_version, created_at, updated_at
     `,
     [authUserId, email, displayName]
   );
@@ -79,6 +85,28 @@ export async function getOrCreateUserFromSession(sessionUser, runQuery = query) 
   return user;
 }
 
+function profileFromUser(user, stats) {
+  return {
+    id: user.id,
+    auth_user_id: user.auth_user_id,
+    email: user.email,
+    display_name: user.display_name,
+    profile_picture_mime: user.profile_picture_mime,
+    hasProfilePicture: Boolean(user.profile_picture_mime),
+    autosaveDocs: Boolean(user.autosave_docs),
+    useWritingPreferences: user.use_writing_preferences !== false,
+    writingPreferences: normalizeWritingPreferences(
+      user.writing_preferences,
+      { strict: false },
+    ),
+    preferenceSchemaVersion: Number(user.preference_schema_version)
+      || WRITING_PREFERENCE_SCHEMA_VERSION,
+    created_at: user.created_at,
+    updated_at: user.updated_at,
+    stats: stats ?? null,
+  };
+}
+
 export async function getCurrentUserProfile(sessionUser, runQuery = query) {
   const user = await getOrCreateUserFromSession(sessionUser, runQuery);
   const stats = await runQuery(
@@ -92,11 +120,36 @@ export async function getCurrentUserProfile(sessionUser, runQuery = query) {
     [user.id]
   );
 
-  return {
-    ...user,
-    hasProfilePicture: Boolean(user.profile_picture_mime),
-    stats: stats.rows[0] ?? null,
-  };
+  return profileFromUser(user, stats.rows[0] ?? null);
+}
+
+export async function updateWritingPreferences({
+  sessionUser,
+  autosaveDocs,
+  writingPreferences,
+}, runQuery = query) {
+  if (typeof autosaveDocs !== 'boolean') {
+    throw Object.assign(new TypeError('autosaveDocs must be a boolean.'), { status: 400 });
+  }
+  const normalizedPreferences = normalizeWritingPreferences(writingPreferences);
+  const user = await getOrCreateUserFromSession(sessionUser, runQuery);
+  await runQuery(
+    `
+      update users
+      set autosave_docs = $2,
+          use_writing_preferences = true,
+          writing_preferences = $3::jsonb,
+          preference_schema_version = $4
+      where id = $1
+    `,
+    [
+      user.id,
+      autosaveDocs,
+      JSON.stringify(normalizedPreferences),
+      WRITING_PREFERENCE_SCHEMA_VERSION,
+    ],
+  );
+  return getCurrentUserProfile(sessionUser, runQuery);
 }
 
 export async function getUserStats(userId, runQuery = query) {
@@ -146,7 +199,17 @@ export async function recordUserActivity(sessionUser, timeZone, now = new Date()
       [user.id, next.count, next.startDate, today, JSON.stringify(streakDays), zone],
     );
     const stats = await getUserStats(user.id, runQuery);
-    return { ...user, hasProfilePicture: Boolean(user.profile_picture_mime), stats };
+    const refreshedUser = await runQuery(
+      `
+        select id, auth_user_id, email, display_name, profile_picture_mime,
+               autosave_docs, use_writing_preferences, writing_preferences,
+               preference_schema_version, created_at, updated_at
+        from users
+        where id = $1
+      `,
+      [user.id],
+    );
+    return profileFromUser(refreshedUser.rows[0] ?? user, stats);
   });
 }
 

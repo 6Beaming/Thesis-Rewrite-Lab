@@ -26,6 +26,8 @@ export function useOwlAnimator(stageRef, options = 'random') {
   const magicTargets = config.magicTargets ?? [];
   const magicClick = config.magicClick ?? true;
   const trackPointer = config.trackPointer ?? true;
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -42,6 +44,9 @@ export function useOwlAnimator(stageRef, options = 'random') {
     animator.enterStandby(standby);
     previousStandbyRef.current = standby;
     config.onReady?.(animator);
+    if (loadingRef.current) {
+      animator.startThinking();
+    }
 
     return () => {
       animatorRef.current = null;

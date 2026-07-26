@@ -1,3 +1,5 @@
+import { writingPreferenceCacheKey } from '../../shared/writingPreferences.js';
+
 export function rewriteIdentityMatchesVisible(responseIdentity, visibleIdentity, requestKey, visibleKey) {
   return Boolean(
     responseIdentity
@@ -11,10 +13,41 @@ export function rewriteIdentityMatchesVisible(responseIdentity, visibleIdentity,
 
 export function cacheRewriteResponse(cache, response) {
   const next = { ...cache };
+  const preferenceKey = writingPreferenceCacheKey(
+    response?.identity?.effectivePreferences,
+  );
   for (const option of response?.rewrites ?? []) {
-    next[`${response.identity?.sourceTextHash}|${option.tone}`] = option;
+    next[
+      `${response.identity?.blockId}|${response.identity?.sourceTextHash}|${preferenceKey}|${option.tone}`
+    ] = option;
   }
   return next;
+}
+
+export function clearBlockAiCaches({
+  rewriteCache,
+  blockAnalyses,
+  practiceCache,
+  documentId,
+  blockId,
+}) {
+  const rewritePrefix = `${blockId}|`;
+  const analysisPrefix = `${blockId}|`;
+  const practicePrefix = `${documentId}|${blockId}|`;
+  return {
+    rewriteCache: Object.fromEntries(Object.entries(rewriteCache ?? {}).filter(
+      ([key, value]) => !key.startsWith(rewritePrefix) && value?.blockId !== blockId,
+    )),
+    blockAnalyses: Object.fromEntries(Object.entries(blockAnalyses ?? {}).filter(
+      ([key]) => !key.startsWith(analysisPrefix),
+    )),
+    practiceCache: Object.fromEntries(Object.entries(practiceCache ?? {}).filter(
+      ([key, value]) => (
+        !key.startsWith(practicePrefix)
+        && value?.identity?.blockId !== blockId
+      ),
+    )),
+  };
 }
 
 export function activeBlockInfoFromDraft(
