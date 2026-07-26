@@ -216,6 +216,9 @@ jobs:
       - publish
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
     environment: production
     concurrency:
       group: production
@@ -254,6 +257,20 @@ jobs:
             rm -f /tmp/thesis-rewriter-deployment.tgz
           '
 
+      - name: Authenticate VM to GHCR for this deployment
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "${GHCR_TOKEN}" \
+            | ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                docker login ghcr.io \
+                  --username "${GHCR_USER}" \
+                  --password-stdin
+
       - name: Deploy immutable image pair
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
@@ -285,3 +302,13 @@ jobs:
           ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
             /opt/thesis-rewriter/deployment/scripts/rollback.sh
           exit 1
+
+      - name: Remove temporary VM registry credential
+        if: always()
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+        run: |
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            docker logout ghcr.io || true

@@ -42,8 +42,9 @@ Before running anything on the VM:
    `/opt/thesis-rewriter/.env.production` with mode `0600`.
 4. Generate a dedicated Ed25519 CI key pair. Install only its public half for
    the VM `deploy` user.
-5. If the GHCR images are private, log the VM `deploy` user into GHCR using a
-   token limited to `read:packages`.
+5. Private GHCR images require no persistent VM token. Each deployment job
+   authenticates the VM with its short-lived `GITHUB_TOKEN` for the image pull
+   and logs out afterward.
 6. Configure the GitHub `production` environment described below.
 
 ## Server bootstrap
