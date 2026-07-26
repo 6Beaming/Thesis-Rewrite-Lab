@@ -3034,12 +3034,38 @@
 }
 
 .home-api-notice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
   margin: 0 0 1rem;
   padding: 0.75rem 1rem;
   border: 1px solid rgba(120, 70, 20, 0.2);
   border-radius: 0.75rem;
   background: #fff4dc;
   color: #653d16;
+}
+
+.home-api-notice-close {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.home-api-notice-close:hover,
+.home-api-notice-close:focus-visible {
+  background: rgba(101, 61, 22, 0.1);
 }
 
 .version-list {

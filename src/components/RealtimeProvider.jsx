@@ -112,6 +112,10 @@ export function RealtimeProvider({ children }) {
     }));
   }, []);
 
+  const clearError = useCallback(() => {
+    setState((current) => ({ ...current, error: '' }));
+  }, []);
+
   const applyVersion = useCallback((documentId, version) => {
     if (!documentId || !version) return;
     setState((current) => ({
@@ -351,6 +355,7 @@ export function RealtimeProvider({ children }) {
     applyProfile,
     applyVersion,
     applySubscription,
+    clearError,
     refreshSubscription,
     refreshShared,
     refreshDocument,

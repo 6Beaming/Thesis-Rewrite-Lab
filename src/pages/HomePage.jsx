@@ -70,6 +70,7 @@ export default function HomePage({ onOpenWorkspace }) {
     state: realtimeState,
     applyDocument,
     applyProfile,
+    clearError,
     refreshShared,
   } = useRealtime();
   const [user, setUser] = useState(() => ({
@@ -91,6 +92,11 @@ export default function HomePage({ onOpenWorkspace }) {
     [query, realtimeState.documents, sort],
   );
   const homeError = actionError || realtimeState.error;
+
+  function dismissHomeError() {
+    setActionError('');
+    clearError();
+  }
 
   useEffect(() => {
     if (!authUser) return;
@@ -290,7 +296,19 @@ export default function HomePage({ onOpenWorkspace }) {
       actionsHidden={hideHeaderActions}
     >
       <div className="home-main-inner">
-        {homeError ? <p className="home-api-notice" role="alert">{homeError}</p> : null}
+        {homeError ? (
+          <div className="home-api-notice" role="alert">
+            <span>{homeError}</span>
+            <button
+              type="button"
+              className="home-api-notice-close"
+              onClick={dismissHomeError}
+              aria-label="Dismiss error message"
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
         {renderMainContent()}
       </div>
       {accountOpen ? (
