@@ -1744,11 +1744,6 @@ export default function WorkspacePage() {
   async function handleWorkspaceUploadFile(file) {
     if (!file) return;
 
-    if (/\.doc$/i.test(file.name)) {
-      setWorkspaceNotice('.doc uploads are not supported. Please upload .docx, .md, or .txt.');
-      return;
-    }
-
     try {
       const result = await uploadDocument(file, styleName, 'character', semanticProfile);
       applyDocument('document:created', result.document);

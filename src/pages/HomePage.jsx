@@ -142,11 +142,7 @@ export default function HomePage({ onOpenWorkspace }) {
       applyDocument('document:created', result.document);
       onOpenWorkspace?.(result.document);
     } catch (error) {
-      if (file.name.toLowerCase().endsWith('.doc')) {
-        setActionError('.doc uploads are not supported. Please upload .docx, .md, or .txt.');
-      } else {
-        setActionError(error.message || 'Upload failed.');
-      }
+      setActionError(error.message || 'Upload failed.');
     } finally {
       setBusy(false);
     }

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import path from 'path';
-import { upload } from '../middlewares/upload.js';
+import { documentUpload } from '../middlewares/upload.js';
 import { resolveDocumentUpload } from '../../src/services/documentResolver.js';
 import { segmentText } from '../../src/lib/blockSegmentation/index.js';
 import { rejectLanguageIssue } from '../../src/lib/nlp/issueRejections.js';
@@ -466,7 +466,7 @@ router.post('/', async (_req, res) => {
   res.status(201).json({ document: mutation.document });
 });
 
-router.post('/upload', upload.single('file'), async (req, res) => {
+router.post('/upload', documentUpload.single('file'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: 'File is required' });
     return;

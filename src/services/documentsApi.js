@@ -2,6 +2,20 @@ import { requestJson } from './request.js';
 
 export const MAX_DOCUMENT_UPLOAD_BYTES = Math.floor(2.5 * 1024 * 1024);
 export const DOCUMENT_UPLOAD_SIZE_MESSAGE = 'Files must be 2.5 MB or smaller.';
+export const DOCUMENT_UPLOAD_TYPE_MESSAGE =
+  'File type is not supported. Please upload a .txt, .md, or .docx file.';
+
+const DOCUMENT_UPLOAD_EXTENSIONS = ['.txt', '.md', '.docx'];
+
+export function validateDocumentUploadType(file) {
+  const lowerName = String(file?.name ?? '').toLowerCase();
+  const supported = DOCUMENT_UPLOAD_EXTENSIONS.some((extension) => lowerName.endsWith(extension));
+  if (!supported) {
+    const error = new Error(DOCUMENT_UPLOAD_TYPE_MESSAGE);
+    error.code = 'UNSUPPORTED_FILE_TYPE';
+    throw error;
+  }
+}
 
 export function validateDocumentUploadSize(file) {
   if (Number(file?.size ?? 0) > MAX_DOCUMENT_UPLOAD_BYTES) {
@@ -37,6 +51,7 @@ export function uploadDocument(
   partitionMode = 'character',
   semanticProfile = 'medium',
 ) {
+  validateDocumentUploadType(file);
   validateDocumentUploadSize(file);
   const formData = new FormData();
   formData.append('file', file);
