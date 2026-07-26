@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-export default function DocumentMenu({ onDelete }) {
+export default function DocumentMenu({ onDelete, onExport, exporting = false }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -35,7 +35,17 @@ export default function DocumentMenu({ onDelete }) {
       {open ? (
         <div className="document-menu-popover" onClick={(event) => event.stopPropagation()}>
           <button type="button" onClick={onDelete}>Delete</button>
-          <button type="button" disabled>Export</button>
+          <button
+            type="button"
+            disabled={exporting}
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpen(false);
+              onExport?.(event);
+            }}
+          >
+            {exporting ? 'Exporting...' : 'Export'}
+          </button>
         </div>
       ) : null}
     </div>

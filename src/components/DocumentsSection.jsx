@@ -18,6 +18,8 @@ export default function DocumentsSection({
   onSortChange,
   onOpenDocument,
   onDeleteDocument,
+  onExportDocument,
+  exportingDocumentId = null,
 }) {
   return (
     <section className="documents-section">
@@ -36,6 +38,8 @@ export default function DocumentsSection({
             document={document}
             onOpen={onOpenDocument}
             onDelete={onDeleteDocument}
+            onExport={onExportDocument}
+            exporting={exportingDocumentId === document.id}
           />
         ))}
       </div>

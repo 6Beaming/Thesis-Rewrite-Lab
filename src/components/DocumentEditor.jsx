@@ -1427,8 +1427,10 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   onActiveBlockChange,
   analysisHighlights = EMPTY_ANALYSIS_HIGHLIGHTS,
   onSave,
+  onExport,
   saveDisabled = false,
   saving = false,
+  exporting = false,
   initialScrollPosition = null,
   onInitialScrollRestored,
 }, ref) {
@@ -2213,8 +2215,10 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       <EditorToolbar
         editor={editor}
         onSave={onSave}
+        onExport={onExport}
         saveDisabled={saveDisabled}
         saving={saving}
+        exporting={exporting}
       />
       <div ref={paperScrollRef} className="paper-scroll">
         <A4EditorPage

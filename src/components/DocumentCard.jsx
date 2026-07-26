@@ -57,6 +57,8 @@ export default function DocumentCard({
   document,
   onOpen,
   onDelete,
+  onExport,
+  exporting = false,
   showMenu = true,
   selected = false,
 }) {
@@ -72,10 +74,17 @@ export default function DocumentCard({
       <span className="document-age">{formatAge(document.updated_at)}</span>
       <span className="document-completion-hover">{completedRate}% completed</span>
       {showMenu ? (
-        <DocumentMenu onDelete={(event) => {
-          event?.stopPropagation?.();
-          onDelete?.(document);
-        }} />
+        <DocumentMenu
+          exporting={exporting}
+          onDelete={(event) => {
+            event?.stopPropagation?.();
+            onDelete?.(document);
+          }}
+          onExport={(event) => {
+            event?.stopPropagation?.();
+            onExport?.(document);
+          }}
+        />
       ) : null}
 
       <div className="document-icon">

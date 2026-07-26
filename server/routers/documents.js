@@ -65,6 +65,11 @@ import {
   enqueueRewriteWindow,
   getRewriteIdentityState,
 } from '../models/rewriteJobs.js';
+import {
+  contentDispositionForTitle,
+  createDocumentExport,
+  DOCX_MIME,
+} from '../export/documentExport.js';
 
 const router = Router();
 const aiRateLimiter = rateLimit({
@@ -369,6 +374,27 @@ router.get('/:id/rate', async (req, res) => {
     return;
   }
   res.json(rate);
+});
+
+router.get('/:id/export', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const document = await getDocument(req.params.id, user.id);
+  if (!document || document.trashed) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+
+  const buffer = await createDocumentExport(document);
+  res
+    .status(200)
+    .set({
+      'Cache-Control': 'private, no-store',
+      'Content-Disposition': contentDispositionForTitle(document.title),
+      'Content-Length': String(buffer.length),
+      'Content-Type': DOCX_MIME,
+    })
+    .send(buffer);
 });
 
 router.patch('/:id', async (req, res) => {

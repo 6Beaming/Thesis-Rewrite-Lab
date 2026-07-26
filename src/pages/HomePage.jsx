@@ -6,7 +6,12 @@ import HomeShell from '../components/HomeShell.jsx';
 import ProgressBanner from '../components/ProgressBanner.jsx';
 import { useAuth } from '../components/AuthProvider.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
-import { createDocument, moveToTrash, uploadDocument } from '../services/documentsApi.js';
+import {
+  createDocument,
+  downloadDocument,
+  moveToTrash,
+  uploadDocument,
+} from '../services/documentsApi.js';
 import { updateWritingPreferences, uploadProfilePicture } from '../services/usersApi.js';
 import HomepageAccount from './homepageAccount.jsx';
 import HomepageCredits from './homepageCredits.jsx';
@@ -79,6 +84,7 @@ export default function HomePage({ onOpenWorkspace }) {
   const [accountOpen, setAccountOpen] = useState(false);
   const [historyDocument, setHistoryDocument] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [exportingDocumentId, setExportingDocumentId] = useState(null);
   const [notice, setNotice] = useState('');
   const documents = useMemo(
     () => visibleDocuments(realtimeState.documents, query, sort),
@@ -159,6 +165,18 @@ export default function HomePage({ onOpenWorkspace }) {
     }
   }
 
+  async function handleExport(document) {
+    setExportingDocumentId(document.id);
+    try {
+      const result = await downloadDocument(document.id);
+      setNotice(`${result.filename} exported.`);
+    } catch (error) {
+      setNotice(error.message || 'Could not export the document.');
+    } finally {
+      setExportingDocumentId(null);
+    }
+  }
+
   async function handleProfileUpload(file) {
     try {
       const nextUser = await uploadProfilePicture(file);
@@ -213,6 +231,8 @@ export default function HomePage({ onOpenWorkspace }) {
               onSortChange={setSort}
               onOpenDocument={handleOpenDocument}
               onDeleteDocument={handleDelete}
+              onExportDocument={handleExport}
+              exportingDocumentId={exportingDocumentId}
             />
           ) : (
             <EmptyState title="No documents yet">Create or upload a document to start practicing.</EmptyState>

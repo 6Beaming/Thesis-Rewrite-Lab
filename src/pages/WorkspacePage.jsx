@@ -44,6 +44,7 @@ import {
   getDocumentBlockRewrites,
   getDocument,
   listDocuments,
+  downloadDocument,
   requestDocumentBlockPracticeFeedback,
   prewarmDocumentBlockRewrites,
   saveDocument,
@@ -474,6 +475,7 @@ export default function WorkspacePage() {
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const [workspaceAiContextDirty, setWorkspaceAiContextDirty] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
+  const [workspaceExporting, setWorkspaceExporting] = useState(false);
   const [showUnsavedBackPrompt, setShowUnsavedBackPrompt] = useState(false);
   const [formatReview, setFormatReview] = useState(null);
   const [editorReloadKey, setEditorReloadKey] = useState(0);
@@ -1130,12 +1132,13 @@ export default function WorkspacePage() {
 
   async function saveWorkspaceDocument({
     leaveAfterSave = false,
+    exportAfterSave = false,
     formatDecision = null,
     automatic = false,
   } = {}) {
     const audit = documentEditorRef.current?.getFormatAudit?.();
     if (!automatic && !formatDecision && audit?.hasDifferences) {
-      setFormatReview({ audit, leaveAfterSave });
+      setFormatReview({ audit, leaveAfterSave, exportAfterSave });
       return false;
     }
 
@@ -1166,7 +1169,7 @@ export default function WorkspacePage() {
 
     setWorkspaceSaving(true);
     try {
-      await persistWorkspaceDocument(
+      const persistedDocument = await persistWorkspaceDocument(
         document,
         automatic ? 'Autosave' : 'Manual save',
         { createVersion: !automatic },
@@ -1174,6 +1177,9 @@ export default function WorkspacePage() {
       setWorkspaceNotice(automatic ? 'Autosaved' : 'Saved');
       setShowUnsavedBackPrompt(false);
       setFormatReview(null);
+      if (exportAfterSave && !await exportWorkspaceDocument(persistedDocument)) {
+        return false;
+      }
       if (leaveAfterSave) {
         setView('home');
         navigate('/');
@@ -1185,6 +1191,29 @@ export default function WorkspacePage() {
     } finally {
       setWorkspaceSaving(false);
     }
+  }
+
+  async function exportWorkspaceDocument(document = selectedDocument) {
+    if (!document?.id) return false;
+    setWorkspaceExporting(true);
+    try {
+      const result = await downloadDocument(document.id);
+      setWorkspaceNotice(`${result.filename} exported.`);
+      return true;
+    } catch (error) {
+      setWorkspaceNotice(error.message || 'Could not export the document.');
+      return false;
+    } finally {
+      setWorkspaceExporting(false);
+    }
+  }
+
+  async function handleWorkspaceExport() {
+    if (workspaceDirty) {
+      await saveWorkspaceDocument({ exportAfterSave: true });
+      return;
+    }
+    await exportWorkspaceDocument();
   }
 
   async function ensureWorkspaceSavedForAi(setError) {
@@ -2693,8 +2722,10 @@ export default function WorkspacePage() {
             onActiveBlockChange={handleActiveEditorBlockChange}
             analysisHighlights={analysisHighlights}
             onSave={() => saveWorkspaceDocument()}
+            onExport={handleWorkspaceExport}
             saveDisabled={!workspaceDirty}
             saving={workspaceSaving}
+            exporting={workspaceExporting}
             initialScrollPosition={pendingEditorScrollRestoreRef.current}
             onInitialScrollRestored={() => {
               pendingEditorScrollRestoreRef.current = null;
@@ -2815,6 +2846,7 @@ export default function WorkspacePage() {
                   type="button"
                   onClick={() => saveWorkspaceDocument({
                     leaveAfterSave: formatReview.leaveAfterSave,
+                    exportAfterSave: formatReview.exportAfterSave,
                     formatDecision: 'keep',
                   })}
                 >
@@ -2825,6 +2857,7 @@ export default function WorkspacePage() {
                   className="primary"
                   onClick={() => saveWorkspaceDocument({
                     leaveAfterSave: formatReview.leaveAfterSave,
+                    exportAfterSave: formatReview.exportAfterSave,
                     formatDecision: 'normalize',
                   })}
                 >
