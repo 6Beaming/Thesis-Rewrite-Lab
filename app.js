@@ -47,6 +47,9 @@ app.use(
   helmet({
     contentSecurityPolicy: {
       directives: {
+        // Auth.js starts with a same-origin form POST, then redirects that
+        // navigation to Google's authorization endpoint.
+        'form-action': ["'self'", 'https://accounts.google.com'],
         'img-src': [
           "'self'",
           'data:',
