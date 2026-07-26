@@ -15,5 +15,24 @@ services:
       timeout: 5s
       retries: 10
 
+  nlp:
+    build:
+      context: ./server/nlp_service
+    environment:
+      SENTENCE_TRANSFORMER_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      SENTENCE_TRANSFORMER_REVISION: c9745ed1d9f207416be6d2e6f8de32d1f16199bf
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 60s
+
 volumes:
   postgres_data:

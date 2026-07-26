@@ -7,15 +7,18 @@ import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
   hasUnfinishedBlocks,
+  insertSegmentedLineBreak,
   insertTextIntoSelectedSegment,
+  isolateSelectionInTransaction,
   splitSegmentedTextBlock,
+  trackedTextContentChanged,
 } from './editorBlockCommands.js';
 
 const BlockSegment = Node.create({
   name: 'blockSegment',
   group: 'inline',
   inline: true,
-  content: 'text*',
+  content: '(text | hardBreak)*',
   addAttributes() {
     return {
       blockId: { default: null },
@@ -128,6 +131,95 @@ test('segmented Enter command leaves normal paragraphs to the default keymap', (
   editor.destroy();
 });
 
+test('a normal Enter remains an inline line break inside the tracked block', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'blockSegment',
+        attrs: { blockId: 'block-1', status: 'processing' },
+        content: [{ type: 'text', text: 'Hello world' }],
+      }],
+    }],
+  });
+
+  editor.commands.setTextSelection(7);
+  assert.equal(insertSegmentedLineBreak(editor.state, editor.view.dispatch), true);
+  const content = editor.getJSON().content;
+  assert.equal(content.length, 1);
+  assert.deepEqual(content[0].content[0].content.map((node) => node.type), [
+    'text',
+    'hardBreak',
+    'text',
+  ]);
+  assert.equal(content[0].content[0].attrs.blockId, 'block-1');
+  editor.destroy();
+});
+
+test('a second consecutive Enter creates a hard structural boundary', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'blockSegment',
+        attrs: { blockId: 'block-1', status: 'processing' },
+        content: [{ type: 'text', text: 'Hello world' }],
+      }],
+    }],
+  });
+  editor.commands.setTextSelection(7);
+  insertSegmentedLineBreak(editor.state, editor.view.dispatch);
+  insertSegmentedLineBreak(editor.state, editor.view.dispatch);
+  const paragraphs = editor.getJSON().content;
+  assert.equal(paragraphs.length, 2);
+  assert.equal(paragraphs[0].content[0].attrs.blockId, 'block-1');
+  assert.notEqual(paragraphs[1].content[0].attrs.blockId, 'block-1');
+  assert.equal(paragraphs[1].content[0].attrs.status, 'processing');
+  assert.equal(paragraphs[0].content[0].content[0].text, 'Hello');
+  assert.equal(paragraphs[1].content[0].content[0].text, ' world');
+  editor.destroy();
+});
+
+test('a partial selection is isolated before applying a list transform', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'blockSegment',
+        attrs: { blockId: 'block-1', status: 'processing' },
+        content: [{ type: 'text', text: 'Hello world' }],
+      }],
+    }],
+  });
+
+  editor.commands.setTextSelection({ from: 4, to: 8 });
+  const applied = editor.chain()
+    .command(({ state, tr }) => {
+      assert.equal(isolateSelectionInTransaction(state, tr), true);
+      return true;
+    })
+    .toggleBulletList()
+    .run();
+
+  assert.equal(applied, true);
+  const content = editor.getJSON().content;
+  assert.deepEqual(content.map((node) => node.type), [
+    'paragraph',
+    'bulletList',
+    'paragraph',
+  ]);
+  assert.equal(content[0].content[0].content[0].text, 'He');
+  assert.equal(
+    content[1].content[0].content[0].content[0].content[0].text,
+    'llo ',
+  );
+  assert.equal(content[2].content[0].content[0].text, 'world');
+  editor.destroy();
+});
+
 test('converts legacy paragraph and heading blocks into block segments', () => {
   const normalized = convertLegacyTrackedBlocks({
     type: 'doc',
@@ -207,4 +299,26 @@ test('completed documents have no unfinished block to select', () => {
 
   assert.equal(hasUnfinishedBlocks(blocks), false);
   assert.equal(chooseNextUnfinishedBlock(blocks, 'block-2'), null);
+});
+
+test('partition eligibility ignores formatting and block-boundary identity changes', () => {
+  const before = new Map([
+    ['block-1', 'A complete sentence.'],
+    ['block-2', ' Another sentence.'],
+  ]);
+  const formattingOnly = new Map([
+    ['block-1', 'A complete sentence.'],
+    ['block-2', ' Another sentence.'],
+  ]);
+  const reassignedBoundaries = new Map([
+    ['replacement-block', 'A complete sentence. Another sentence.'],
+  ]);
+  const textEdit = new Map([
+    ['block-1', 'A complete revised sentence.'],
+    ['block-2', ' Another sentence.'],
+  ]);
+
+  assert.equal(trackedTextContentChanged(before, formattingOnly), false);
+  assert.equal(trackedTextContentChanged(before, reassignedBoundaries), false);
+  assert.equal(trackedTextContentChanged(before, textEdit), true);
 });

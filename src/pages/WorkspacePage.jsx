@@ -10,26 +10,75 @@ import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
 import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
 import OwlContainer from '../components/OwlContainer.jsx';
+import AnalyzingFlipCard from '../components/AnalyzingFlipCard.jsx';
+import NlpAnalysisPanel from '../components/NlpAnalysisPanel.jsx';
+import SemanticProfileControl from '../components/SemanticProfileControl.jsx';
+import CitationReviewPanel from '../components/CitationReviewPanel.jsx';
 import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
 } from '../lib/editorBlockCommands.js';
+import { countCharacters } from '../lib/blockSegmentation/index.js';
+import { createDocumentMutationCoordinator } from '../lib/documentMutationCoordinator.js';
+import {
+  aiSavePolicy,
+  shouldScheduleWorkspaceAutosave,
+  workspaceLeavePolicy,
+  WORKSPACE_AUTOSAVE_DELAY_MS,
+} from '../lib/workspaceSavePolicy.js';
+import {
+  activeBlockInfoFromDraft,
+  clearBlockAiCaches,
+  cachePracticeResponse,
+  cacheRewriteResponse,
+  hashAiSourceText,
+  rewriteIdentityMatchesVisible,
+} from '../lib/aiResultIdentity.js';
+import {
+  normalizeBlockStatus,
+  normalizeChangeSource,
+  normalizeResumeStatus,
+} from '../lib/blockState.js';
 import { getBlackboardCssVars, getMobileContainerCssVars } from './libraries/animations/containerLayout.js';
 import { useFloatingWindow } from './libraries/useFloatingWindow.js';
 import {
   acceptDocumentBlockRewrite,
   analyzeDocumentBlock,
   generateDocumentBlockRewrites,
+  getDocumentBlockRewrites,
   getDocument,
   listDocuments,
   requestDocumentBlockPracticeFeedback,
+  prewarmDocumentBlockRewrites,
+  repartitionDocument,
+  getDocumentNlpJob,
   saveDocument,
   uploadDocument,
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
+import { writingPreferenceCacheKey } from '../shared/writingPreferences.js';
+import {
+  checkDocumentBlockNlp,
+  getNlpFeatures,
+  rejectDocumentBlockLanguageIssue,
+} from '../services/nlpApi.js';
+import { convertDocumentCitationStyle } from '../services/citationsApi.js';
+import {
+  createBlockNlpRequestIdentity,
+  nlpResponseMatchesIdentity,
+} from '../lib/nlp/nlpRequestIdentity.js';
+import { normalizeBlockNlpSnapshot } from '../lib/nlp/blockNlpSnapshot.js';
+import {
+  applyLanguageIssueRejections,
+  rejectLanguageIssue,
+} from '../lib/nlp/issueRejections.js';
+import {
+  rewriteCardShowsProcessing,
+  shouldAnimateWorkspaceOwl,
+} from '../lib/rewriteProcessingState.js';
 
-const REGEN_COOLDOWN_MS = 10000;
 const PRACTICE_MAX_CHARS = 4000;
+export const WORKSPACE_AI_MODES = Object.freeze(['analyzing', 'practicing', 'rewriting']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 const ANALYSIS_FILTER_LABELS = {
   clarity: 'Clear and understandable',
@@ -77,6 +126,7 @@ function createRewriteCards() {
     warnings: [],
     meaningPreserved: true,
     error: '',
+    state: 'idle',
     applyWithExplanation: false,
   }));
 }
@@ -91,6 +141,7 @@ function resetRewriteCard(card) {
     warnings: [],
     meaningPreserved: true,
     error: '',
+    state: 'idle',
     applyWithExplanation: false,
   };
 }
@@ -118,6 +169,7 @@ function UploadDocIcon() {
 function textFromNode(node) {
   if (!node) return '';
   if (node.type === 'text') return node.text ?? '';
+  if (node.type === 'hardBreak') return '\n';
   if (!Array.isArray(node.content)) return '';
   return node.content.map(textFromNode).join('');
 }
@@ -157,15 +209,39 @@ function mapEditableBlocks(node, mapBlock) {
 
 function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
   const text = block.text ?? block.text_content ?? '';
-  const status = BLOCK_STATUSES.has(block.status ?? block.attrs?.status)
-    ? (block.status ?? block.attrs?.status)
-    : 'unprocessed';
+  const status = normalizeBlockStatus(block.status ?? block.attrs?.status);
   const id = block.id ?? block.blockId ?? block.attrs?.blockId ?? `${documentId}-block-${index + 1}`;
+  const length = countCharacters(text);
+  const storedAttrs = block.attrs ?? block.tiptap_node?.attrs ?? {};
   const attrs = blockAttrs(
     id,
     status,
-    text.length,
-    block.attrs ?? block.tiptap_node?.attrs ?? {},
+    length,
+    {
+      ...storedAttrs,
+      resumeStatus: block.resume_status ?? storedAttrs.resumeStatus ?? null,
+      processingBaselineText: block.processing_baseline_text
+        ?? storedAttrs.processingBaselineText
+        ?? null,
+      changeSource: block.change_source ?? storedAttrs.changeSource ?? 'none',
+      partitionGeneration: block.partition_generation
+        ?? storedAttrs.partitionGeneration
+        ?? 0,
+      formatOverrides: block.format_overrides ?? storedAttrs.formatOverrides ?? [],
+      nlpStatus: block.nlp_status ?? storedAttrs.nlpStatus ?? 'unknown',
+      nlpReasonCodes: block.nlp_reason_codes ?? storedAttrs.nlpReasonCodes ?? [],
+      nlpAnalysis: block.nlp_analysis ?? storedAttrs.nlpAnalysis ?? {},
+      nlpTextHash: block.nlp_text_hash ?? storedAttrs.nlpTextHash ?? null,
+      nlpPipelineVersion: block.nlp_pipeline_version
+        ?? storedAttrs.nlpPipelineVersion
+        ?? null,
+      nlpSnapshotFingerprint: block.nlp_snapshot_fingerprint
+        ?? storedAttrs.nlpSnapshotFingerprint
+        ?? null,
+      semanticCoherence: block.semantic_coherence ?? storedAttrs.semanticCoherence ?? null,
+      semanticAnchor: block.semantic_anchor ?? storedAttrs.semanticAnchor ?? null,
+      nlpCheckedAt: block.nlp_checked_at ?? storedAttrs.nlpCheckedAt ?? null,
+    },
     styleSettings
   );
   const storedNode = block.tiptap_node ?? null;
@@ -185,8 +261,22 @@ function normalizeRuntimeBlock(documentId, block, index, styleSettings = {}) {
     text_content: text,
     status,
     isEmpty: typeof block.isEmpty === 'boolean' ? block.isEmpty : !text.trim(),
-    length: text.length,
-    char_length: text.length,
+    length,
+    char_length: length,
+    resume_status: attrs.resumeStatus,
+    processing_baseline_text: attrs.processingBaselineText,
+    change_source: attrs.changeSource,
+    partition_generation: attrs.partitionGeneration,
+    format_overrides: attrs.formatOverrides,
+    nlp_status: attrs.nlpStatus,
+    nlp_reason_codes: attrs.nlpReasonCodes,
+    nlp_analysis: attrs.nlpAnalysis,
+    nlp_text_hash: attrs.nlpTextHash,
+    nlp_pipeline_version: attrs.nlpPipelineVersion,
+    nlp_snapshot_fingerprint: attrs.nlpSnapshotFingerprint,
+    semantic_coherence: attrs.semanticCoherence,
+    semantic_anchor: attrs.semanticAnchor,
+    nlp_checked_at: attrs.nlpCheckedAt,
     attrs,
     tiptap_node: {
       ...(storedNode?.type === 'blockSegment' ? storedNode : {}),
@@ -208,7 +298,8 @@ function extractRuntimeBlocksFromContent(document, contentJson, styleSettings = 
       const text = textFromNode(node);
       const id = node.attrs?.blockId ?? `${document.id}-block-${entries.length + 1}`;
       const status = BLOCK_STATUSES.has(node.attrs?.status) ? node.attrs.status : 'unprocessed';
-      const attrs = blockAttrs(id, status, text.length, node.attrs ?? {}, styleSettings);
+      const length = countCharacters(text);
+      const attrs = blockAttrs(id, status, length, node.attrs ?? {}, styleSettings);
       entries.push({
         id,
         blockId: id,
@@ -220,8 +311,17 @@ function extractRuntimeBlocksFromContent(document, contentJson, styleSettings = 
         text_content: text,
         status,
         isEmpty: !text.trim(),
-        length: text.length,
-        char_length: text.length,
+        length,
+        char_length: length,
+        nlp_status: attrs.nlpStatus,
+        nlp_reason_codes: attrs.nlpReasonCodes,
+        nlp_analysis: attrs.nlpAnalysis,
+        nlp_text_hash: attrs.nlpTextHash,
+        nlp_pipeline_version: attrs.nlpPipelineVersion,
+        nlp_snapshot_fingerprint: attrs.nlpSnapshotFingerprint,
+        semantic_coherence: attrs.semanticCoherence,
+        semantic_anchor: attrs.semanticAnchor,
+        nlp_checked_at: attrs.nlpCheckedAt,
         attrs,
         tiptap_node: {
           ...node,
@@ -251,29 +351,50 @@ function normalizeWorkspaceDraft(document, contentJson, blocks, styleSettings = 
     ? preferredProcessingBlockId
     : eligibleBlocks.find((block) => block.status === 'processing')?.id ?? null;
 
-  if (!processingBlockId) {
-    processingBlockId = eligibleBlocks.find((block) => block.status === 'unprocessed')?.id ?? null;
-  }
-
   const nextBlocks = normalizedBlocks.map((block, index) => {
     let status = block.status;
+    let resumeStatus = block.attrs.resumeStatus ?? null;
+    let processingBaselineText = block.attrs.processingBaselineText ?? null;
+    let changeSource = normalizeChangeSource(block.attrs.changeSource);
     if (block.isEmpty && status === 'processing') {
-      status = 'unprocessed';
+      status = normalizeResumeStatus(resumeStatus);
+      resumeStatus = null;
+      processingBaselineText = null;
+      changeSource = 'none';
     }
     if (!block.isEmpty) {
       if (processingBlockId && block.id === processingBlockId) {
+        if (status !== 'processing') {
+          resumeStatus = normalizeResumeStatus(status);
+          processingBaselineText = block.text;
+          changeSource = 'none';
+        }
         status = 'processing';
       } else if (status === 'processing') {
-        status = 'unprocessed';
+        const unchanged = block.text === String(processingBaselineText ?? block.text);
+        status = unchanged ? normalizeResumeStatus(resumeStatus) : 'unprocessed';
+        resumeStatus = null;
+        processingBaselineText = null;
+        changeSource = unchanged ? 'none' : 'manual';
       }
     }
 
-    const attrs = blockAttrs(block.id, status, block.text.length, block.attrs, styleSettings);
+    const attrs = blockAttrs(block.id, status, countCharacters(block.text), {
+      ...block.attrs,
+      resumeStatus,
+      processingBaselineText,
+      changeSource,
+    }, styleSettings);
     return {
       ...block,
       block_index: index,
       order: typeof block.order === 'number' ? block.order : index,
       status,
+      resume_status: attrs.resumeStatus,
+      processing_baseline_text: attrs.processingBaselineText,
+      change_source: attrs.changeSource,
+      partition_generation: attrs.partitionGeneration,
+      format_overrides: attrs.formatOverrides,
       attrs,
       tiptap_node: block.tiptap_node ? {
         ...block.tiptap_node,
@@ -318,6 +439,40 @@ function blockAttrs(blockId, status, length, existingAttrs = {}, styleSettings =
     ...existingAttrs,
     blockId,
     status,
+    resumeStatus: status === 'processing'
+      ? normalizeResumeStatus(existingAttrs.resumeStatus)
+      : null,
+    processingBaselineText: status === 'processing'
+      ? String(existingAttrs.processingBaselineText ?? '')
+      : null,
+    changeSource: normalizeChangeSource(existingAttrs.changeSource),
+    partitionGeneration: Math.max(0, Number(existingAttrs.partitionGeneration) || 0),
+    formatOverrides: existingAttrs.formatOverrides
+      && typeof existingAttrs.formatOverrides === 'object'
+      ? existingAttrs.formatOverrides
+      : [],
+    nlpStatus: ['unknown', 'pass', 'warning', 'blocked', 'skipped'].includes(existingAttrs.nlpStatus)
+      ? existingAttrs.nlpStatus
+      : 'unknown',
+    nlpReasonCodes: Array.isArray(existingAttrs.nlpReasonCodes)
+      ? existingAttrs.nlpReasonCodes
+      : [],
+    nlpAnalysis: existingAttrs.nlpAnalysis
+      && typeof existingAttrs.nlpAnalysis === 'object'
+      && !Array.isArray(existingAttrs.nlpAnalysis)
+      ? existingAttrs.nlpAnalysis
+      : {},
+    nlpTextHash: existingAttrs.nlpTextHash ?? null,
+    nlpPipelineVersion: existingAttrs.nlpPipelineVersion ?? null,
+    nlpSnapshotFingerprint: existingAttrs.nlpSnapshotFingerprint ?? null,
+    semanticCoherence: Number.isFinite(Number(existingAttrs.semanticCoherence))
+      ? Number(existingAttrs.semanticCoherence)
+      : null,
+    semanticAnchor: existingAttrs.semanticAnchor
+      && typeof existingAttrs.semanticAnchor === 'object'
+      ? existingAttrs.semanticAnchor
+      : null,
+    nlpCheckedAt: existingAttrs.nlpCheckedAt ?? null,
     length,
   };
 }
@@ -396,13 +551,18 @@ export default function WorkspacePage() {
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [workspaceNotice, setWorkspaceNotice] = useState('');
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
+  const [workspaceAiContextDirty, setWorkspaceAiContextDirty] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [showUnsavedBackPrompt, setShowUnsavedBackPrompt] = useState(false);
+  const [formatReview, setFormatReview] = useState(null);
+  const [templateSwitchReview, setTemplateSwitchReview] = useState(null);
+  const [templateSwitchBusy, setTemplateSwitchBusy] = useState(false);
+  const [templateSwitchError, setTemplateSwitchError] = useState('');
   const [editorReloadKey, setEditorReloadKey] = useState(0);
   const [workspaceDraft, setWorkspaceDraft] = useState(null);
   const [workspaceSidebarOpen, setWorkspaceSidebarOpen] = useState(true);
   const [workspaceMode, setWorkspaceMode] = useState('analyzing');
-  const [workspaceOwlLoading, setWorkspaceOwlLoading] = useState(false);
+  const [workspaceOwlRequestLoading, setWorkspaceOwlLoading] = useState(false);
   const [workspaceOwlError, setWorkspaceOwlError] = useState(false);
   const [workspaceOwlErrorKey, setWorkspaceOwlErrorKey] = useState(0);
   const [styleName, setStyleName] = useState('APA');
@@ -412,15 +572,16 @@ export default function WorkspacePage() {
   const [rewriteCards, setRewriteCards] = useState(createRewriteCards);
   const [rewriteCardsLocked, setRewriteCardsLocked] = useState(false);
   const [rewriteAllCompleted, setRewriteAllCompleted] = useState(false);
-  const [rewriteBusy, setRewriteBusy] = useState(false);
+  const [rewriteApplyBusy, setRewriteApplyBusy] = useState(false);
   const [rewriteError, setRewriteError] = useState('');
-  const [rewriteCooldownUntil, setRewriteCooldownUntil] = useState(0);
+  const [rewriteCache, setRewriteCache] = useState({});
   const [practiceInput, setPracticeInput] = useState('');
   const [practiceFeedback, setPracticeFeedback] = useState(null);
+  const [practiceCache, setPracticeCache] = useState({});
   const [practiceBusy, setPracticeBusy] = useState(false);
   const [practiceError, setPracticeError] = useState('');
   const [mobileOwlOpen, setMobileOwlOpen] = useState(false);
-  const [mobilePanelMode, setMobilePanelMode] = useState('rewriting');
+  const [mobilePanelMode, setMobilePanelMode] = useState('analyzing');
   const [mobileRewriteIndex, setMobileRewriteIndex] = useState(0);
   const [mobilePracticeIndex, setMobilePracticeIndex] = useState(0);
   const [mobileOptionsOpen, setMobileOptionsOpen] = useState(false);
@@ -437,18 +598,46 @@ export default function WorkspacePage() {
   const [blockAnalysisHighlights, setBlockAnalysisHighlights] = useState({});
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
+  const [visibleBlockNlp, setVisibleBlockNlp] = useState(null);
+  const [documentNlpSummary, setDocumentNlpSummary] = useState(null);
+  const [nlpCheckState, setNlpCheckState] = useState('idle');
+  const [nlpCheckError, setNlpCheckError] = useState('');
+  const [rejectingLanguageIssueKey, setRejectingLanguageIssueKey] = useState('');
+  const [analysisFace, setAnalysisFace] = useState('nlp');
+  const [semanticProfile, setSemanticProfile] = useState('medium');
+  const [nlpRepartitionBusy, setNlpRepartitionBusy] = useState(false);
+  const [nlpRepartitionStatus, setNlpRepartitionStatus] = useState('');
+  const [nlpFeatureFlags, setNlpFeatureFlags] = useState({
+    NLP_LIVE_BLOCK_CHECK_ENABLED: true,
+    NLP_REWRITE_GATE_ENABLED: true,
+    NLP_ANALYZING_FLIP_CARD_ENABLED: true,
+    NLP_SEMANTIC_PROFILE_ENABLED: true,
+    NLP_REPARTITION_ENABLED: true,
+    MCP_CITATION_V2_ENABLED: true,
+  });
   const workspaceOwlAnimatorRef = useRef(null);
   const mobileWorkspaceOwlAnimatorRef = useRef(null);
   const documentEditorRef = useRef(null);
+  const pendingEditorScrollRestoreRef = useRef(null);
+  const workspaceEditGenerationRef = useRef(0);
   const mobileDragEndedAtRef = useRef(0);
-  const rewriteRefreshTimerRef = useRef(null);
   const rewriteContextKeyRef = useRef('');
+  const rewriteCardsContextKeyRef = useRef('');
+  const rewriteVisibleIdentityRef = useRef(null);
   const practiceContextKeyRef = useRef('');
+  const aiBlockEpochRef = useRef(new Map());
   const wandHoverTimerRef = useRef(null);
+  const autosaveTimerRef = useRef(null);
+  const nlpCheckTimerRef = useRef(null);
+  const nlpAbortControllerRef = useRef(null);
+  const visibleNlpIdentityRef = useRef(null);
   const workspaceUploadInputRef = useRef(null);
   const mobileOptionsPanelRef = useRef(null);
   const mobileOptionsButtonRef = useRef(null);
-  const pendingDocumentMutationsRef = useRef(new Set());
+  const documentMutationCoordinatorRef = useRef(null);
+  if (!documentMutationCoordinatorRef.current) {
+    documentMutationCoordinatorRef.current = createDocumentMutationCoordinator();
+  }
   const localDocumentRevisionsRef = useRef(new Map());
   const blackboardStyle = getBlackboardCssVars();
   const {
@@ -470,11 +659,38 @@ export default function WorkspacePage() {
       .map(([filter]) => filter)
       .sort()
   ), [analysisFilters]);
+  const activeSourceBlock = activeEditorBlock?.blockId
+    ? workspaceDraft?.blocks?.find((block) => block.id === activeEditorBlock.blockId) ?? null
+    : null;
+  const activeSourceText = activeEditorBlock?.text
+    ?? activeSourceBlock?.text
+    ?? activeSourceBlock?.text_content
+    ?? '';
+  const activeAnalysisNlpFingerprint = visibleBlockNlp?.identity?.nlpSnapshotFingerprint
+    ?? visibleBlockNlp?.nlp?.nlpSnapshotFingerprint
+    ?? activeSourceBlock?.nlp_snapshot_fingerprint
+    ?? activeSourceBlock?.attrs?.nlpSnapshotFingerprint
+    ?? 'none';
   const currentAnalysisKey = useMemo(() => (
     activeEditorBlock?.blockId
-      ? `${activeEditorBlock.blockId}|${activeEditorBlock.text ?? ''}|${selectedAnalysisFilters.join(',')}`
+      ? [
+        activeEditorBlock.blockId,
+        activeSourceText,
+        Number(activeEditorBlock.partitionGeneration
+          ?? activeSourceBlock?.partition_generation
+          ?? 0),
+        activeAnalysisNlpFingerprint,
+        selectedAnalysisFilters.join(','),
+      ].join('|')
       : ''
-  ), [activeEditorBlock?.blockId, activeEditorBlock?.text, selectedAnalysisFilters]);
+  ), [
+    activeAnalysisNlpFingerprint,
+    activeEditorBlock?.blockId,
+    activeEditorBlock?.partitionGeneration,
+    activeSourceBlock?.partition_generation,
+    activeSourceText,
+    selectedAnalysisFilters,
+  ]);
   const currentBlockAnalysis = currentAnalysisKey ? blockAnalyses[currentAnalysisKey] ?? null : null;
   const analysisHighlights = useMemo(
     () => Object.values(blockAnalysisHighlights),
@@ -485,24 +701,363 @@ export default function WorkspacePage() {
     ?? null;
   const currentRewriteBlock = workspaceDraft?.blocks?.find((block) => block.id === currentRewriteBlockId)
     ?? null;
+  const currentWritingPreferenceKey = writingPreferenceCacheKey(
+    realtimeState.profile?.writingPreferences,
+    realtimeState.profile?.useWritingPreferences !== false,
+  );
   const currentRewriteKey = selectedDocument?.id && currentRewriteBlockId
-    ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}`
+    ? `${selectedDocument.id}|${currentRewriteBlockId}|${currentRewriteBlock?.text ?? ''}|${currentWritingPreferenceKey}|${activeAnalysisNlpFingerprint}`
     : '';
   rewriteContextKeyRef.current = currentRewriteKey;
+  rewriteVisibleIdentityRef.current = selectedDocument?.id && currentRewriteBlockId
+    ? {
+      documentId: selectedDocument.id,
+      blockId: currentRewriteBlockId,
+      partitionGeneration: Number(currentRewriteBlock?.partition_generation
+        ?? currentRewriteBlock?.attrs?.partitionGeneration
+        ?? 0),
+      localKey: currentRewriteKey,
+      nlpSnapshotFingerprint: activeAnalysisNlpFingerprint,
+    }
+    : null;
   const currentPracticeKey = selectedDocument?.id && activeEditorBlock?.blockId
-    ? `${selectedDocument.id}|${activeEditorBlock.blockId}|${activeEditorBlock.text ?? ''}`
+    ? `${selectedDocument.id}|${activeEditorBlock.blockId}|${activeSourceText}`
     : '';
   const currentPracticeRequestKey = `${currentPracticeKey}|${practiceInput}`;
   practiceContextKeyRef.current = currentPracticeRequestKey;
+  const autosaveDocs = Boolean(realtimeState.profile?.autosaveDocs);
+  const activeBlockNlpSnapshot = useMemo(
+    () => normalizeBlockNlpSnapshot(
+      visibleBlockNlp?.nlp ?? currentRewriteBlock ?? activeSourceBlock ?? {},
+    ),
+    [activeSourceBlock, currentRewriteBlock, visibleBlockNlp],
+  );
+  const activeBlockNlpIssues = useMemo(
+    () => activeBlockNlpSnapshot.issues.map((issue) => ({
+      ...issue,
+      blockId: activeEditorBlock?.blockId,
+    })),
+    [activeBlockNlpSnapshot.issues, activeEditorBlock?.blockId],
+  );
+  const rewriteNlpEligible = (
+    !nlpFeatureFlags.NLP_REWRITE_GATE_ENABLED
+    || activeBlockNlpSnapshot.rewriteEligible
+  );
+  const workspaceOwlLoading = shouldAnimateWorkspaceOwl({
+    requestLoading: workspaceOwlRequestLoading,
+    workspaceMode,
+    mobileOwlOpen,
+    mobilePanelMode,
+    rewriteAllCompleted,
+    rewriteNlpEligible,
+    rewriteCards,
+    currentRewriteBlock,
+  });
+
+  useEffect(() => {
+    let alive = true;
+    getNlpFeatures()
+      .then((response) => {
+        if (alive && response?.featureFlags) setNlpFeatureFlags(response.featureFlags);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    clearTimeout(nlpCheckTimerRef.current);
+    nlpAbortControllerRef.current?.abort();
+    nlpAbortControllerRef.current = null;
+    visibleNlpIdentityRef.current = null;
+    setVisibleBlockNlp(null);
+    setNlpCheckError('');
+    if (
+      !selectedDocument?.id
+      || !activeEditorBlock?.blockId
+      || activeEditorBlock.status !== 'processing'
+      || !activeSourceText.trim()
+      || !nlpFeatureFlags.NLP_LIVE_BLOCK_CHECK_ENABLED
+    ) {
+      setNlpCheckState('idle');
+      return undefined;
+    }
+
+    let disposed = false;
+    setNlpCheckState('checking');
+    nlpCheckTimerRef.current = setTimeout(async () => {
+      try {
+        const identity = await createBlockNlpRequestIdentity({
+          documentId: selectedDocument.id,
+          blockId: activeEditorBlock.blockId,
+          text: activeSourceText,
+          partitionGeneration: activeEditorBlock.partitionGeneration
+            ?? currentRewriteBlock?.partition_generation
+            ?? 0,
+        });
+        if (disposed) return;
+        visibleNlpIdentityRef.current = identity;
+        const controller = new AbortController();
+        nlpAbortControllerRef.current = controller;
+        const response = await checkDocumentBlockNlp(
+          selectedDocument.id,
+          activeEditorBlock.blockId,
+          {
+            text: activeSourceText,
+            sourceTextHash: identity.sourceTextHash,
+            partitionGeneration: identity.partitionGeneration,
+            sourceType: activeSourceBlock?.attrs?.sourceType
+              ?? activeSourceBlock?.sourceType
+              ?? 'paragraph',
+            signal: controller.signal,
+          },
+        );
+        if (
+          disposed
+          || !nlpResponseMatchesIdentity(response, visibleNlpIdentityRef.current)
+        ) return;
+        const visibleResponse = {
+          ...response,
+          nlp: applyLanguageIssueRejections(
+            response.nlp,
+            normalizeBlockNlpSnapshot(
+              currentRewriteBlock ?? activeSourceBlock ?? {},
+            ).rejectedIssues,
+          ),
+        };
+        setVisibleBlockNlp(visibleResponse);
+        setDocumentNlpSummary(response.documentSummary ?? null);
+        setNlpCheckState(visibleResponse.nlp?.degraded ? 'degraded' : 'ready');
+        setNlpCheckError('');
+        documentEditorRef.current?.applyBlockNlpResult?.(
+          activeEditorBlock.blockId,
+          visibleResponse,
+        );
+      } catch (error) {
+        if (disposed || error?.name === 'AbortError') return;
+        setVisibleBlockNlp(null);
+        setNlpCheckState('unknown');
+        setNlpCheckError(error.message || 'Automatic language review is temporarily unavailable.');
+      }
+    }, 400);
+
+    return () => {
+      disposed = true;
+      clearTimeout(nlpCheckTimerRef.current);
+      nlpAbortControllerRef.current?.abort();
+    };
+  }, [
+    activeEditorBlock?.blockId,
+    activeEditorBlock?.partitionGeneration,
+    activeEditorBlock?.status,
+    activeSourceText,
+    activeSourceBlock?.attrs?.sourceType,
+    activeSourceBlock?.sourceType,
+    currentRewriteBlock?.partition_generation,
+    selectedDocument?.id,
+    nlpFeatureFlags.NLP_LIVE_BLOCK_CHECK_ENABLED,
+  ]);
+
+  async function rejectActiveLanguageIssue(issue, issueKey) {
+    if (!selectedDocument?.id || !activeEditorBlock?.blockId || !issue) return;
+    setRejectingLanguageIssueKey(issueKey);
+    setNlpCheckError('');
+    try {
+      let response;
+      if (visibleBlockNlp?.persisted === false) {
+        response = {
+          ...visibleBlockNlp,
+          nlp: rejectLanguageIssue(visibleBlockNlp.nlp, issue),
+        };
+      } else {
+        const sourceTextHash = activeBlockNlpSnapshot.textHash
+          ?? await hashAiSourceText(activeSourceText);
+        response = await rejectDocumentBlockLanguageIssue(
+          selectedDocument.id,
+          activeEditorBlock.blockId,
+          {
+            issue,
+            sourceTextHash,
+            partitionGeneration: Number(
+              activeEditorBlock.partitionGeneration
+              ?? currentRewriteBlock?.partition_generation
+              ?? 0
+            ),
+          },
+        );
+      }
+      setVisibleBlockNlp(response);
+      setDocumentNlpSummary(response.documentSummary ?? documentNlpSummary);
+      documentEditorRef.current?.applyBlockNlpResult?.(
+        activeEditorBlock.blockId,
+        response,
+      );
+    } catch (error) {
+      setNlpCheckError(error.message || 'The writing suggestion could not be rejected.');
+    } finally {
+      setRejectingLanguageIssueKey('');
+    }
+  }
 
   useEffect(() => {
     setAnalysisError('');
   }, [currentAnalysisKey]);
 
   useEffect(() => {
+    setAnalysisFace('nlp');
+  }, [activeEditorBlock?.blockId]);
+
+  useEffect(() => {
+    if (!workspaceDirty || !currentRewriteBlock?.text) return undefined;
+    let alive = true;
+    hashAiSourceText(currentRewriteBlock.text).then((sourceTextHash) => {
+      if (!alive) return;
+      rewriteCardsContextKeyRef.current = currentRewriteKey;
+      setRewriteCards((cards) => cards.map((card) => {
+        const option = rewriteCache[
+          `${currentRewriteBlockId}|${sourceTextHash}|${currentWritingPreferenceKey}|${activeAnalysisNlpFingerprint}|${card.tone}`
+        ];
+        if (!option) return resetRewriteCard(card);
+        return {
+          ...card,
+          rewriteId: option.id,
+          response: option.rewrittenText,
+          explanation: option.explanation,
+          changes: option.changes ?? [],
+          warnings: option.warnings ?? [],
+          meaningPreserved: option.meaningPreserved,
+          error: '',
+          state: 'cache-hit',
+        };
+      }));
+    }).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [
+    currentRewriteBlock?.text,
+    currentRewriteBlockId,
+    currentRewriteKey,
+    currentWritingPreferenceKey,
+    activeAnalysisNlpFingerprint,
+    rewriteCache,
+    workspaceDirty,
+  ]);
+
+  useEffect(() => {
+    let alive = true;
+    let refreshTimer = null;
     setRewriteError('');
-    setRewriteCards(createRewriteCards());
-  }, [currentRewriteKey]);
+    if (rewriteCardsContextKeyRef.current !== currentRewriteKey) {
+      rewriteCardsContextKeyRef.current = currentRewriteKey;
+      setRewriteCards(createRewriteCards());
+    }
+    if (!selectedDocument?.id || !currentRewriteBlockId || workspaceAiContextDirty) {
+      return () => {
+        alive = false;
+      };
+    }
+    setRewriteCards((cards) => cards.map((card) => (
+      card.response ? card : { ...card, state: 'queued', error: '' }
+    )));
+
+    const visibleAtStart = { ...rewriteVisibleIdentityRef.current };
+    const requestEpoch = getAiBlockEpoch(selectedDocument.id, currentRewriteBlockId);
+    const applyState = (response) => {
+      if (!alive) return false;
+      if (getAiBlockEpoch(selectedDocument.id, currentRewriteBlockId) !== requestEpoch) {
+        return false;
+      }
+      const visible = rewriteVisibleIdentityRef.current;
+      if (
+        !visible
+        || visible.localKey !== visibleAtStart.localKey
+        || response.identity?.documentId !== visible.documentId
+        || response.identity?.blockId !== visible.blockId
+        || Number(response.identity?.partitionGeneration) !== visible.partitionGeneration
+        || (response.identity?.nlpSnapshotFingerprint ?? 'none')
+          !== (visible.nlpSnapshotFingerprint ?? 'none')
+        || response.canonical === false
+      ) {
+        return false;
+      }
+
+      const activeJob = response.jobs?.find((job) => (
+        job.status === 'running' || job.status === 'queued'
+      ));
+      const failedJob = response.jobs?.find((job) => job.status === 'failed');
+      setRewriteCache((cache) => {
+        const next = { ...cache };
+        const preferenceKey = writingPreferenceCacheKey(
+          response.identity.effectivePreferences,
+        );
+        const nlpFingerprint = response.identity.nlpSnapshotFingerprint ?? 'none';
+        for (const rewrite of response.rewrites ?? []) {
+          next[
+            `${response.identity.blockId}|${response.identity.sourceTextHash}|${preferenceKey}|${nlpFingerprint}|${rewrite.tone}`
+          ] = rewrite;
+        }
+        return next;
+      });
+      setRewriteCards((cards) => cards.map((card) => {
+        const option = response.rewrites?.find((rewrite) => rewrite.tone === card.tone);
+        if (option) {
+          return {
+            ...card,
+            rewriteId: option.id,
+            response: option.rewrittenText,
+            explanation: option.explanation,
+            changes: option.changes ?? [],
+            warnings: option.warnings ?? [],
+            meaningPreserved: option.meaningPreserved,
+            error: '',
+            state: 'cache-hit',
+          };
+        }
+        return {
+          ...resetRewriteCard(card),
+          state: activeJob?.status ?? (failedJob ? 'failed' : 'idle'),
+          error: failedJob?.errorCode ? 'Automatic rewrite generation failed.' : '',
+        };
+      }));
+      rewriteCardsContextKeyRef.current = visible.localKey;
+      return Boolean(activeJob);
+    };
+
+    const refresh = async ({ enqueue = false } = {}) => {
+      try {
+        if (enqueue) {
+          await prewarmDocumentBlockRewrites(selectedDocument.id, currentRewriteBlockId);
+        }
+        const response = await getDocumentBlockRewrites(
+          selectedDocument.id,
+          currentRewriteBlockId,
+        );
+        const pending = applyState(response);
+        if (pending && alive) {
+          refreshTimer = window.setTimeout(() => void refresh(), 1200);
+        }
+      } catch (error) {
+        if (!alive) return;
+        setRewriteError(error.message || 'Could not load rewrite suggestions.');
+        setRewriteCards((cards) => cards.map((card) => (
+          card.response ? card : { ...card, state: 'failed', error: error.message }
+        )));
+      }
+    };
+    void refresh({ enqueue: true });
+
+    return () => {
+      alive = false;
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [
+    currentRewriteKey,
+    currentRewriteBlockId,
+    selectedDocument?.id,
+    workspaceAiContextDirty,
+  ]);
 
   useEffect(() => {
     setPracticeInput('');
@@ -511,14 +1066,65 @@ export default function WorkspacePage() {
     setMobilePracticeIndex(0);
   }, [currentPracticeKey]);
 
-  useEffect(() => () => {
-    if (rewriteRefreshTimerRef.current) {
-      clearTimeout(rewriteRefreshTimerRef.current);
+  useEffect(() => {
+    if (!currentPracticeRequestKey) return;
+    const cached = practiceCache[currentPracticeRequestKey];
+    if (cached) {
+      setPracticeFeedback(cached);
+      setPracticeError('');
+      return;
     }
+    setPracticeFeedback((current) => (
+      current?.requestKey === currentPracticeRequestKey ? current : null
+    ));
+  }, [currentPracticeRequestKey, practiceCache]);
+
+  useEffect(() => () => {
     if (wandHoverTimerRef.current) {
       clearTimeout(wandHoverTimerRef.current);
     }
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+    }
   }, []);
+
+  useEffect(() => {
+    clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = null;
+    if (!shouldScheduleWorkspaceAutosave({
+      autosaveDocs,
+      workspaceOpen: view === 'workspace',
+      workspaceDirty,
+      workspaceSaving,
+      hasDocument: Boolean(selectedDocument?.id),
+      leavePromptOpen: showUnsavedBackPrompt,
+      formatReviewOpen: Boolean(formatReview),
+    })) {
+      return undefined;
+    }
+
+    const editGeneration = workspaceEditGenerationRef.current;
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null;
+      if (workspaceEditGenerationRef.current !== editGeneration) return;
+      void saveWorkspaceDocument({ automatic: true });
+    }, WORKSPACE_AUTOSAVE_DELAY_MS);
+    return () => {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    };
+  }, [
+    autosaveDocs,
+    editorContent,
+    formatReview,
+    selectedDocument?.id,
+    showUnsavedBackPrompt,
+    styleName,
+    styleSettings,
+    view,
+    workspaceDirty,
+    workspaceSaving,
+  ]);
 
   useEffect(() => {
     if (!documentId) {
@@ -558,7 +1164,7 @@ export default function WorkspacePage() {
       realtimeState.trashDocuments.some((document) => document.id === documentId)
       || realtimeState.deletedDocumentIds.some((document) => document.id === documentId)
     ) {
-      setWorkspaceDirty(false);
+      resetWorkspaceDirty();
       setWorkspaceNotice('This document was removed from the workspace in another session.');
       setView('home');
       navigate('/');
@@ -570,14 +1176,18 @@ export default function WorkspacePage() {
       remoteDocument
       && Number(remoteDocument.revision) > Number(selectedDocument.revision ?? 0)
       && Number(remoteDocument.revision) > (localDocumentRevisionsRef.current.get(documentId) ?? 0)
-      && !pendingDocumentMutationsRef.current.has(documentId)
+      && !documentMutationCoordinatorRef.current.isPending(documentId)
     ) {
+      if (workspaceDirty) {
+        setWorkspaceNotice('A newer remote revision is available. Save or discard local edits before loading it.');
+        return;
+      }
       // A keyed editor remount loads this canonical document as initial state, so
       // Tiptap does not emit an onUpdate/save cycle for a remote replacement.
       openWorkspace(remoteDocument, { updateRoute: false });
       setWorkspaceNotice('Updated from another session.');
     }
-  }, [documentId, navigate, realtimeState.deletedDocumentIds, realtimeState.documentDetails, realtimeState.trashDocuments, selectedDocument?.id, selectedDocument?.revision, view]);
+  }, [documentId, navigate, realtimeState.deletedDocumentIds, realtimeState.documentDetails, realtimeState.trashDocuments, selectedDocument?.id, selectedDocument?.revision, view, workspaceDirty]);
 
   useEffect(() => {
     if (!mobileOptionsOpen) return undefined;
@@ -625,6 +1235,13 @@ export default function WorkspacePage() {
   function openWorkspace(document, { updateRoute = true } = {}) {
     const hydratedDocument = hydrateWorkspaceDocument(document);
     if (!hydratedDocument) return;
+    if (hydratedDocument.id === selectedDocument?.id) {
+      pendingEditorScrollRestoreRef.current = (
+        documentEditorRef.current?.getScrollPosition?.() ?? null
+      );
+    } else {
+      pendingEditorScrollRestoreRef.current = null;
+    }
 
     const nextStyleName = hydratedDocument?.academic_style || 'APA';
     const nextStyleSettings = {
@@ -634,23 +1251,27 @@ export default function WorkspacePage() {
     const nextDraft = draftFromDocument(hydratedDocument, nextStyleSettings);
 
     setWorkspaceDraft(nextDraft);
+    workspaceEditGenerationRef.current = 0;
     setSelectedDocument(documentFromWorkspaceDraft(hydratedDocument, nextDraft, nextStyleName, nextStyleSettings));
     setEditorContent(nextDraft.contentJson ?? null);
-    setActiveEditorBlock({
-      blockId: nextDraft.currentProcessingBlockId ?? null,
-      status: nextDraft.currentProcessingBlockId ? 'processing' : 'unprocessed',
-    });
+    setActiveEditorBlock(activeBlockInfoFromDraft(nextDraft));
     setEditorReloadKey((value) => value + 1);
     setStyleName(nextStyleName);
     setStyleSettings(nextStyleSettings);
-    setWorkspaceDirty(false);
+    resetWorkspaceDirty();
     setWorkspaceNotice('');
+    setTemplateSwitchReview(null);
+    setTemplateSwitchError('');
     setBlockAnalyses({});
     setBlockAnalysisHighlights({});
     setAnalysisError('');
+    setAnalysisFace('nlp');
+    setSemanticProfile(hydratedDocument.nlp_semantic_profile ?? 'medium');
+    setNlpRepartitionStatus('');
     setRewriteCardsLocked(false);
     setRewriteAllCompleted(false);
     setRewriteCards((cards) => cards.map(resetRewriteCard));
+    rewriteCardsContextKeyRef.current = '';
     setRewriteError('');
     setPracticeInput('');
     setPracticeFeedback(null);
@@ -665,20 +1286,102 @@ export default function WorkspacePage() {
   }
 
   function handleTemplateChange(nextStyleName) {
-    setStyleName(nextStyleName);
-    setStyleSettings(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? TEMPLATE_STYLE_SETTINGS.APA);
-    setWorkspaceDirty(true);
+    if (nextStyleName === styleName || templateSwitchBusy) return;
+    setTemplateSwitchError('');
+    setTemplateSwitchReview({
+      previousStyleName: styleName,
+      nextStyleName,
+      nextStyleSettings: TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? TEMPLATE_STYLE_SETTINGS.APA,
+    });
+  }
+
+  function handleCustomModeSelect() {
+    if (styleName === 'Customized' || templateSwitchBusy) return;
+    setTemplateSwitchError('');
+    setTemplateSwitchReview({
+      previousStyleName: styleName,
+      nextStyleName: 'Customized',
+      nextStyleSettings: { ...DEFAULT_CUSTOM_STYLE, ...styleSettings },
+    });
   }
 
   function handleCustomStyleChange(nextSettings) {
+    if (styleName !== 'Customized') {
+      setTemplateSwitchError('');
+      setTemplateSwitchReview({
+        previousStyleName: styleName,
+        nextStyleName: 'Customized',
+        nextStyleSettings: { ...DEFAULT_CUSTOM_STYLE, ...nextSettings },
+      });
+      return;
+    }
     setStyleName('Customized');
     setStyleSettings({ ...DEFAULT_CUSTOM_STYLE, ...nextSettings });
-    setWorkspaceDirty(true);
+    markWorkspaceDirty('ai-context');
+  }
+
+  async function confirmTemplateSwitch() {
+    if (!templateSwitchReview || !selectedDocument?.id || templateSwitchBusy) return;
+    const { nextStyleName, nextStyleSettings } = templateSwitchReview;
+    setTemplateSwitchBusy(true);
+    setTemplateSwitchError('');
+    try {
+      if (nextStyleName === 'Customized') {
+        const customizedDocument = normalizedWorkspaceDocument();
+        customizedDocument.academic_style = 'Customized';
+        customizedDocument.style_settings = nextStyleSettings;
+        const persisted = await persistWorkspaceDocument(
+          customizedDocument,
+          'Switched to Customized formatting',
+        );
+        setTemplateSwitchReview(null);
+        if (persisted) openWorkspace(persisted, { updateRoute: false });
+        setWorkspaceNotice('Customized formatting selected. Citation checking is disabled.');
+        return;
+      }
+
+      let persistedDocument = selectedDocument;
+      if (workspaceDirty) {
+        persistedDocument = await persistWorkspaceDocument(
+          normalizedWorkspaceDocument(),
+          `Saved before switching from ${styleName} to ${nextStyleName}`,
+        );
+      }
+      const response = await convertDocumentCitationStyle(selectedDocument.id, {
+        targetAcademicStyle: nextStyleName,
+        targetStyleSettings: nextStyleSettings,
+        expectedRevision: Number(persistedDocument.revision),
+        expectedPartitionRevision: Number(persistedDocument.partition_revision),
+      });
+      applyDocument('document:updated', response.document);
+      openWorkspace(response.document, { updateRoute: false });
+      setTemplateSwitchReview(null);
+      const bibliographyCount = response.conversion?.bibliographyChanges ?? 0;
+      const inlineCount = response.conversion?.inlineChanges ?? 0;
+      setWorkspaceNotice(
+        `${nextStyleName} selected: ${bibliographyCount} reference-list change${bibliographyCount === 1 ? '' : 's'} applied before ${inlineCount} in-text citation change${inlineCount === 1 ? '' : 's'}.`,
+      );
+    } catch (error) {
+      setTemplateSwitchError(error.message || 'The citation template could not be switched.');
+    } finally {
+      setTemplateSwitchBusy(false);
+    }
   }
 
   function handleWorkspaceTitleChange(nextTitle) {
     setSelectedDocument((document) => (document ? { ...document, title: nextTitle } : document));
+    markWorkspaceDirty('document');
+  }
+
+  function markWorkspaceDirty(kind = 'document') {
+    workspaceEditGenerationRef.current += 1;
     setWorkspaceDirty(true);
+    if (kind === 'ai-context') setWorkspaceAiContextDirty(true);
+  }
+
+  function resetWorkspaceDirty() {
+    setWorkspaceDirty(false);
+    setWorkspaceAiContextDirty(false);
   }
 
   function handleEditorChange(change) {
@@ -701,7 +1404,9 @@ export default function WorkspacePage() {
         refreshRewriteCardsFromDocument(normalized.document);
       }
     }
-    setWorkspaceDirty(true);
+    if (payload.mutationKind !== 'nlp-metadata') {
+      markWorkspaceDirty(payload.mutationKind === 'text' ? 'ai-context' : 'document');
+    }
   }
 
   const handleActiveEditorBlockChange = useCallback((info) => {
@@ -729,66 +1434,120 @@ export default function WorkspacePage() {
     return documentFromWorkspaceDraft(selectedDocument, fallbackDraft, styleName, styleSettings);
   }
 
-  async function persistWorkspaceDocument(document, versionLabel) {
+  async function persistWorkspaceDocument(
+    document,
+    versionLabel,
+    { createVersion = true } = {},
+  ) {
     if (!document?.id) throw new Error('No persisted document is open.');
 
-    pendingDocumentMutationsRef.current.add(document.id);
-    try {
-      const result = await saveDocument(document.id, {
-        title: document.title,
-        academicStyle: styleName,
-        styleSettings,
-        contentJson: document.content_json,
-        createVersion: true,
-        versionLabel,
-      });
-      const persistedDocument = result.document ?? document;
-      const persistedStyleName = persistedDocument.academic_style || styleName;
-      const persistedStyleSettings = {
-        ...(TEMPLATE_STYLE_SETTINGS[persistedStyleName] ?? DEFAULT_CUSTOM_STYLE),
-        ...(persistedDocument.style_settings ?? styleSettings),
-      };
-      const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
-      setWorkspaceDraft(persistedDraft);
-      setSelectedDocument(documentFromWorkspaceDraft(
-        persistedDocument,
-        persistedDraft,
-        persistedStyleName,
-        persistedStyleSettings,
-      ));
-      setEditorContent(persistedDraft.contentJson ?? document.content_json);
-      setActiveEditorBlock({
-        blockId: persistedDraft.currentProcessingBlockId ?? null,
-        status: persistedDraft.currentProcessingBlockId ? 'processing' : 'unprocessed',
-      });
-      setStyleName(persistedStyleName);
-      setStyleSettings(persistedStyleSettings);
-      setWorkspaceDirty(false);
-      const revision = Number(persistedDocument.revision);
-      if (Number.isFinite(revision)) {
-        localDocumentRevisionsRef.current.set(persistedDocument.id, revision);
-      }
-      applyDocument('document:updated', persistedDocument);
-      return persistedDocument;
-    } finally {
-      pendingDocumentMutationsRef.current.delete(document.id);
-    }
+    const documentId = document.id;
+    const requestedEditGeneration = workspaceEditGenerationRef.current;
+    return documentMutationCoordinatorRef.current.enqueue(
+      documentId,
+      async ({ isLatest }) => {
+        const result = await saveDocument(documentId, {
+          title: document.title,
+          academicStyle: document.academic_style || styleName,
+          styleSettings: document.style_settings || styleSettings,
+          contentJson: document.content_json,
+          createVersion,
+          versionLabel,
+        });
+        const persistedDocument = result.document ?? document;
+        const revision = Number(persistedDocument.revision);
+        if (Number.isFinite(revision)) {
+          localDocumentRevisionsRef.current.set(
+            persistedDocument.id,
+            Math.max(
+              revision,
+              localDocumentRevisionsRef.current.get(persistedDocument.id) ?? 0,
+            ),
+          );
+        }
+        applyDocument('document:updated', persistedDocument);
+
+        if (
+          !isLatest()
+          || workspaceEditGenerationRef.current !== requestedEditGeneration
+        ) {
+          return persistedDocument;
+        }
+
+        const persistedStyleName = persistedDocument.academic_style || styleName;
+        const persistedStyleSettings = {
+          ...(TEMPLATE_STYLE_SETTINGS[persistedStyleName] ?? DEFAULT_CUSTOM_STYLE),
+          ...(persistedDocument.style_settings ?? styleSettings),
+        };
+        const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
+        setWorkspaceDraft(persistedDraft);
+        setSelectedDocument(documentFromWorkspaceDraft(
+          persistedDocument,
+          persistedDraft,
+          persistedStyleName,
+          persistedStyleSettings,
+        ));
+        setEditorContent(persistedDraft.contentJson ?? document.content_json);
+        setActiveEditorBlock(activeBlockInfoFromDraft(persistedDraft));
+        setStyleName(persistedStyleName);
+        setStyleSettings(persistedStyleSettings);
+        resetWorkspaceDirty();
+        return persistedDocument;
+      },
+    );
   }
 
-  async function saveWorkspaceDocument({ leaveAfterSave = false } = {}) {
-    const document = normalizedWorkspaceDocument();
+  async function saveWorkspaceDocument({
+    leaveAfterSave = false,
+    formatDecision = null,
+    automatic = false,
+  } = {}) {
+    const audit = documentEditorRef.current?.getFormatAudit?.();
+    if (!automatic && !formatDecision && audit?.hasDifferences) {
+      setFormatReview({ audit, leaveAfterSave });
+      return false;
+    }
+
+    let nextStyleName = styleName;
+    let nextStyleSettings = styleSettings;
+    let snapshot = null;
+    if (formatDecision === 'normalize') {
+      snapshot = documentEditorRef.current?.normalizeFormatting?.();
+    } else if (formatDecision === 'keep') {
+      snapshot = documentEditorRef.current?.keepLocalFormatting?.();
+      nextStyleName = 'Customized';
+      setStyleName('Customized');
+    }
+
+    const document = snapshot?.contentJson && selectedDocument
+      ? documentFromContent(
+        selectedDocument,
+        snapshot.contentJson,
+        nextStyleName,
+        nextStyleSettings,
+        snapshot.blocks,
+        snapshot.currentProcessingBlockId,
+      )
+      : normalizedWorkspaceDocument();
     if (!document?.id) return false;
+    document.academic_style = nextStyleName;
+    document.style_settings = nextStyleSettings;
 
     setWorkspaceSaving(true);
     try {
-      await persistWorkspaceDocument(document, 'Manual save');
-      setWorkspaceNotice('Saved');
+      const persistedDocument = await persistWorkspaceDocument(
+        document,
+        automatic ? 'Autosave' : 'Manual save',
+        { createVersion: !automatic },
+      );
+      setWorkspaceNotice(automatic ? 'Autosaved' : 'Saved');
       setShowUnsavedBackPrompt(false);
+      setFormatReview(null);
       if (leaveAfterSave) {
         setView('home');
         navigate('/');
       }
-      return true;
+      return persistedDocument ?? true;
     } catch (error) {
       setWorkspaceNotice(error.message || 'Could not save the document.');
       return false;
@@ -797,8 +1556,25 @@ export default function WorkspacePage() {
     }
   }
 
+  async function ensureWorkspaceSavedForAi(setError) {
+    const policy = aiSavePolicy({ aiContextDirty: workspaceAiContextDirty, autosaveDocs });
+    if (policy === 'ready') return true;
+    if (policy === 'manual-save-required') {
+      const message = 'Save the current document before using AI, or enable Autosave for docs in Writing preferences.';
+      setError?.(message);
+      setWorkspaceNotice(message);
+      return false;
+    }
+    return saveWorkspaceDocument({ automatic: true });
+  }
+
   function requestWorkspaceBack() {
-    if (workspaceDirty) {
+    const policy = workspaceLeavePolicy({ workspaceDirty, autosaveDocs });
+    if (policy === 'autosave-and-leave') {
+      void saveWorkspaceDocument({ automatic: true, leaveAfterSave: true });
+      return;
+    }
+    if (policy === 'prompt') {
       setShowUnsavedBackPrompt(true);
       return;
     }
@@ -812,7 +1588,7 @@ export default function WorkspacePage() {
     setWorkspaceDraft(null);
     setEditorContent(null);
     setActiveEditorBlock({ blockId: null, status: 'unprocessed' });
-    setWorkspaceDirty(false);
+    resetWorkspaceDirty();
     setView('home');
     navigate('/');
   }
@@ -839,8 +1615,101 @@ export default function WorkspacePage() {
     setRewriteAllCompleted(false);
     setRewriteCardsLocked(false);
     setRewriteCards((cards) => cards.map(resetRewriteCard));
+    rewriteCardsContextKeyRef.current = '';
     setRewriteError('');
     if (notice) setWorkspaceNotice(notice);
+  }
+
+  function getAiBlockEpoch(documentId, blockId) {
+    return aiBlockEpochRef.current.get(`${documentId}|${blockId}`) ?? 0;
+  }
+
+  function clearSkippedBlockAiState(documentId, blockId) {
+    const epochKey = `${documentId}|${blockId}`;
+    aiBlockEpochRef.current.set(epochKey, getAiBlockEpoch(documentId, blockId) + 1);
+    setRewriteCache((current) => clearBlockAiCaches({
+      rewriteCache: current,
+      documentId,
+      blockId,
+    }).rewriteCache);
+    setBlockAnalyses((current) => clearBlockAiCaches({
+      blockAnalyses: current,
+      documentId,
+      blockId,
+    }).blockAnalyses);
+    setPracticeCache((current) => clearBlockAiCaches({
+      practiceCache: current,
+      documentId,
+      blockId,
+    }).practiceCache);
+    setBlockAnalysisHighlights((current) => {
+      if (!current[blockId]) return current;
+      const next = { ...current };
+      delete next[blockId];
+      return next;
+    });
+    setPracticeFeedback((current) => (
+      current?.identity?.blockId === blockId ? null : current
+    ));
+    setPracticeInput('');
+    setPracticeError('');
+    setAnalysisError('');
+    setRewriteError('');
+    setRewriteCards(createRewriteCards());
+    rewriteCardsContextKeyRef.current = '';
+    setAnalysisBusy(false);
+    setPracticeBusy(false);
+    setWorkspaceOwlLoading(false);
+  }
+
+  function canonicalizeStatusSnapshot(payload, blockId, status) {
+    const terminal = status === 'processed' || status === 'skipped';
+    const canonicalizeAttrs = (attrs = {}) => ({
+      ...attrs,
+      status,
+      ...(terminal ? {
+        resumeStatus: null,
+        processingBaselineText: null,
+      } : {}),
+    });
+    const contentJson = payload.contentJson
+      ? mapEditableBlocks(payload.contentJson, (node) => (
+        node.attrs?.blockId === blockId
+          ? { ...node, attrs: canonicalizeAttrs(node.attrs) }
+          : node
+      ))
+      : payload.contentJson;
+    const blocks = Array.isArray(payload.blocks)
+      ? payload.blocks.map((block) => {
+        const candidateId = block.id ?? block.blockId ?? block.attrs?.blockId;
+        if (candidateId !== blockId) return block;
+        return {
+          ...block,
+          status,
+          ...(terminal ? {
+            resume_status: null,
+            processing_baseline_text: null,
+          } : {}),
+          attrs: canonicalizeAttrs(block.attrs),
+          tiptap_node: block.tiptap_node
+            ? {
+              ...block.tiptap_node,
+              attrs: canonicalizeAttrs(block.tiptap_node.attrs),
+            }
+            : block.tiptap_node,
+        };
+      })
+      : payload.blocks;
+    return { contentJson, blocks };
+  }
+
+  function restoreEditorScroll(position) {
+    if (!position) return;
+    const restore = () => {
+      documentEditorRef.current?.restoreScrollPosition?.(position);
+    };
+    restore();
+    window.requestAnimationFrame(restore);
   }
 
   async function handleWorkspaceUploadFile(file) {
@@ -852,10 +1721,15 @@ export default function WorkspacePage() {
     }
 
     try {
-      const result = await uploadDocument(file, styleName);
+      const result = await uploadDocument(file, styleName, 'character', semanticProfile);
       applyDocument('document:created', result.document);
       openWorkspace(result.document);
-      setWorkspaceNotice(`${file.name} uploaded as a new document.`);
+      const skipped = Number(result.importSummary?.skippedBlockCount) || 0;
+      setWorkspaceNotice(
+        skipped
+          ? `${file.name} uploaded. Automatic language review set aside ${skipped} non-argumentative block${skipped === 1 ? '' : 's'}.`
+          : `${file.name} uploaded as a new document.`,
+      );
     } catch (error) {
       setWorkspaceNotice(error.message || 'Could not upload the document.');
     }
@@ -875,7 +1749,8 @@ export default function WorkspacePage() {
     if (analysisBusy) return;
 
     const requestKey = currentAnalysisKey;
-    const requestBlockText = activeEditorBlock?.text
+    const requestEpoch = getAiBlockEpoch(documentId, blockId);
+    const requestBlockText = activeSourceText
       ?? workspaceDraft?.blocks?.find((block) => block.id === blockId)?.text
       ?? '';
     setAnalysisBusy(true);
@@ -885,15 +1760,23 @@ export default function WorkspacePage() {
     setWorkspaceOwlLoading(true);
 
     try {
-      if (workspaceDirty) {
-        const saved = await saveWorkspaceDocument();
-        if (!saved) return;
-      }
+      if (!await ensureWorkspaceSavedForAi(setAnalysisError)) return;
 
       const response = await analyzeDocumentBlock(documentId, blockId, selectedAnalysisFilters);
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
+      const canonicalResponseKey = [
+        blockId,
+        requestBlockText,
+        Number(response.identity?.partitionGeneration
+          ?? activeEditorBlock?.partitionGeneration
+          ?? 0),
+        response.identity?.nlpSnapshotFingerprint ?? activeAnalysisNlpFingerprint,
+        selectedAnalysisFilters.join(','),
+      ].join('|');
       setBlockAnalyses((current) => ({
         ...current,
         [requestKey]: response.analysis,
+        [canonicalResponseKey]: response.analysis,
       }));
       setBlockAnalysisHighlights((current) => ({
         ...current,
@@ -905,40 +1788,104 @@ export default function WorkspacePage() {
       }));
       setWorkspaceNotice(response.cached ? 'Loaded saved block analysis.' : 'Block analysis complete.');
     } catch (error) {
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
       setAnalysisError(error.message || 'AI analysis is temporarily unavailable.');
       triggerWorkspaceError();
     } finally {
-      setAnalysisBusy(false);
-      setWorkspaceOwlLoading(false);
+      if (getAiBlockEpoch(documentId, blockId) === requestEpoch) {
+        setAnalysisBusy(false);
+        setWorkspaceOwlLoading(false);
+      }
     }
   }
 
-  async function handleEditorBlockStatusChange({ blockId, status }) {
-    const payload = arguments[0] ?? {};
+  function handleAnalysisFaceChange(nextFace) {
+    setAnalysisFace(nextFace);
+    if (
+      nextFace === 'ai'
+      && !currentBlockAnalysis
+      && !analysisBusy
+      && activeEditorBlock?.blockId
+    ) {
+      void analyzeActiveBlock();
+    }
+  }
 
-    // Rewrites are saved from the complete editor snapshot after the replacement
-    // is applied. A separate status-only request here could publish the old block
-    // text and overwrite the local rewrite before that save finishes.
+  async function applySemanticProfile() {
+    if (!selectedDocument?.id || nlpRepartitionBusy) return;
+    setNlpRepartitionBusy(true);
+    setNlpRepartitionStatus('Saving the current document…');
+    try {
+      const persisted = workspaceDirty
+        ? await saveWorkspaceDocument({ automatic: autosaveDocs })
+        : selectedDocument;
+      if (!persisted) {
+        setNlpRepartitionStatus('Save the document before changing sentence grouping.');
+        return;
+      }
+      setNlpRepartitionStatus('Regrouping related sentences…');
+      const { job } = await repartitionDocument(selectedDocument.id, {
+        semanticProfile,
+        expectedRevision: Number(persisted.revision ?? selectedDocument.revision),
+      });
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+        const response = await getDocumentNlpJob(selectedDocument.id, job.id);
+        const status = response.job?.status;
+        if (status === 'completed') {
+          const { document } = await getDocument(selectedDocument.id);
+          openWorkspace(document, { updateRoute: false });
+          setNlpRepartitionStatus('Sentence grouping applied.');
+          return;
+        }
+        if (status === 'failed' || status === 'cancelled') {
+          throw new Error(
+            status === 'cancelled'
+              ? 'The document changed while repartitioning. Save and try again.'
+              : 'Sentence grouping could not be completed.',
+          );
+        }
+        setNlpRepartitionStatus('Repartitioning document…');
+      }
+      throw new Error('Sentence grouping is still running. Its result will arrive automatically.');
+    } catch (error) {
+      setNlpRepartitionStatus(error.message || 'Sentence grouping could not be applied.');
+    } finally {
+      setNlpRepartitionBusy(false);
+    }
+  }
+
+  async function handleEditorBlockStatusChange(payload = {}) {
+    const { blockId, status } = payload;
+
+    // Replacement workflows already update the complete local snapshot. The
+    // profile save policy decides whether that dirty snapshot is saved later.
     if (payload.replacementText !== null && payload.replacementText !== undefined) {
-      setWorkspaceDirty(true);
+      markWorkspaceDirty('ai-context');
       return;
     }
 
-    const nextDocument = payload.contentJson && selectedDocument
+    const snapshot = canonicalizeStatusSnapshot(payload, blockId, status);
+    if (status === 'skipped' && selectedDocument?.id && blockId) {
+      clearSkippedBlockAiState(selectedDocument.id, blockId);
+    }
+    restoreEditorScroll(payload.paperScrollPosition);
+
+    const nextDocument = snapshot.contentJson && selectedDocument
       ? documentFromContent(
         selectedDocument,
-        payload.contentJson,
+        snapshot.contentJson,
         styleName,
         styleSettings,
-        payload.blocks ?? workspaceDraft?.blocks ?? null,
+        snapshot.blocks ?? workspaceDraft?.blocks ?? null,
         payload.currentProcessingBlockId ?? workspaceDraft?.currentProcessingBlockId ?? null
       )
       : null;
-    const nextDraft = payload.contentJson && selectedDocument
+    const nextDraft = snapshot.contentJson && selectedDocument
       ? normalizeWorkspaceDraft(
         selectedDocument,
-        payload.contentJson,
-        payload.blocks ?? workspaceDraft?.blocks ?? [],
+        snapshot.contentJson,
+        snapshot.blocks ?? workspaceDraft?.blocks ?? [],
         styleSettings,
         payload.currentProcessingBlockId ?? workspaceDraft?.currentProcessingBlockId ?? null
       )
@@ -951,33 +1898,21 @@ export default function WorkspacePage() {
       const hasRemainingBlocks = nextDocument.blocks?.some((block) => (
         block.status === 'processing' || block.status === 'unprocessed'
       ));
-      const actionNotice = status === 'skipped'
-        ? 'Skipped block. Moved to the next block.'
-        : 'Completed block. Moved to the next block.';
+      const actionNotice = status === 'processing'
+        ? autosaveDocs
+          ? ''
+          : 'Block selected. Save to keep this status change.'
+        : status === 'skipped'
+          ? `Skipped block. Moved to the next block.${autosaveDocs ? '' : ' Save to keep this change.'}`
+          : `Completed block. Moved to the next block.${autosaveDocs ? '' : ' Save to keep this change.'}`;
       refreshRewriteCardsFromDocument(nextDocument, hasRemainingBlocks ? actionNotice : '');
     }
 
-    if (!selectedDocument?.id) {
-      if (status !== 'processing') {
-        setWorkspaceNotice(`Marked block as ${status}.`);
-      } else {
-        setWorkspaceNotice('');
-      }
-      setWorkspaceDirty(true);
-      return;
-    }
-
     if (!nextDocument) {
-      setWorkspaceNotice('Could not save the block status from the editor.');
+      setWorkspaceNotice('Could not update the block status in the editor.');
       return;
     }
-
-    try {
-      const versionLabel = status === 'skipped' ? 'Skipped block' : 'Completed block';
-      await persistWorkspaceDocument(nextDocument, versionLabel);
-    } catch (error) {
-      setWorkspaceNotice(error.message || 'Could not update the block status.');
-    }
+    markWorkspaceDirty('document');
   }
 
   function getWorkspaceOwlAnimator() {
@@ -1078,24 +2013,42 @@ export default function WorkspacePage() {
       setRewriteError('Select a text block to rewrite.');
       return;
     }
-    if (rewriteCardsLocked || rewriteAllCompleted || rewriteBusy) return;
+    const requestedCard = rewriteCards.find((card) => card.tone === tone);
+    if (
+      rewriteCardsLocked
+      || rewriteAllCompleted
+      || ['queued', 'running'].includes(requestedCard?.state)
+    ) return;
 
     const requestKey = currentRewriteKey;
-    setRewriteBusy(true);
+    const requestEpoch = getAiBlockEpoch(documentId, blockId);
+    setRewriteCards((cards) => cards.map((card) => (
+      card.tone === tone ? { ...card, state: 'running', error: '' } : card
+    )));
     setRewriteError('');
     setWorkspaceNotice('');
     setWorkspaceOwlError(false);
     setWorkspaceOwlLoading(true);
 
     try {
-      if (workspaceDirty) {
-        const saved = await saveWorkspaceDocument();
-        if (!saved) return;
-      }
+      if (!await ensureWorkspaceSavedForAi(setRewriteError)) return;
 
       const response = await generateDocumentBlockRewrites(documentId, blockId, { tone, force });
-      if (rewriteContextKeyRef.current !== requestKey) return;
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
+      const visible = rewriteVisibleIdentityRef.current;
+      const stillVisible = rewriteIdentityMatchesVisible(
+        response.identity,
+        visible,
+        requestKey,
+        rewriteContextKeyRef.current,
+      );
+      if (!stillVisible) {
+        setRewriteCache((cache) => cacheRewriteResponse(cache, response));
+        setWorkspaceNotice('Rewrite finished and was saved for the earlier block state.');
+        return;
+      }
 
+      setRewriteCache((cache) => cacheRewriteResponse(cache, response));
       setRewriteCards((cards) => cards.map((card) => {
         const option = response.rewrites.find((rewrite) => rewrite.tone === card.tone);
         if (!option) return card;
@@ -1108,33 +2061,34 @@ export default function WorkspacePage() {
           warnings: option.warnings ?? [],
           meaningPreserved: option.meaningPreserved,
           error: '',
+          state: response.cached ? 'cache-hit' : 'completed',
           applyWithExplanation: false,
         };
       }));
       setWorkspaceNotice(response.cached ? 'Loaded the saved rewrite.' : 'Rewrite is ready.');
     } catch (error) {
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
       setRewriteError(error.message || 'AI rewriting is temporarily unavailable.');
+      setRewriteCards((cards) => cards.map((card) => (
+        card.tone === tone ? { ...card, state: 'failed', error: error.message } : card
+      )));
       triggerWorkspaceError();
     } finally {
-      setWorkspaceOwlLoading(false);
-      setRewriteBusy(false);
+      if (getAiBlockEpoch(documentId, blockId) === requestEpoch) {
+        setWorkspaceOwlLoading(false);
+        setRewriteCards((cards) => cards.map((card) => (
+          card.tone === tone && card.state === 'running'
+            ? { ...card, state: card.response ? 'completed' : 'idle' }
+            : card
+        )));
+      }
     }
   }
 
   async function regenerateRewriteCard(cardId) {
     if (rewriteCardsLocked || rewriteAllCompleted) return;
-    const now = Date.now();
-    if (now < rewriteCooldownUntil) {
-      setWorkspaceNotice('Regeneration is cooling down. Please wait a moment.');
-      return;
-    }
-    if (rewriteBusy) {
-      setWorkspaceNotice('A regeneration is already running.');
-      return;
-    }
     const card = rewriteCards.find((item) => item.id === cardId);
     if (!card) return;
-    setRewriteCooldownUntil(now + REGEN_COOLDOWN_MS);
     await generateRewrites({ tone: card.tone, force: Boolean(card.response) });
   }
 
@@ -1142,13 +2096,13 @@ export default function WorkspacePage() {
     if (
       rewriteCardsLocked
       || rewriteAllCompleted
-      || rewriteBusy
+      || rewriteApplyBusy
       || !card.rewriteId
       || !card.response
       || !card.meaningPreserved
     ) return;
     const animationTarget = event.currentTarget;
-    setRewriteBusy(true);
+    setRewriteApplyBusy(true);
     setRewriteError('');
     try {
       await acceptDocumentBlockRewrite(selectedDocument.id, currentRewriteBlockId, card.rewriteId);
@@ -1156,28 +2110,22 @@ export default function WorkspacePage() {
       if (!document) {
         throw new Error('The selected block could not be updated. Please select it and try again.');
       }
-      await persistWorkspaceDocument(document, `Accepted ${card.title} rewrite`);
       void runWorkspaceMagic(animationTarget).catch(() => {});
     } catch (error) {
       setRewriteError(error.message || 'The rewrite could not be applied.');
       triggerWorkspaceError();
     } finally {
       setWorkspaceOwlLoading(false);
-      setRewriteBusy(false);
+      setRewriteApplyBusy(false);
     }
   }
 
   function resetRewriteCardsForNextBlock(nextNotice = 'Cards refreshed for the next processing block.') {
-    if (rewriteRefreshTimerRef.current) {
-      clearTimeout(rewriteRefreshTimerRef.current);
-    }
-
-    rewriteRefreshTimerRef.current = setTimeout(() => {
-      setRewriteCards((cards) => cards.map(resetRewriteCard));
-      setRewriteError('');
-      setRewriteCardsLocked(false);
-      setWorkspaceNotice(nextNotice);
-    }, 650);
+    setRewriteCards((cards) => cards.map(resetRewriteCard));
+    rewriteCardsContextKeyRef.current = '';
+    setRewriteError('');
+    setRewriteCardsLocked(false);
+    setWorkspaceNotice(nextNotice);
   }
 
   function lockOrCompleteRewriteCards(document, nextNotice) {
@@ -1195,12 +2143,17 @@ export default function WorkspacePage() {
     resetRewriteCardsForNextBlock(nextNotice);
   }
 
-  function applyStatusToSelectedBlock(nextStatus, replacementText = null) {
+  function applyStatusToSelectedBlock(
+    nextStatus,
+    replacementText = null,
+    changeSource = replacementText === null ? 'none' : 'ai-replacement',
+  ) {
     if (!selectedDocument) return null;
 
     const nextSnapshot = documentEditorRef.current?.applyCurrentBlockStatus({
       status: nextStatus,
       replacementText,
+      changeSource,
       targetBlockId: activeEditorBlock?.blockId ?? workspaceDraft?.currentProcessingBlockId ?? null,
     });
     if (nextSnapshot?.contentJson) {
@@ -1216,11 +2169,12 @@ export default function WorkspacePage() {
       setWorkspaceDraft(normalized.draft);
       setSelectedDocument(document);
       setEditorContent(document.content_json);
-      setActiveEditorBlock({
-        blockId: document.current_processing_block_id ?? null,
-        status: document.current_processing_block_id ? 'processing' : nextStatus,
-      });
-      setWorkspaceDirty(true);
+      setActiveEditorBlock(activeBlockInfoFromDraft(
+        normalized.draft,
+        document.current_processing_block_id,
+        nextStatus,
+      ));
+      markWorkspaceDirty(replacementText === null ? 'document' : 'ai-context');
       return document;
     }
 
@@ -1270,8 +2224,11 @@ export default function WorkspacePage() {
 
       if (blockId === target.attrs?.blockId) {
         attrs.status = nextStatus;
+        attrs.resumeStatus = null;
+        attrs.processingBaselineText = null;
+        attrs.changeSource = changeSource;
         if (replacementText !== null) {
-          attrs.length = replacementText.length;
+          attrs.length = countCharacters(replacementText);
           return {
             ...node,
             attrs,
@@ -1281,10 +2238,29 @@ export default function WorkspacePage() {
         return { ...node, attrs };
       }
       if (blockId === nextProcessingBlockId) {
-        return { ...node, attrs: { ...attrs, status: 'processing' } };
+        return {
+          ...node,
+          attrs: {
+            ...attrs,
+            status: 'processing',
+            resumeStatus: 'unprocessed',
+            processingBaselineText: textFromNode(node),
+            changeSource: 'none',
+          },
+        };
       }
       if (attrs.status === 'processing') {
-        return { ...node, attrs: { ...attrs, status: 'unprocessed' } };
+        const unchanged = textFromNode(node) === String(attrs.processingBaselineText ?? textFromNode(node));
+        return {
+          ...node,
+          attrs: {
+            ...attrs,
+            status: unchanged ? normalizeResumeStatus(attrs.resumeStatus) : 'unprocessed',
+            resumeStatus: null,
+            processingBaselineText: null,
+            changeSource: unchanged ? 'none' : 'manual',
+          },
+        };
       }
       return node;
     });
@@ -1300,11 +2276,12 @@ export default function WorkspacePage() {
     setWorkspaceDraft(nextDraft);
     setSelectedDocument(document);
     setEditorContent(document.content_json);
-    setActiveEditorBlock({
-      blockId: document.current_processing_block_id ?? null,
-      status: document.current_processing_block_id ? 'processing' : nextStatus,
-    });
-    setWorkspaceDirty(true);
+    setActiveEditorBlock(activeBlockInfoFromDraft(
+      nextDraft,
+      document.current_processing_block_id,
+      nextStatus,
+    ));
+    markWorkspaceDirty(replacementText === null ? 'document' : 'ai-context');
     return document;
   }
 
@@ -1324,7 +2301,6 @@ export default function WorkspacePage() {
   }
 
   async function tryPracticeResponse(event, { showMobileFeedback = false } = {}) {
-    const target = event.currentTarget;
     const documentId = selectedDocument?.id;
     const blockId = activeEditorBlock?.blockId;
     const attemptText = practiceInput.trim();
@@ -1340,36 +2316,60 @@ export default function WorkspacePage() {
     if (practiceBusy) return;
 
     const requestKey = currentPracticeRequestKey;
+    const requestEpoch = getAiBlockEpoch(documentId, blockId);
     setPracticeBusy(true);
-    setPracticeFeedback(null);
     setPracticeError('');
     setWorkspaceNotice('');
     setWorkspaceOwlError(false);
     setWorkspaceOwlLoading(true);
     if (showMobileFeedback) setMobilePracticeIndex(1);
-    void runWorkspaceMagic(target);
 
     try {
-      if (workspaceDirty) {
-        const saved = await saveWorkspaceDocument();
-        if (!saved) {
-          setPracticeError('Save the current document before requesting AI feedback.');
-          return;
-        }
-      }
+      if (!await ensureWorkspaceSavedForAi(setPracticeError)) return;
 
       const response = await requestDocumentBlockPracticeFeedback(documentId, blockId, attemptText);
-      if (practiceContextKeyRef.current !== requestKey) return;
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
+      const savedFeedback = {
+        ...response.practice,
+        identity: response.identity,
+        requestContextKey: currentPracticeKey,
+        requestKey,
+      };
+      const cacheKey = [
+        response.identity?.documentId,
+        response.identity?.blockId,
+        response.identity?.sourceTextHash,
+        response.identity?.attemptTextHash,
+        response.identity?.analysisContextKey,
+      ].join('|');
+      setPracticeCache((cache) => cachePracticeResponse(
+        cache,
+        requestKey,
+        cacheKey,
+        savedFeedback,
+      ));
+      if (practiceContextKeyRef.current !== requestKey) {
+        setWorkspaceNotice('Practice feedback finished and was saved for the earlier attempt.');
+        return;
+      }
 
-      setPracticeFeedback(response.practice);
+      setPracticeFeedback(savedFeedback);
       setWorkspaceNotice(response.cached ? 'Loaded saved practice feedback.' : 'Practice feedback is ready.');
     } catch (error) {
-      if (practiceContextKeyRef.current !== requestKey) return;
-      setPracticeError(error.message || 'AI practice feedback is temporarily unavailable.');
+      if (getAiBlockEpoch(documentId, blockId) !== requestEpoch) return;
+      if (practiceContextKeyRef.current === requestKey) {
+        setPracticeError(
+          `${error.message || 'AI practice feedback is temporarily unavailable.'}${error.correlationId
+            ? ` Reference: ${error.correlationId}`
+            : ''}`,
+        );
+      }
       triggerWorkspaceError();
     } finally {
-      setWorkspaceOwlLoading(false);
-      setPracticeBusy(false);
+      if (getAiBlockEpoch(documentId, blockId) === requestEpoch) {
+        setWorkspaceOwlLoading(false);
+        setPracticeBusy(false);
+      }
     }
   }
 
@@ -1379,8 +2379,51 @@ export default function WorkspacePage() {
     setPracticeError('');
   }
 
+  async function applyPracticeAttempt(event) {
+    const feedback = practiceFeedback;
+    if (
+      !feedback?.attemptText
+      || feedback.requestContextKey !== currentPracticeKey
+      || feedback.identity?.blockId !== activeEditorBlock?.blockId
+      || Number(feedback.identity?.partitionGeneration) !== Number(
+        activeEditorBlock?.partitionGeneration ?? currentRewriteBlock?.partition_generation ?? 0,
+      )
+    ) {
+      setPracticeError('This feedback belongs to an older block state. Request fresh feedback first.');
+      return;
+    }
+
+    setPracticeBusy(true);
+    setPracticeError('');
+    try {
+      const document = applyStatusToSelectedBlock(
+        'processed',
+        feedback.attemptText,
+        'practice-replacement',
+      );
+      if (!document) throw new Error('The reviewed revision could not be applied.');
+      lockOrCompleteRewriteCards(
+        document,
+        'Your reviewed revision was applied. Suggestions are warming for the next block.',
+      );
+      await runWorkspaceMagic(event.currentTarget);
+    } catch (error) {
+      setPracticeError(error.message || 'The reviewed revision could not be applied.');
+      triggerWorkspaceError();
+    } finally {
+      setPracticeBusy(false);
+    }
+  }
+
   function renderPracticeComposer({ mobile = false } = {}) {
     const learningGoals = currentBlockAnalysis?.ai?.learningGoals ?? [];
+    const practiceDisabled = (
+      practiceBusy
+      || !activeEditorBlock?.blockId
+      || !currentBlockAnalysis
+      || !practiceInput.trim()
+      || !rewriteNlpEligible
+    );
 
     return (
       <article
@@ -1392,7 +2435,15 @@ export default function WorkspacePage() {
       >
         <div className="practice-card-heading">
           <strong>Your revision</strong>
-          <span>{practiceInput.length} / {PRACTICE_MAX_CHARS}</span>
+          <button
+            type="button"
+            className={practiceDisabled ? 'ai-action-disabled' : ''}
+            onMouseEnter={holdWorkspaceWand}
+            onClick={mobile ? handleMobilePracticeTry : tryPracticeResponse}
+            disabled={practiceDisabled}
+          >
+            {practiceBusy ? 'Reviewing...' : 'Get AI feedback'}
+          </button>
         </div>
         <div className="practice-goals">
           <strong>Practice goals from analysis</strong>
@@ -1410,14 +2461,9 @@ export default function WorkspacePage() {
           placeholder="Rewrite the selected block in your own words..."
         />
         {practiceError ? <p className="practice-error" role="alert">{practiceError}</p> : null}
-        <button
-          type="button"
-          onMouseEnter={holdWorkspaceWand}
-          onClick={mobile ? handleMobilePracticeTry : tryPracticeResponse}
-          disabled={practiceBusy || !activeEditorBlock?.blockId || !practiceInput.trim()}
-        >
-          {practiceBusy ? 'Reviewing...' : 'Get AI feedback'}
-        </button>
+        <div className="practice-composer-actions">
+          <span>{practiceInput.length} / {PRACTICE_MAX_CHARS}</span>
+        </div>
       </article>
     );
   }
@@ -1521,6 +2567,17 @@ export default function WorkspacePage() {
             {mobile ? (
               <button type="button" onClick={() => setMobilePracticeIndex(0)}>Revise my attempt</button>
             ) : null}
+            <button
+              type="button"
+              className="practice-apply-button"
+              onClick={applyPracticeAttempt}
+              disabled={
+                practiceBusy
+                || feedback.requestContextKey !== currentPracticeKey
+              }
+            >
+              Apply Your Rewritten Version
+            </button>
           </>
         ) : null}
       </article>
@@ -1528,6 +2585,28 @@ export default function WorkspacePage() {
   }
 
   function renderRewriteCard(card) {
+    const skippedOrigin = currentRewriteBlock?.attrs?.resumeStatus === 'skipped'
+      || currentRewriteBlock?.resume_status === 'skipped';
+    const manuallyEdited = currentRewriteBlock?.attrs?.changeSource === 'manual'
+      || currentRewriteBlock?.change_source === 'manual';
+    const processingPrompt = rewriteCardShowsProcessing(card, currentRewriteBlock);
+    const generateLabel = processingPrompt
+      ? 'Processing...'
+      : card.response
+        ? 'Regenerate'
+        : skippedOrigin
+          ? 'Regenerate for skipped'
+          : manuallyEdited
+            ? 'Regenerate for edited'
+            : card.state === 'failed'
+              ? 'Retry rewrite'
+              : 'Processing...';
+    const generationDisabled = (
+      processingPrompt
+      || rewriteCardsLocked
+      || rewriteAllCompleted
+      || !rewriteNlpEligible
+    );
     return (
       <article
         key={card.id}
@@ -1545,9 +2624,12 @@ export default function WorkspacePage() {
               event.stopPropagation();
               regenerateRewriteCard(card.id);
             }}
-            disabled={rewriteBusy || rewriteCardsLocked || rewriteAllCompleted}
+            className={`rewrite-card-generate${generationDisabled
+              ? ' ai-action-disabled'
+              : ''}`}
+            disabled={generationDisabled}
           >
-            {card.response ? 'Regenerate' : 'Generate'}
+            {rewriteNlpEligible ? generateLabel : 'Review writing checks'}
           </button>
         </div>
         <p className="rewrite-card-best-for">{card.bestFor}</p>
@@ -1567,9 +2649,11 @@ export default function WorkspacePage() {
               </button>
               <button
                 type="button"
-                className="rewrite-card-apply"
                 onClick={(event) => handleRewriteCardClick(card, event)}
-                disabled={rewriteBusy || rewriteCardsLocked || !card.meaningPreserved}
+                className={`rewrite-card-apply${rewriteApplyBusy || rewriteCardsLocked || !card.meaningPreserved
+                  ? ' ai-action-disabled'
+                  : ''}`}
+                disabled={rewriteApplyBusy || rewriteCardsLocked || !card.meaningPreserved}
               >
                 Use this rewrite
               </button>
@@ -1625,18 +2709,57 @@ export default function WorkspacePage() {
     setMobileOwlOpen((value) => !value);
   }
 
+  function renderAnalyzingCard() {
+    return (
+      <>
+        {nlpFeatureFlags.NLP_ANALYZING_FLIP_CARD_ENABLED ? (
+          <AnalyzingFlipCard
+            face={analysisFace}
+            onFaceChange={handleAnalysisFaceChange}
+            nlpPanel={(
+              <NlpAnalysisPanel
+                snapshot={activeBlockNlpSnapshot}
+                checkState={nlpCheckState}
+                error={nlpCheckError}
+                documentSummary={documentNlpSummary}
+                onRejectIssue={rejectActiveLanguageIssue}
+                rejectingIssueKey={rejectingLanguageIssueKey}
+              />
+            )}
+            aiPanel={renderAnalysisStats()}
+          />
+        ) : renderAnalysisStats()}
+        {nlpFeatureFlags.MCP_CITATION_V2_ENABLED ? (
+          <CitationReviewPanel
+            key={`${selectedDocument?.id}-${selectedDocument?.revision}-${styleName}`}
+            document={selectedDocument}
+            disabled={styleName === 'Customized'}
+            onDocumentApplied={(document) => {
+              openWorkspace(document, { updateRoute: false });
+              setWorkspaceNotice('Citation patch applied and versioned.');
+            }}
+          />
+        ) : null}
+      </>
+    );
+  }
+
   function renderMobileAssistantPanel() {
     const currentRewriteCard = rewriteCards[mobileRewriteIndex] || rewriteCards[0];
 
     return (
       <section className="workspace-mobile-assistant-panel" aria-label="Mobile owl workspace panel">
         <div className="workspace-mobile-panel-switcher" role="tablist" aria-label="Mobile workspace mode">
-          {['rewriting', 'practicing'].map((item) => (
+          {WORKSPACE_AI_MODES.map((item) => (
             <button
               key={item}
               type="button"
               className={mobilePanelMode === item ? 'is-active' : ''}
               onClick={() => setMobilePanelMode(item)}
+              role="tab"
+              aria-selected={mobilePanelMode === item}
+              id={`mobile-assistant-tab-${item}`}
+              aria-controls="mobile-assistant-panel"
             >
               {item}
             </button>
@@ -1644,7 +2767,7 @@ export default function WorkspacePage() {
         </div>
 
         {mobilePanelMode === 'rewriting' ? (
-          <div className="workspace-mobile-panel-body">
+          <div className="workspace-mobile-panel-body" role="tabpanel" id="mobile-assistant-panel" aria-labelledby="mobile-assistant-tab-rewriting">
             {rewriteAllCompleted ? (
               renderRewriteCompleteCard()
             ) : (
@@ -1663,8 +2786,12 @@ export default function WorkspacePage() {
               </>
             )}
           </div>
+        ) : mobilePanelMode === 'analyzing' ? (
+          <div className="workspace-mobile-panel-body" role="tabpanel" id="mobile-assistant-panel" aria-labelledby="mobile-assistant-tab-analyzing">
+            {renderAnalyzingCard()}
+          </div>
         ) : (
-          <div className="workspace-mobile-panel-body">
+          <div className="workspace-mobile-panel-body" role="tabpanel" id="mobile-assistant-panel" aria-labelledby="mobile-assistant-tab-practicing">
             <div className="workspace-mobile-card-nav">
               <button type="button" onClick={() => moveMobilePractice(-1)} aria-label="Previous practice card">
                 <PanelChevron direction="left" />
@@ -1688,9 +2815,10 @@ export default function WorkspacePage() {
     const metrics = analysis?.deterministic;
     const ai = analysis?.ai;
     const sourceLookup = ai?.sourceLookup;
+    const analysisResults = ai?.results ?? [];
     const filterCounts = Object.fromEntries(Object.keys(ANALYSIS_FILTER_LABELS).map((key) => [
       key,
-      ai?.issues?.filter((issue) => issue.type === key).length ?? null,
+      analysisResults.find((result) => result.type === key)?.issues?.length ?? null,
     ]));
 
     return (
@@ -1729,7 +2857,6 @@ export default function WorkspacePage() {
           <>
             <div className="analysis-result-heading">
               <strong>{ai.summary}</strong>
-              <span>{ai.purpose} · {analysis.model}</span>
             </div>
 
             <div className="analysis-stat-grid">
@@ -1755,7 +2882,7 @@ export default function WorkspacePage() {
               <section className="analysis-source-lookup">
                 <div className="analysis-source-lookup-heading">
                   <h3>External source check</h3>
-                  <span>MCP · Crossref</span>
+                  <span>Academic publication records</span>
                 </div>
 
                 {sourceLookup.items?.length ? (
@@ -1775,42 +2902,43 @@ export default function WorkspacePage() {
                     ))}
                   </ul>
                 ) : (
-                  <p>Crossref could not be reached. Analysis continued without external metadata.</p>
+                  <p>Publication records could not be reached. The writing review continued without them.</p>
                 )}
 
                 {sourceLookup.status === 'partial' ? (
-                  <small>Some DOI records could not be retrieved.</small>
+                  <small>Some publication details could not be retrieved.</small>
                 ) : null}
               </section>
             ) : null}
 
-            <dl className="analysis-stats">
-              {Object.entries(ai.scores).map(([label, score], index) => (
-                <div className="analysis-score-row" key={label}>
-                  <div>
-                    <dt>{label}</dt>
-                    <dd>{score}%</dd>
+            <div className="analysis-result-list">
+              {analysisResults.map((result) => (
+                <section
+                  key={result.type}
+                  className={`analysis-result-card analysis-result-card--${result.type}`}
+                >
+                  <div className="analysis-result-card__heading">
+                    <h3>{ANALYSIS_FILTER_LABELS[result.type]}</h3>
+                    <span>
+                      {result.status === 'clear'
+                        ? 'Checked — clear'
+                        : `${result.issues.length} ${result.issues.length === 1 ? 'note' : 'notes'}`}
+                    </span>
                   </div>
-                  <div className="analysis-bar-track">
-                    <div
-                      className={`analysis-bar-fill${index === 0 ? ' analysis-bar-fill--green' : ''}`}
-                      style={{ width: `${score}%` }}
-                    />
-                  </div>
-                </div>
+                  {result.status === 'clear' ? (
+                    <p>No issue was found for this check.</p>
+                  ) : result.issues.map((issue, index) => (
+                    <article
+                      key={`${result.type}-${index}`}
+                      className={`analysis-issue analysis-issue--${result.type}`}
+                    >
+                      <q>{issue.evidence}</q>
+                      <p>{issue.explanation}</p>
+                      <small>{issue.suggestion}</small>
+                    </article>
+                  ))}
+                </section>
               ))}
-            </dl>
-
-            <div className="analysis-issue-list">
-              <h3>Coaching notes</h3>
-              {ai.issues.length ? ai.issues.map((issue, index) => (
-                <article key={`${issue.type}-${index}`} className={`analysis-issue analysis-issue--${issue.severity}`}>
-                  <div><strong>{ANALYSIS_FILTER_LABELS[issue.type]}</strong><span>{issue.severity}</span></div>
-                  <q>{issue.evidence}</q>
-                  <p>{issue.explanation}</p>
-                  <small>{issue.suggestion}</small>
-                </article>
-              )) : <p>No selected issues were found in this block.</p>}
             </div>
 
             <div className="analysis-learning-goals">
@@ -1833,8 +2961,7 @@ export default function WorkspacePage() {
     const tabs = [
       ['setup', 'New doc'],
       ['styles', 'Styles'],
-      ['history', 'History'],
-      ['analyzing', 'Analyzing'],
+      ['history', 'Others'],
     ];
 
     return (
@@ -1846,28 +2973,50 @@ export default function WorkspacePage() {
               type="button"
               className={mobileOptionsTab === id ? 'is-active' : ''}
               onClick={() => setMobileOptionsTab(id)}
+              role="tab"
+              aria-selected={mobileOptionsTab === id}
+              id={`mobile-options-tab-${id}`}
+              aria-controls="mobile-options-panel"
             >
               {label}
             </button>
           ))}
         </div>
-        <div className="workspace-mobile-options-body">
+        <div
+          className="workspace-mobile-options-body"
+          role="tabpanel"
+          id="mobile-options-panel"
+          aria-labelledby={`mobile-options-tab-${mobileOptionsTab}`}
+        >
           {mobileOptionsTab === 'setup' ? (
             <section className="workspace-upload-note">
-              <p>Upload a new document. Save current edits before leaving.</p>
               <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
                 <UploadDocIcon />
                 Upload
               </button>
+              <span>Upload a new document. Save current edits before leaving.</span>
             </section>
           ) : null}
           {mobileOptionsTab === 'styles' ? (
-            <AcademicStylePanel
-              styleName={styleName}
-              customStyle={styleSettings}
-              onTemplateChange={handleTemplateChange}
-              onCustomStyleChange={handleCustomStyleChange}
-            />
+            <>
+              <AcademicStylePanel
+                styleName={styleName}
+                customStyle={styleSettings}
+                onTemplateChange={handleTemplateChange}
+                onCustomModeSelect={handleCustomModeSelect}
+                onCustomStyleChange={handleCustomStyleChange}
+              />
+              {nlpFeatureFlags.NLP_SEMANTIC_PROFILE_ENABLED
+                && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
+                  <SemanticProfileControl
+                    value={semanticProfile}
+                    onChange={setSemanticProfile}
+                    onApply={applySemanticProfile}
+                    busy={nlpRepartitionBusy}
+                    status={nlpRepartitionStatus}
+                  />
+                ) : null}
+            </>
           ) : null}
           {mobileOptionsTab === 'history' ? (
             <HistorySelector
@@ -1880,14 +3029,6 @@ export default function WorkspacePage() {
               onViewAll={() => setWorkspaceHistoryExpanded((value) => !value)}
             />
           ) : null}
-          {mobileOptionsTab === 'analyzing' ? (
-            <section className="workspace-mode-card workspace-mode-card--interactive">
-              {!currentBlockAnalysis ? (
-                <p>Select a block, choose your goals, and learn with our AI coach.</p>
-              ) : null}
-              {renderAnalysisStats()}
-            </section>
-          ) : null}
         </div>
       </section>
     );
@@ -1896,30 +3037,36 @@ export default function WorkspacePage() {
   function renderWorkspaceMode() {
     if (workspaceMode === 'analyzing') {
       return (
-        <section className="workspace-mode-card workspace-mode-card--interactive">
+        <section className="workspace-mode-card workspace-mode-card--interactive" role="tabpanel" id="workspace-mode-panel" aria-labelledby="workspace-mode-tab-analyzing">
+          <div className="workspace-mode-card-content">
           {!currentBlockAnalysis ? (
             <p>Select a block, choose your goals, and learn with our AI coach.</p>
           ) : null}
-          {renderAnalysisStats()}
+          {renderAnalyzingCard()}
+          </div>
         </section>
       );
     }
 
     if (workspaceMode === 'rewriting') {
       return (
-        <section className="workspace-mode-card workspace-mode-card--interactive">
+        <section className="workspace-mode-card workspace-mode-card--interactive" role="tabpanel" id="workspace-mode-panel" aria-labelledby="workspace-mode-tab-rewriting">
+          <div className="workspace-mode-card-content">
           {rewriteError ? <p className="rewrite-panel-error" role="alert">{rewriteError}</p> : null}
           <div className="rewrite-card-list">
             {rewriteAllCompleted ? renderRewriteCompleteCard() : rewriteCards.map((card) => renderRewriteCard(card))}
+          </div>
           </div>
         </section>
       );
     }
 
     return (
-      <section className="workspace-mode-card workspace-mode-card--interactive">
+      <section className="workspace-mode-card workspace-mode-card--interactive" role="tabpanel" id="workspace-mode-panel" aria-labelledby="workspace-mode-tab-practicing">
+        <div className="workspace-mode-card-content">
         {renderPracticeComposer()}
         {renderPracticeFeedback()}
+        </div>
       </section>
     );
   }
@@ -1951,6 +3098,8 @@ export default function WorkspacePage() {
           className="workspace-file-input"
           type="file"
           accept=".txt,.md,.docx"
+          aria-label="Upload a document"
+          tabIndex={-1}
           onChange={handleWorkspaceUploadInputChange}
         />
         <aside className="workspace-left-panel" aria-label="Document setup">
@@ -1959,21 +3108,33 @@ export default function WorkspacePage() {
             onClick={() => setWorkspaceSidebarOpen((value) => !value)}
             className="workspace-sidebar-toggle-button"
             ariaLabel={workspaceSidebarOpen ? 'Collapse setup sidebar' : 'Open setup sidebar'}
+            variant="side"
           />
           <div className="workspace-left-panel-content">
             <section className="workspace-upload-note">
-              <p>Upload a new document. Save current edits before leaving.</p>
               <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
                 <UploadDocIcon />
                 Upload
               </button>
+              <span>Upload a new document. Save current edits before leaving.</span>
             </section>
             <AcademicStylePanel
               styleName={styleName}
               customStyle={styleSettings}
               onTemplateChange={handleTemplateChange}
+              onCustomModeSelect={handleCustomModeSelect}
               onCustomStyleChange={handleCustomStyleChange}
             />
+            {nlpFeatureFlags.NLP_SEMANTIC_PROFILE_ENABLED
+              && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
+                <SemanticProfileControl
+                  value={semanticProfile}
+                  onChange={setSemanticProfile}
+                  onApply={applySemanticProfile}
+                  busy={nlpRepartitionBusy}
+                  status={nlpRepartitionStatus}
+                />
+              ) : null}
             <HistorySelector
               documents={recentDocuments}
               expanded={workspaceHistoryExpanded}
@@ -2024,22 +3185,37 @@ export default function WorkspacePage() {
             onBlockStatusChange={handleEditorBlockStatusChange}
             onActiveBlockChange={handleActiveEditorBlockChange}
             analysisHighlights={analysisHighlights}
+            nlpIssues={activeBlockNlpIssues}
             onSave={() => saveWorkspaceDocument()}
             saveDisabled={!workspaceDirty}
             saving={workspaceSaving}
+            initialScrollPosition={pendingEditorScrollRestoreRef.current}
+            onInitialScrollRestored={() => {
+              pendingEditorScrollRestoreRef.current = null;
+            }}
           />
         </section>
 
         <aside className="workspace-blackboard-panel" aria-label="Owl workspace panel" style={blackboardStyle}>
-          <img className="blackboard__image" src={blackboardUrl} alt="" />
+          <img
+            className="blackboard__image"
+            src={blackboardUrl}
+            alt=""
+            draggable={false}
+            aria-hidden="true"
+          />
           <div className="workspace-blackboard-content">
             <div className="workspace-mode-switcher" role="tablist" aria-label="Workspace mode">
-              {['analyzing', 'rewriting', 'practicing'].map((item) => (
+              {WORKSPACE_AI_MODES.map((item) => (
                 <button
                   key={item}
                   type="button"
                   className={workspaceMode === item ? 'is-active' : ''}
                   onClick={() => setWorkspaceMode(item)}
+                  role="tab"
+                  aria-selected={workspaceMode === item}
+                  id={`workspace-mode-tab-${item}`}
+                  aria-controls="workspace-mode-panel"
                 >
                   {item}
                 </button>
@@ -2107,6 +3283,73 @@ export default function WorkspacePage() {
                   disabled={workspaceSaving}
                 >
                   {workspaceSaving ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
+        {formatReview ? (
+          <div className="confirm-backdrop" role="presentation">
+            <section className="confirm-modal format-review-modal" role="dialog" aria-modal="true" aria-labelledby="format-review-title">
+              <h2 id="format-review-title">Review local formatting</h2>
+              <p>
+                {formatReview.audit.differences.length} block(s) differ from the global format.
+                Choose whether to normalize them or preserve their property-level overrides.
+              </p>
+              <ul>
+                {formatReview.audit.differences.slice(0, 8).map((item, index) => (
+                  <li key={item.blockId || index}>
+                    Block {index + 1}: {item.properties.join(', ')}
+                  </li>
+                ))}
+              </ul>
+              <div className="confirm-actions">
+                <button type="button" onClick={() => setFormatReview(null)}>Cancel</button>
+                <button
+                  type="button"
+                  onClick={() => saveWorkspaceDocument({
+                    leaveAfterSave: formatReview.leaveAfterSave,
+                    formatDecision: 'keep',
+                  })}
+                >
+                  Keep local formatting
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => saveWorkspaceDocument({
+                    leaveAfterSave: formatReview.leaveAfterSave,
+                    formatDecision: 'normalize',
+                  })}
+                >
+                  Normalize to global
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
+        {templateSwitchReview ? (
+          <div className="confirm-backdrop" role="presentation">
+            <section className="confirm-modal template-switch-modal" role="dialog" aria-modal="true" aria-labelledby="template-switch-title">
+              <h2 id="template-switch-title">
+                Switch to {templateSwitchReview.nextStyleName}?
+              </h2>
+              {templateSwitchReview.nextStyleName === 'Customized' ? (
+                <p>
+                  Customized formatting does not define a citation standard. Citation checking will be disabled until APA, MLA, or Chicago is selected.
+                </p>
+              ) : (
+                <p>
+                  The reference list will be converted first. The citation checker will then match those sources and convert the in-text citations to {templateSwitchReview.nextStyleName}. <br/> <strong>Note: After template switching, the document will be automatically saved.</strong>
+                </p>
+              )}
+              {templateSwitchError ? <p className="analysis-error" role="alert">{templateSwitchError}</p> : null}
+              <div className="confirm-actions">
+                <button type="button" onClick={() => setTemplateSwitchReview(null)} disabled={templateSwitchBusy}>
+                  Cancel
+                </button>
+                <button type="button" className="primary" onClick={confirmTemplateSwitch} disabled={templateSwitchBusy}>
+                  {templateSwitchBusy ? 'Switching…' : 'Switch template'}
                 </button>
               </div>
             </section>

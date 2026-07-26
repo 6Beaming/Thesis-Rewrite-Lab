@@ -1,6 +1,7 @@
 import path from 'node:path';
 import mammoth from 'mammoth';
 import { parseFragment } from 'parse5';
+import { cleanExtractedBlocks } from '../lib/documentCleanup/index.js';
 
 export const SUPPORTED_DOCUMENT_EXTENSIONS = new Set(['.txt', '.md', '.docx']);
 
@@ -36,11 +37,14 @@ export function normalizeText(value) {
 }
 
 function textBlock(text, sourceType = 'paragraph', attrs = {}, content = null) {
+  const inlineContent = String(text ?? '').split(/(\n)/).filter(Boolean).map((part) => (
+    part === '\n' ? { type: 'hardBreak' } : { type: 'text', text: part }
+  ));
   return {
     sourceType,
     text,
     attrs: { sourceType, ...attrs },
-    content: content ?? (text ? [{ type: 'text', text }] : []),
+    content: content ?? inlineContent,
   };
 }
 
@@ -52,13 +56,73 @@ function ensureBlocks(blocks) {
   return normalized;
 }
 
+function endsCompleteSentence(value) {
+  return /[.!?][\p{Pe}"'’”]*$/u.test(String(value ?? '').trim());
+}
+
+function beginsAsContinuation(value) {
+  const text = String(value ?? '').trim();
+  return /^[\p{Ll},.;:!?)}\]]/u.test(text)
+    || /^(?:and|but|nor|or|so|yet|which|that|because|while|whereas)\b/i.test(text);
+}
+
+function mergeContinuationBlocks(left, right) {
+  const leftContent = Array.isArray(left.content) ? left.content : [];
+  const rightContent = Array.isArray(right.content) ? right.content : [];
+  return {
+    ...left,
+    text: `${left.text}\n${right.text}`,
+    content: [
+      ...leftContent,
+      { type: 'hardBreak' },
+      ...rightContent,
+    ],
+  };
+}
+
+export function coalesceContinuationBlocks(blocks) {
+  const output = [];
+  let continuationOpen = false;
+
+  for (const block of blocks) {
+    const previous = output.at(-1);
+    const compatible = previous?.sourceType === 'paragraph' && block.sourceType === 'paragraph';
+    const previousIncomplete = compatible && !endsCompleteSentence(previous.text);
+    const currentShort = Array.from(String(block.text ?? '')).length <= 80;
+    const currentContinuation = beginsAsContinuation(block.text);
+    const shouldMerge = compatible && (
+      continuationOpen
+      || currentContinuation
+      || (previousIncomplete && (
+        Array.from(String(previous.text ?? '')).length >= 80
+        || currentShort
+      ))
+    );
+
+    if (!shouldMerge) {
+      output.push(block);
+      continuationOpen = false;
+      continue;
+    }
+
+    output[output.length - 1] = mergeContinuationBlocks(previous, block);
+    continuationOpen = currentShort
+      || (!endsCompleteSentence(block.text) && (
+        currentContinuation
+        || Array.from(String(block.text ?? '')).length < 240
+      ));
+  }
+
+  return output;
+}
+
 export function extractTextBlocks(text) {
   const blocks = normalizeText(text)
-    .split('\n')
-    .map((line) => line.trim())
+    .split(/\n[^\S\n]*\n+/)
+    .map((section) => section.trim())
     .filter(Boolean)
-    .map((line) => textBlock(line));
-  return ensureBlocks(blocks);
+    .map((section) => textBlock(section));
+  return ensureBlocks(cleanExtractedBlocks(blocks));
 }
 
 function markdownMetadata(line) {
@@ -144,29 +208,73 @@ function appendInlineText(segment, value, marks) {
 
 function trimInlineContent(content) {
   const nodes = content
-    .filter((node) => node.type === 'text' && node.text)
+    .filter((node) => node.type === 'hardBreak' || (node.type === 'text' && node.text))
     .map((node) => ({ ...node, marks: node.marks ? [...node.marks] : undefined }));
   if (!nodes.length) return [];
-  nodes[0].text = nodes[0].text.replace(/^\s+/, '');
-  nodes[nodes.length - 1].text = nodes[nodes.length - 1].text.replace(/\s+$/, '');
-  return nodes.filter((node) => node.text);
+  while (nodes[0]?.type === 'hardBreak') nodes.shift();
+  while (nodes.at(-1)?.type === 'hardBreak') nodes.pop();
+  const firstText = nodes.find((node) => node.type === 'text');
+  const lastText = nodes.findLast((node) => node.type === 'text');
+  if (firstText) firstText.text = firstText.text.replace(/^\s+/, '');
+  if (lastText) lastText.text = lastText.text.replace(/\s+$/, '');
+  return nodes.filter((node) => node.type === 'hardBreak' || node.text);
 }
 
 function contentText(content) {
-  return content.map((node) => node.text ?? '').join('');
+  return content.map((node) => node.type === 'hardBreak' ? '\n' : node.text ?? '').join('');
+}
+
+function splitLeadingEmphasizedTitle(content) {
+  let splitIndex = 0;
+  let sawBoldText = false;
+  while (splitIndex < content.length) {
+    const node = content[splitIndex];
+    if (
+      node.type !== 'text'
+      || !node.marks?.some((mark) => mark.type === 'bold')
+    ) {
+      break;
+    }
+    sawBoldText ||= Boolean(node.text?.trim());
+    splitIndex += 1;
+  }
+  if (!sawBoldText || splitIndex === content.length) return null;
+
+  const titleContent = trimInlineContent(content.slice(0, splitIndex));
+  const bodyContent = trimInlineContent(content.slice(splitIndex));
+  const title = contentText(titleContent);
+  const body = contentText(bodyContent);
+  const titleWords = title.match(/[\p{L}\p{N}]+/gu) ?? [];
+  const likelyStandaloneTitle = (
+    /^(?:assignment|article|chapter|section|part|appendix|abstract|introduction|conclusion|references)\b/iu.test(title)
+    || /[:)]$/u.test(title)
+  );
+  if (
+    !body
+    || titleWords.length > 16
+    || Array.from(title).length > 160
+    || /[.!?]$/u.test(title)
+    || !likelyStandaloneTitle
+    || !/^[\p{Lu}\p{N}]/u.test(body)
+  ) {
+    return null;
+  }
+  return { titleContent, title, bodyContent, body };
 }
 
 function inlineSegments(root) {
-  const segments = [[]];
+  const content = [];
 
   function walk(node, activeMarks = []) {
     if (node.nodeName === '#text') {
-      appendInlineText(segments[segments.length - 1], node.value, activeMarks);
+      appendInlineText(content, node.value, activeMarks);
       return;
     }
     const tagName = node.tagName?.toLowerCase();
     if (tagName === 'br') {
-      segments.push([]);
+      if (content.length && content.at(-1)?.type !== 'hardBreak') {
+        content.push({ type: 'hardBreak' });
+      }
       return;
     }
     const mark = MARK_TAGS.get(tagName);
@@ -177,10 +285,62 @@ function inlineSegments(root) {
   }
 
   walk(root);
-  return segments.map(trimInlineContent).filter((content) => contentText(content).trim());
+  const normalized = trimInlineContent(content);
+  return normalized.length ? [normalized] : [];
 }
 
-export function blocksFromHtml(html) {
+function normalizeNumberedHeading(block) {
+  if (Array.from(String(block.text ?? '')).length > 160) return block;
+  const content = (block.content ?? []).map((node) => ({ ...node }));
+  const firstText = content.find((node) => node.type === 'text');
+  if (!firstText) return block;
+  firstText.text = firstText.text.replace(
+    /^(\s*\d+(?:\.\d+)+)(?=\p{Lu})/u,
+    '$1 ',
+  );
+  return {
+    ...block,
+    text: contentText(content),
+    content,
+  };
+}
+
+function markBibliographyStructure(blocks) {
+  let insideBibliography = false;
+  return blocks.map((block) => {
+    const text = String(block.text ?? '').trim();
+    if (/^(?:references|bibliography|works cited)\s*$/iu.test(text)) {
+      insideBibliography = true;
+      return {
+        ...block,
+        sourceType: 'bibliographyHeading',
+        attrs: {
+          ...(block.attrs ?? {}),
+          sourceType: 'bibliographyHeading',
+          textIndent: '0in',
+          formatOverrides: [
+            ...new Set([...(block.attrs?.formatOverrides ?? []), 'textIndent']),
+          ],
+        },
+      };
+    }
+    if (!insideBibliography) return block;
+    return {
+      ...block,
+      sourceType: 'bibliographyEntry',
+      attrs: {
+        ...(block.attrs ?? {}),
+        sourceType: 'bibliographyEntry',
+        textIndent: '0in',
+        formatOverrides: [
+          ...new Set([...(block.attrs?.formatOverrides ?? []), 'textIndent']),
+        ],
+      },
+    };
+  });
+}
+
+export function blocksFromHtml(html, { integrityMode = 'strict' } = {}) {
   const fragment = parseFragment(String(html ?? ''));
   const blocks = [];
 
@@ -188,14 +348,43 @@ export function blocksFromHtml(html) {
     const tagName = node.tagName?.toLowerCase();
     if (BLOCK_TAGS.has(tagName)) {
       const segments = inlineSegments(node);
+      if (!segments.length && tagName === 'p') {
+        if (blocks.at(-1)?.sourceType !== 'boundary') {
+          blocks.push({
+            sourceType: 'boundary',
+            text: '',
+            attrs: { sourceType: 'boundary' },
+            content: [],
+          });
+        }
+        return;
+      }
       for (const content of segments) {
+        const emphasizedPrefix = tagName === 'p'
+          ? splitLeadingEmphasizedTitle(content)
+          : null;
+        if (emphasizedPrefix) {
+          blocks.push(normalizeNumberedHeading(textBlock(
+            emphasizedPrefix.title,
+            'heading',
+            { level: 2 },
+            emphasizedPrefix.titleContent,
+          )));
+          blocks.push(textBlock(
+            emphasizedPrefix.body,
+            'paragraph',
+            {},
+            emphasizedPrefix.bodyContent,
+          ));
+          continue;
+        }
         const text = contentText(content);
-        blocks.push(textBlock(
+        blocks.push(normalizeNumberedHeading(textBlock(
           text,
           sourceTypeForTag(tagName),
           attrsForTag(tagName),
           content,
-        ));
+        )));
       }
       return;
     }
@@ -203,7 +392,9 @@ export function blocksFromHtml(html) {
   }
 
   walk(fragment);
-  return ensureBlocks(blocks);
+  return ensureBlocks(markBibliographyStructure(
+    cleanExtractedBlocks(blocks, { integrityMode }),
+  ));
 }
 
 export async function extractDocxBlocks(buffer) {

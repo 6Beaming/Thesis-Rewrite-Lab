@@ -1,5 +1,16 @@
 import { requestJson } from './request.js';
 
+export const MAX_DOCUMENT_UPLOAD_BYTES = Math.floor(2.5 * 1024 * 1024);
+export const DOCUMENT_UPLOAD_SIZE_MESSAGE = 'Files must be 2.5 MB or smaller.';
+
+export function validateDocumentUploadSize(file) {
+  if (Number(file?.size ?? 0) > MAX_DOCUMENT_UPLOAD_BYTES) {
+    const error = new Error(DOCUMENT_UPLOAD_SIZE_MESSAGE);
+    error.code = 'UPLOAD_TOO_LARGE';
+    throw error;
+  }
+}
+
 export function listDocuments({ q = '', sort = 'most_recent' } = {}) {
   const params = new URLSearchParams({ q, sort });
   return requestJson(`/documents?${params.toString()}`);
@@ -20,11 +31,18 @@ export function saveDocument(documentId, payload) {
   });
 }
 
-export function uploadDocument(file, academicStyle = 'APA', partitionMode = 'semantic') {
+export function uploadDocument(
+  file,
+  academicStyle = 'APA',
+  partitionMode = 'character',
+  semanticProfile = 'medium',
+) {
+  validateDocumentUploadSize(file);
   const formData = new FormData();
   formData.append('file', file);
   formData.append('academicStyle', academicStyle);
   formData.append('partitionMode', partitionMode);
+  formData.append('semanticProfile', semanticProfile);
   return requestJson('/documents/upload', {
     method: 'POST',
     body: formData,
@@ -49,10 +67,44 @@ export function analyzeDocumentBlock(documentId, blockId, filters) {
   });
 }
 
-export function generateDocumentBlockRewrites(documentId, blockId, { tone, force = false }) {
+export function generateDocumentBlockRewrites(documentId, blockId, {
+  tone,
+  force = false,
+  useSavedPreferences,
+  preferenceOverrides,
+}) {
   return requestJson(`/documents/${documentId}/blocks/${blockId}/rewrites`, {
     method: 'POST',
-    body: JSON.stringify({ tone, force }),
+    body: JSON.stringify({
+      tone,
+      force,
+      ...(typeof useSavedPreferences === 'boolean' ? { useSavedPreferences } : {}),
+      ...(preferenceOverrides ? { preferenceOverrides } : {}),
+    }),
+  });
+}
+
+export function repartitionDocument(documentId, { semanticProfile, expectedRevision }) {
+  return requestJson(`/documents/${documentId}/nlp/repartition`, {
+    method: 'POST',
+    body: JSON.stringify({ semanticProfile, expectedRevision }),
+  });
+}
+
+export function getDocumentNlpJob(documentId, jobId) {
+  return requestJson(`/documents/${documentId}/nlp/jobs/${jobId}`);
+}
+
+export function getDocumentBlockRewrites(documentId, blockId, sourceTextHash = '') {
+  const params = new URLSearchParams();
+  if (sourceTextHash) params.set('sourceTextHash', sourceTextHash);
+  const suffix = params.size ? `?${params.toString()}` : '';
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/rewrites${suffix}`);
+}
+
+export function prewarmDocumentBlockRewrites(documentId, blockId) {
+  return requestJson(`/documents/${documentId}/blocks/${blockId}/rewrites/prewarm`, {
+    method: 'POST',
   });
 }
 

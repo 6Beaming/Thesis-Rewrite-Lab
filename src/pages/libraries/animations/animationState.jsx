@@ -7,6 +7,7 @@ export function createAnimationState() {
     standbyChoice: 'random',
     activeVariant: null,
     thinking: false,
+    thinkingRequested: false,
     error: false,
     blinkEnabled: true,
     headLocked: false,

@@ -7,10 +7,11 @@ import {
   computeDeterministicMetrics,
   hashBlockText,
   normalizeAnalysisFilters,
+  normalizeAnalysisResult,
 } from './blockAnalysis.js';
 
 test('uses the context-sensitive block analysis prompt', () => {
-  assert.equal(BLOCK_ANALYSIS_PROMPT_VERSION, 'block-analysis-v4');
+  assert.equal(BLOCK_ANALYSIS_PROMPT_VERSION, 'block-analysis-v6:nlp-v1');
   assert.deepEqual(Object.keys(ANALYSIS_FILTER_DETAILS), [
     'clarity',
     'conciseness',
@@ -41,4 +42,20 @@ test('normalizes filters and creates a stable cache signature', () => {
 test('hashes the exact block text', () => {
   assert.equal(hashBlockText('Same text.'), hashBlockText('Same text.'));
   assert.notEqual(hashBlockText('Same text.'), hashBlockText('Same text!'));
+});
+
+test('emits an explicit checked result for every requested filter', () => {
+  const result = normalizeAnalysisResult({
+    summary: 'Checked.',
+    results: [{
+      type: 'clarity',
+      status: 'issues-found',
+      issues: [{ evidence: 'wordy', explanation: 'Long.', suggestion: 'Shorten.' }],
+    }],
+    learningGoals: [],
+  }, ['clarity', 'flow']);
+  assert.deepEqual(result.results.map(({ type, status }) => ({ type, status })), [
+    { type: 'clarity', status: 'issues-found' },
+    { type: 'flow', status: 'clear' },
+  ]);
 });

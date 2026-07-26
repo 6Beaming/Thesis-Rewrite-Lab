@@ -23,6 +23,8 @@ import { createEventPublisher } from './server/realtime/publisher.js';
 import apiRouter from './server/routers/index.js';
 import { stripeWebhookHandler } from './server/routers/stripe.js';
 import { errorHandler, notFound } from './server/middlewares/errors.js';
+import { createRewriteWorker } from './server/ai/rewriteWorker.js';
+import { createNlpRepartitionWorker } from './server/nlp/repartitionWorker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -113,7 +115,12 @@ const realtime = attachRealtimeServer(server, {
   ownsDocument: userOwnsActiveDocument,
 });
 app.set('realtime', realtime);
-app.set('eventPublisher', createEventPublisher(realtime));
+const eventPublisher = createEventPublisher(realtime);
+app.set('eventPublisher', eventPublisher);
+const rewriteWorker = createRewriteWorker({ publisher: eventPublisher });
+rewriteWorker.start();
+const nlpRepartitionWorker = createNlpRepartitionWorker({ publisher: eventPublisher });
+nlpRepartitionWorker.start();
 
 server.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
@@ -121,6 +128,8 @@ server.listen(PORT, () => {
 
 // Close the server and database connection before the program stops.
 async function shutDown() {
+  rewriteWorker.stop();
+  nlpRepartitionWorker.stop();
   realtime.close();
   server.close();
   await Promise.allSettled([closeAuthDatabase(), closeDatabase()]);

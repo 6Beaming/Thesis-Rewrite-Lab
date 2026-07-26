@@ -20,6 +20,8 @@ export async function requestJson(path, options = {}) {
   if (!response.ok) {
     const error = new Error(data?.error || `Request failed with ${response.status}`);
     error.status = response.status;
+    error.code = data?.code ?? null;
+    error.correlationId = data?.correlationId ?? response.headers.get('x-correlation-id');
     if (response.status === 401 && typeof window !== 'undefined') {
       window.dispatchEvent(new Event('app:auth-expired'));
     }

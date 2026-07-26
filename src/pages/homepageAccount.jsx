@@ -1,7 +1,7 @@
-import lottie from 'lottie-web';
-import { useEffect, useRef } from 'react';
+import { useRef, useState } from 'react';
 import owlUrl from '../assets/owl.svg';
-import streakAnimation from '../assets/streak_lottie.json';
+import StreakAnimation from '../components/StreakAnimation.jsx';
+import HomepageWritingPreferences from './HomepageWritingPreferences.jsx';
 
 function UploadIcon() {
   return (
@@ -13,28 +13,18 @@ function UploadIcon() {
   );
 }
 
-export default function HomepageAccount({ user, onClose, onLogout, onUploadProfile }) {
+export default function HomepageAccount({
+  user,
+  onClose,
+  onLogout,
+  onUploadProfile,
+  onUpdateWritingPreferences,
+}) {
   const inputRef = useRef(null);
-  const streakRef = useRef(null);
-  const streakDays = Math.max(1, Number(user?.stats?.streak_day_count ?? 1));
+  const [activeView, setActiveView] = useState('profile');
+  const streakDays = Math.max(0, Number(user?.stats?.streak_day_count ?? 0));
   const avatarSrc = user?.profilePictureUrl || (user?.hasProfilePicture ? '/api/users/me/profile-picture' : owlUrl);
   const hasCustomAvatar = Boolean(user?.profilePictureUrl || user?.hasProfilePicture);
-
-  useEffect(() => {
-    if (!streakRef.current) return undefined;
-
-    const animation = lottie.loadAnimation({
-      container: streakRef.current,
-      renderer: 'svg',
-      loop: true,
-      autoplay: true,
-      animationData: streakAnimation,
-    });
-
-    return () => {
-      animation.destroy();
-    };
-  }, []);
 
   async function handleFileChange(event) {
     const file = event.target.files?.[0];
@@ -46,10 +36,18 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
   return (
     <div className="account-overlay" role="presentation" onPointerDown={onClose}>
       <aside
-        className="account-panel"
+        className={`account-panel${activeView === 'writing-preferences' ? ' account-panel--writing' : ''}`}
         aria-label="Account panel"
         onPointerDown={(event) => event.stopPropagation()}
       >
+        {activeView === 'writing-preferences' ? (
+          <HomepageWritingPreferences
+            user={user}
+            onBack={() => setActiveView('profile')}
+            onSave={onUpdateWritingPreferences}
+          />
+        ) : (
+          <>
         <div className={`account-profile${hasCustomAvatar ? '' : ' is-default-owl'}`}>
           <span className={`account-profile-avatar${hasCustomAvatar ? '' : ' account-profile-avatar--owl'}`} aria-hidden={!hasCustomAvatar}>
             <img
@@ -70,7 +68,7 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
         </div>
         <h2>{user?.email || user?.display_name || 'Your account'}</h2>
         <section className="account-streak">
-          <div ref={streakRef} className="account-streak-lottie" aria-hidden="true" />
+          <StreakAnimation className="account-streak-lottie" />
           <span className="account-streak-spark account-streak-spark--one" aria-hidden="true" />
           <span className="account-streak-spark account-streak-spark--two" aria-hidden="true" />
           <div className="account-streak-copy">
@@ -79,11 +77,13 @@ export default function HomepageAccount({ user, onClose, onLogout, onUploadProfi
           </div>
         </section>
         <div className="account-settings">
-          {['Writing preferences'].map((item) => (
-            <button type="button" key={item}>{item}</button>
-          ))}
+          <button type="button" onClick={() => setActiveView('writing-preferences')}>
+            Writing preferences
+          </button>
         </div>
         <button type="button" className="account-logout" onClick={onLogout}>Log out</button>
+          </>
+        )}
       </aside>
     </div>
   );

@@ -1,6 +1,5 @@
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 
-const SEVERITY_RANK = Object.freeze({ low: 1, medium: 2, high: 3 });
 const FINISHED_BLOCK_STATUSES = new Set(['processed', 'skipped']);
 const QUOTE_PAIRS = Object.freeze([
   ['"', '"'],
@@ -54,7 +53,7 @@ export function findAnalysisPhraseRanges(text, issues) {
       const to = from + phrase.length;
       const key = `${from}:${to}`;
       const existing = rangesByPosition.get(key);
-      if (!existing || (SEVERITY_RANK[issue?.severity] ?? 0) > (SEVERITY_RANK[existing.issue?.severity] ?? 0)) {
+      if (!existing) {
         rangesByPosition.set(key, { from, to, issue });
       }
     }
@@ -108,12 +107,9 @@ export function buildAnalysisPhraseDecorations(state, highlights) {
       const documentRange = documentRangeForTextRange(node, position, range.from, range.to);
       if (!documentRange) continue;
 
-      const severity = ['low', 'medium', 'high'].includes(range.issue?.severity)
-        ? range.issue.severity
-        : 'medium';
       decorations.push(Decoration.inline(documentRange.from, documentRange.to, {
         class: 'analysis-phrase-issue',
-        'data-analysis-severity': severity,
+        'data-analysis-type': range.issue?.type ?? 'general',
         title: range.issue?.suggestion || range.issue?.explanation || 'This phrase may need improvement.',
       }));
     }

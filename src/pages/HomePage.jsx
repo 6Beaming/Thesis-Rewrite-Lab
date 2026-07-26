@@ -7,7 +7,7 @@ import ProgressBanner from '../components/ProgressBanner.jsx';
 import { useAuth } from '../components/AuthProvider.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
 import { createDocument, moveToTrash, uploadDocument } from '../services/documentsApi.js';
-import { uploadProfilePicture } from '../services/usersApi.js';
+import { updateWritingPreferences, uploadProfilePicture } from '../services/usersApi.js';
 import HomepageAccount from './homepageAccount.jsx';
 import HomepageCredits from './homepageCredits.jsx';
 import HomepageSupport from './homepageSupport.jsx';
@@ -17,6 +17,9 @@ import HomepageVersionControl from './homepageVersionControl.jsx';
 const EMPTY_USER = {
   display_name: 'Signed-in user',
   email: '',
+  autosaveDocs: false,
+  useWritingPreferences: true,
+  writingPreferences: {},
   stats: {
     completed_rate: 0,
     streak_day_count: 0,
@@ -174,6 +177,19 @@ export default function HomePage({ onOpenWorkspace }) {
     }
   }
 
+  async function handleWritingPreferencesUpdate(settings) {
+    try {
+      const nextUser = await updateWritingPreferences(settings);
+      applyProfile(nextUser);
+      setUser((current) => ({ ...current, ...nextUser }));
+      setNotice('Writing preferences updated.');
+      return true;
+    } catch (error) {
+      setNotice(error.message || 'Could not update writing preferences.');
+      throw error;
+    }
+  }
+
   function handleOpenDocument(document) {
     setHistoryDocument(document);
     onOpenWorkspace?.(document);
@@ -256,14 +272,17 @@ export default function HomePage({ onOpenWorkspace }) {
       onSubscription={() => navigate('/subscription')}
       actionsHidden={hideHeaderActions}
     >
-      {notice ? <p className="home-api-notice" role="status">{notice}</p> : null}
-      {renderMainContent()}
+      <div className="home-main-inner">
+        {notice ? <p className="home-api-notice" role="status">{notice}</p> : null}
+        {renderMainContent()}
+      </div>
       {accountOpen ? (
         <HomepageAccount
           user={user}
           onClose={() => setAccountOpen(false)}
           onLogout={signOut}
           onUploadProfile={handleProfileUpload}
+          onUpdateWritingPreferences={handleWritingPreferencesUpdate}
         />
       ) : null}
     </HomeShell>

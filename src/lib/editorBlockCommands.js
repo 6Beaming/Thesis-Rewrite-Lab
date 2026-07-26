@@ -1,4 +1,5 @@
 import { splitBlockKeepMarks } from '@tiptap/pm/commands';
+import { Fragment } from '@tiptap/pm/model';
 import { TextSelection } from '@tiptap/pm/state';
 
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
@@ -8,6 +9,7 @@ const UNFINISHED_BLOCK_STATUSES = new Set(['unprocessed', 'processing']);
 function textFromJsonNode(node) {
   if (!node) return '';
   if (node.type === 'text') return node.text ?? '';
+  if (node.type === 'hardBreak') return '\n';
   if (!Array.isArray(node.content)) return '';
   return node.content.map(textFromJsonNode).join('');
 }
@@ -107,6 +109,11 @@ export function hasUnfinishedBlocks(blocks) {
   return blocks.some((block) => (
     !block.isEmpty && UNFINISHED_BLOCK_STATUSES.has(block.status)
   ));
+}
+
+export function trackedTextContentChanged(previousSnapshot, nextSnapshot) {
+  const textSequence = (snapshot) => Array.from(snapshot?.values?.() ?? []).join('');
+  return textSequence(previousSnapshot) !== textSequence(nextSnapshot);
 }
 
 export function chooseNextUnfinishedBlock(blocks, currentBlockId) {
@@ -210,6 +217,78 @@ export function splitSegmentedTextBlock(state, dispatch) {
   });
 }
 
+export function insertSegmentedLineBreak(state, dispatch) {
+  if (!isSegmentedTextBlockSelection(state)) return false;
+  const hardBreak = state.schema.nodes.hardBreak;
+  if (!hardBreak) return false;
+  const { $from } = state.selection;
+  if ($from.nodeBefore?.type === hardBreak) {
+    let segmentDepth = null;
+    let structuralDepth = null;
+    for (let depth = $from.depth; depth > 0; depth -= 1) {
+      const name = $from.node(depth).type.name;
+      if (segmentDepth == null && name === 'blockSegment') segmentDepth = depth;
+      if (STRUCTURAL_TEXT_BLOCK_TYPES.has(name)) {
+        structuralDepth = depth;
+        break;
+      }
+    }
+    if (segmentDepth != null && structuralDepth != null) {
+      const segment = $from.node(segmentDepth);
+      const structural = $from.node(structuralDepth);
+      const segmentPos = $from.before(segmentDepth);
+      const structuralPos = $from.before(structuralDepth);
+      const offset = $from.pos - segmentPos - 1;
+      const segmentOffset = segmentPos - structuralPos - 1;
+      const leftContent = segment.content.cut(0, Math.max(0, offset - 1));
+      const rightContent = segment.content.cut(offset, segment.content.size);
+      const randomId = globalThis.crypto?.randomUUID?.()
+        ?? `block-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const generation = (Number(segment.attrs.partitionGeneration) || 0) + 1;
+      const leftSegment = segment.type.create({
+        ...segment.attrs,
+        status: segment.attrs.status === 'processing' ? 'unprocessed' : segment.attrs.status,
+        resumeStatus: null,
+        processingBaselineText: null,
+        changeSource: 'manual',
+        partitionGeneration: generation,
+        length: leftContent.size,
+      }, leftContent);
+      const rightSegment = segment.type.create({
+        ...segment.attrs,
+        blockId: randomId,
+        status: 'processing',
+        resumeStatus: 'unprocessed',
+        processingBaselineText: rightContent.textBetween(0, rightContent.size, '\n', '\n'),
+        changeSource: 'none',
+        partitionGeneration: generation,
+        length: rightContent.size,
+      }, rightContent);
+      const before = structural.content.cut(0, segmentOffset);
+      const after = structural.content.cut(segmentOffset + segment.nodeSize, structural.content.size);
+      const left = structural.type.create(structural.attrs, before.append(Fragment.from(leftSegment)));
+      const right = structural.type.create(structural.attrs, Fragment.from(rightSegment).append(after));
+      const transaction = state.tr.replaceWith(
+        structuralPos,
+        structuralPos + structural.nodeSize,
+        Fragment.fromArray([left, right]),
+      );
+      const rightStart = structuralPos + left.nodeSize + 2;
+      transaction.setSelection(TextSelection.near(transaction.doc.resolve(rightStart)));
+      transaction.setMeta('editorBlockPartition', {
+        type: 'hard-boundary',
+        retiredBlockIds: [],
+        survivingBlockIds: [segment.attrs.blockId, randomId],
+        partitionGeneration: generation,
+      });
+      dispatch?.(transaction.scrollIntoView());
+      return true;
+    }
+  }
+  dispatch?.(state.tr.replaceSelectionWith(hardBreak.create()).scrollIntoView());
+  return true;
+}
+
 export function insertTextIntoSelectedSegment(state, dispatch, text) {
   if (!text) return false;
 
@@ -225,6 +304,131 @@ export function insertTextIntoSelectedSegment(state, dispatch, text) {
   const toSegment = selectedSegment(state.selection.$to);
   if (!fromSegment || fromSegment !== toSegment) return false;
 
-  dispatch?.(state.tr.insertText(text).scrollIntoView());
+  dispatch?.(state.tr
+    .insertText(text)
+    .setMeta('editorTextMutation', 'manual'));
+  return true;
+}
+
+function structuralNodeAtPosition($position) {
+  for (let depth = $position.depth; depth > 0; depth -= 1) {
+    const node = $position.node(depth);
+    if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type.name)) continue;
+    return {
+      node,
+      pos: $position.before(depth),
+      offset: $position.pos - $position.start(depth),
+    };
+  }
+  return null;
+}
+
+function structuralNodeWithContent(source, content) {
+  const text = content.textBetween(0, content.size, '\n', '\n');
+  return text.length ? source.type.create(source.attrs, content, source.marks) : null;
+}
+
+/**
+ * Isolates partial structural selections before list/quote commands. Splitting
+ * happens in the same history group as the immediately-following transform, so
+ * Undo restores both the text blocks and their prior structure.
+ */
+export function isolateSelectionInTransaction(state, transaction = state?.tr) {
+  if (!state || !transaction || transaction.selection.empty) return false;
+  const start = structuralNodeAtPosition(transaction.selection.$from);
+  const end = structuralNodeAtPosition(transaction.selection.$to);
+  if (!start || !end) return false;
+  const splitStart = start.offset > 0;
+  const splitEnd = end.offset < end.node.content.size;
+  if (!splitStart && !splitEnd) return false;
+
+  let selectionStartPos = start.pos;
+  let selectionEndPos = end.pos + end.node.nodeSize;
+
+  if (start.pos === end.pos) {
+    const before = structuralNodeWithContent(
+      start.node,
+      start.node.content.cut(0, start.offset),
+    );
+    const selected = structuralNodeWithContent(
+      start.node,
+      start.node.content.cut(start.offset, end.offset),
+    );
+    const after = structuralNodeWithContent(
+      start.node,
+      start.node.content.cut(end.offset, start.node.content.size),
+    );
+    if (!selected) return false;
+    const replacements = [before, selected, after].filter(Boolean);
+    transaction.replaceWith(
+      start.pos,
+      start.pos + start.node.nodeSize,
+      Fragment.fromArray(replacements),
+    );
+    selectionStartPos = start.pos + (before?.nodeSize ?? 0);
+    selectionEndPos = selectionStartPos + selected.nodeSize;
+  } else {
+    if (splitStart) {
+      const before = structuralNodeWithContent(
+        start.node,
+        start.node.content.cut(0, start.offset),
+      );
+      const selectedStart = structuralNodeWithContent(
+        start.node,
+        start.node.content.cut(start.offset, start.node.content.size),
+      );
+      const replacements = [before, selectedStart].filter(Boolean);
+      transaction.replaceWith(
+        start.pos,
+        start.pos + start.node.nodeSize,
+        Fragment.fromArray(replacements),
+      );
+      selectionStartPos = start.pos + (before?.nodeSize ?? 0);
+    }
+
+    const mappedEndPos = transaction.mapping.map(end.pos, 1);
+    if (splitEnd) {
+      const selectedEnd = structuralNodeWithContent(
+        end.node,
+        end.node.content.cut(0, end.offset),
+      );
+      const after = structuralNodeWithContent(
+        end.node,
+        end.node.content.cut(end.offset, end.node.content.size),
+      );
+      const replacements = [selectedEnd, after].filter(Boolean);
+      transaction.replaceWith(
+        mappedEndPos,
+        mappedEndPos + end.node.nodeSize,
+        Fragment.fromArray(replacements),
+      );
+      selectionEndPos = mappedEndPos + (selectedEnd?.nodeSize ?? 0);
+    } else {
+      selectionEndPos = mappedEndPos + end.node.nodeSize;
+    }
+  }
+
+  const fromSelection = TextSelection.near(
+    transaction.doc.resolve(Math.min(transaction.doc.content.size, selectionStartPos + 1)),
+    1,
+  );
+  const toSelection = TextSelection.near(
+    transaction.doc.resolve(Math.max(0, selectionEndPos - 1)),
+    -1,
+  );
+  transaction.setSelection(TextSelection.create(
+    transaction.doc,
+    fromSelection.from,
+    Math.max(fromSelection.from, toSelection.to),
+  ));
+  transaction.setMeta('editorStructuralSelection', true);
+  return true;
+}
+
+export function isolateSelectionForBlockTransform(editor) {
+  if (!editor || editor.isDestroyed || editor.state.selection.empty) return false;
+  const transaction = editor.state.tr;
+  if (!isolateSelectionInTransaction(editor.state, transaction)) return false;
+  editor.view.dispatch(transaction.scrollIntoView());
   return true;
 }

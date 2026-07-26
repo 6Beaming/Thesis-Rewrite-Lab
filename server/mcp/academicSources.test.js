@@ -6,6 +6,7 @@ import {
   lookupAcademicSourcesViaMcp,
   normalizeCrossrefWork,
 } from './academicSources.js';
+import { searchLiteratureQuery } from './tools/searchLiteratureQuery.js';
 
 test('extracts unique DOI values without surrounding sentence punctuation', () => {
   assert.deepEqual(
@@ -84,6 +85,48 @@ test('keeps external-source failures separate from the AI workflow', async () =>
   assert.deepEqual(lookup.items, []);
   assert.deepEqual(lookup.errors, [{
     doi: '10.1000/missing',
-    message: 'No Crossref record was found for this DOI.',
+    message: 'No publication record was found for this DOI.',
   }]);
+});
+
+test('literature search strips markup and omits auxiliary figure and reply records', async () => {
+  const response = await searchLiteratureQuery({
+    query: 'Anderson 2024',
+    author: 'Anderson',
+    year: '2024',
+  }, {
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        message: {
+          items: [
+            {
+              title: ['Jennifer Anderson on <i>#monalisa</i> and <i>The Act of Becoming</i>'],
+              author: [{ given: 'Jennifer', family: 'Anderson' }],
+              issued: { 'date-parts': [[2024]] },
+              score: 10,
+            },
+            {
+              title: ['Figure 2: Risk of bias assessment'],
+              author: [{ given: 'Test', family: 'Author' }],
+              issued: { 'date-parts': [[2024]] },
+              score: 9,
+            },
+            {
+              title: ['Re: Earlier correspondence'],
+              author: [{ given: 'Test', family: 'Author' }],
+              issued: { 'date-parts': [[2024]] },
+              score: 8,
+            },
+          ],
+        },
+      }),
+    }),
+  });
+
+  assert.equal(response.items.length, 1);
+  assert.equal(
+    response.items[0].title,
+    'Jennifer Anderson on #monalisa and The Act of Becoming',
+  );
 });

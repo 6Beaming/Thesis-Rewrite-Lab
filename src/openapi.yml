@@ -86,6 +86,29 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProductProfile'
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/users/me/activity:
+    post:
+      tags: [Profile]
+      summary: Record one idempotent local-calendar-day activity
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [timeZone]
+              properties:
+                timeZone:
+                  type: string
+                  description: Valid IANA time zone, such as America/Toronto.
+      responses:
+        '200':
+          description: Updated profile and streak
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductProfile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
   /api/users/me/profile-picture:
     get:
       tags: [Profile]
@@ -167,6 +190,53 @@ paths:
                 required: [document]
                 properties:
                   document: { $ref: '#/components/schemas/Document' }
+  /api/documents/{documentId}/blocks/{blockId}/rewrites:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/BlockId'
+    get:
+      tags: [Documents]
+      summary: Read cached rewrite tones and background-job states for a block identity
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { description: Rewrite identity, cached options, and jobs }
+    post:
+      tags: [Documents]
+      summary: Generate or force-regenerate a rewrite tone
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { description: Persisted rewrite result and echoed identity }
+  /api/documents/{documentId}/blocks/{blockId}/rewrites/prewarm:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/BlockId'
+    post:
+      tags: [Documents]
+      summary: Queue this block and the next five eligible Unprocessed blocks
+      security: [{ cookieAuth: [] }]
+      responses:
+        '202': { description: Deduplicated queued or cached jobs }
+  /api/documents/{documentId}/blocks/{blockId}/analysis:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/BlockId'
+    post:
+      tags: [Documents]
+      summary: Analyze one block with explicit clear or issues-found results per requested filter
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { description: Cached or newly persisted analysis }
+  /api/documents/{documentId}/blocks/{blockId}/practice-feedback:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+      - $ref: '#/components/parameters/BlockId'
+    post:
+      tags: [Documents]
+      summary: Coach a saved rewrite attempt using the matching current analysis
+      security: [{ cookieAuth: [] }]
+      responses:
+        '200': { description: Cached or newly persisted feedback and exact attempt text }
+        '409': { description: Matching current analysis is required }
   /api/documents/upload:
     post:
       tags: [Documents]
@@ -199,6 +269,11 @@ paths:
                 properties:
                   document: { $ref: '#/components/schemas/Document' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '413':
+          description: File exceeds the 2.5 MB limit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
   /api/documents/trash/check-expired:
     post:
       tags: [Trash]
@@ -523,6 +598,10 @@ components:
       required: [error]
       properties:
         error: { type: string }
+        code:
+          type: string
+          enum: [AI_NOT_CONFIGURED, AI_RATE_LIMITED, AI_TIMEOUT, AI_INVALID_OUTPUT, AI_PERSISTENCE_FAILED, STALE_BLOCK_CONTEXT, ANALYSIS_REQUIRED]
+        correlationId: { type: string, format: uuid }
     AuthUser:
       type: object
       required: [id, email]
@@ -544,6 +623,8 @@ components:
         streak_days:
           type: array
           items: { type: string, format: date }
+        last_active_on: { type: [string, 'null'], format: date }
+        time_zone: { type: [string, 'null'] }
     ProductProfile:
       type: object
       required: [id, auth_user_id, email, hasProfilePicture, stats]
@@ -588,6 +669,15 @@ components:
         block_index: { type: integer, minimum: 0 }
         text_content: { type: string }
         status: { $ref: '#/components/schemas/BlockStatus' }
+        resume_status: { type: [string, 'null'], enum: [unprocessed, processed, skipped, null] }
+        processing_baseline_text: { type: [string, 'null'] }
+        change_source:
+          type: string
+          enum: [none, manual, ai-replacement, practice-replacement]
+        partition_generation: { type: integer, minimum: 0 }
+        format_overrides:
+          type: array
+          items: { type: string }
         char_length: { type: integer, minimum: 0 }
         attrs: { type: object, additionalProperties: true }
         tiptap_node: { $ref: '#/components/schemas/TiptapNode' }

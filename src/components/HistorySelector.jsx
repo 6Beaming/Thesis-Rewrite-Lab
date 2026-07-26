@@ -9,7 +9,7 @@ export default function HistorySelector({
   return (
     <section className="history-selector" aria-label="Recent documents">
       <div className="workspace-panel-heading">
-        <h2>History workspace</h2>
+        <h2>Other documents</h2>
         <button type="button" onClick={onViewAll}>
           {expanded ? 'Collapse' : 'View all'}
         </button>

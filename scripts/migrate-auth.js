@@ -5,14 +5,23 @@ import { createPostgresPool } from '../server/models/auth-adapter.js';
 
 const pool = createPostgresPool(process.env.DATABASE_URL);
 const migrationsDirectory = new URL('../server/models/migrations/', import.meta.url);
+const LEGACY_COMPATIBLE_CHECKSUMS = new Map([
+  [2, new Set(['c0fe3b52e97716d8c5f3a0d584c8270a3fe5f9a7c89d36cca3b51c547ce68699'])],
+]);
 
 function migrationMetadata(filename, sql) {
   const match = /^(\d+)_.*\.sql$/.exec(filename);
   if (!match) return null;
+  const canonicalSql = sql.replace(/\r\n?/g, '\n');
   return {
     version: Number(match[1]),
     name: filename,
-    checksum: createHash('sha256').update(sql).digest('hex'),
+    checksum: createHash('sha256').update(canonicalSql).digest('hex'),
+    compatibleChecksums: new Set([
+      createHash('sha256').update(sql).digest('hex'),
+      createHash('sha256').update(canonicalSql).digest('hex'),
+      ...(LEGACY_COMPATIBLE_CHECKSUMS.get(Number(match[1])) ?? []),
+    ]),
     sql,
   };
 }
@@ -46,7 +55,7 @@ try {
     if (applied.rows[0]) {
       if (
         applied.rows[0].name !== migration.name
-        || applied.rows[0].checksum.trim() !== migration.checksum
+        || !migration.compatibleChecksums.has(applied.rows[0].checksum.trim())
       ) {
         throw new Error(`Applied migration ${migration.version} does not match ${migration.name}`);
       }

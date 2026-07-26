@@ -1,4 +1,20 @@
-import { BLINK_MIN, BLINK_MAX, createAnimationState, createTimerRegistry, createVariantRegistry, cacheStageElements, clearStageModes, setIndicator, random, pick } from './animationState.jsx';
+import {
+  BLINK_MIN,
+  BLINK_MAX,
+  cacheStageElements,
+  clearStageModes,
+  createAnimationState,
+  createTimerRegistry,
+  createVariantRegistry,
+  pick,
+  random,
+  setIndicator,
+} from './animationState.jsx';
+import {
+  beginThinkingRequest,
+  canStartRequestedThinking,
+  cancelThinkingRequest,
+} from './thinkingRequestState.js';
 import { createEyeController } from './eyes.jsx';
 import { createHeadController } from './head.jsx';
 import { createParticleController } from './particles.jsx';
@@ -564,6 +580,9 @@ function createWandController(ctx) {
         }
       }
     } finally {
+      // Wand morph/tremor timers must not leave the passive head/body/feet
+      // variant in a cleared state after a rewrite or Practice action.
+      ctx.resumePassiveAfterMagic?.();
       releaseMagicPriority();
     }
   }
@@ -648,6 +667,12 @@ export function createOwlAnimator(stageRoot) {
     ctx.standby.enterStandby(choice);
   }
 
+  ctx.resumePassiveAfterMagic = () => {
+    state.headLocked = false;
+    startStandby(state.standbyChoice || 'random', { keepWand: true, keepBlink: true });
+    ctx.wand.keepWandPoseActive({ refreshPin: true, resumeTremor: true });
+  };
+
   function showPendingWandAfterMode() {
     if (!state.pendingWandShow) {
       return;
@@ -659,18 +684,22 @@ export function createOwlAnimator(stageRoot) {
   }
 
   async function startThinking() {
-    if (state.thinking) {
-      return;
-    }
+    if (!beginThinkingRequest(state)) return;
+    // Expose request state immediately. The physical owl transition still
+    // waits for an in-flight magic sequence so the two motions never fight.
+    ctx.setIndicator('thinking', true);
     await ctx.wand.waitForMagicPriority();
-    if (state.thinking || state.error) {
+    if (!canStartRequestedThinking(state)) {
+      ctx.setIndicator('thinking', false);
       return;
     }
     stopPassiveAnimations({ keepBlink: true, keepWand: true });
+    // stopPassiveAnimations clears every status asset while switching modes,
+    // so restore the thinking asset for the active request.
+    ctx.setIndicator('thinking', true);
     state.mode = 'thinking';
     state.thinking = true;
     state.error = false;
-    ctx.setIndicator('thinking', true);
     const direction = Math.random() > 0.5 ? 'left' : 'right';
     ctx.eyes.startEyeThinking(direction);
     ctx.head.headThinkRotation(direction);
@@ -681,7 +710,10 @@ export function createOwlAnimator(stageRoot) {
   }
 
   async function endThinking() {
+    const wasRequested = state.thinkingRequested;
+    cancelThinkingRequest(state);
     if (!state.thinking) {
+      if (wasRequested) ctx.setIndicator('thinking', false);
       return;
     }
     const keepWand = state.wand !== 'hidden';
@@ -701,10 +733,12 @@ export function createOwlAnimator(stageRoot) {
 
   async function triggerError() {
     const wasThinking = state.thinking;
+    const wasThinkingRequested = state.thinkingRequested;
+    cancelThinkingRequest(state);
     state.error = true;
     state.mode = 'error';
 
-    if (wasThinking) {
+    if (wasThinking || wasThinkingRequested) {
       state.thinking = false;
       ctx.setIndicator('thinking', false);
     }
