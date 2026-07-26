@@ -6,7 +6,10 @@ import {
   focusEditorWithoutScroll,
   runToolbarCommand,
 } from '../lib/editorFormattingCommands.js';
-import { isolateSelectionInTransaction } from '../lib/editorBlockCommands.js';
+import {
+  isolateSelectionInTransaction,
+  trackedHeadingAttributes,
+} from '../lib/editorBlockCommands.js';
 import { EDITOR_PRESERVE_SCROLL_META } from '../lib/editorScrollGuard.js';
 
 function ToolIcon({ type, accentColor }) {
@@ -409,7 +412,14 @@ export default function EditorToolbar({
               if (value === 'paragraph') {
                 return chain.setParagraph().updateAttributes('paragraph', { outlineLevel: 'paragraph' });
               }
-              return chain.setHeading({ level: Number(value), outlineLevel: value });
+              const level = Number(value);
+              return chain
+                .setHeading({ level, outlineLevel: value })
+                .updateAttributes(
+                  'blockSegment',
+                  trackedHeadingAttributes(level, editor.getAttributes('blockSegment')),
+                )
+                .setBold();
             }, { restoreSelection: false });
           }}
           ariaLabel="Paragraph or heading level"

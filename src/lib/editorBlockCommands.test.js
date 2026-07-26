@@ -11,6 +11,7 @@ import {
   insertTextIntoSelectedSegment,
   isolateSelectionInTransaction,
   splitSegmentedTextBlock,
+  trackedHeadingAttributes,
   trackedTextContentChanged,
 } from './editorBlockCommands.js';
 
@@ -24,6 +25,12 @@ const BlockSegment = Node.create({
       blockId: { default: null },
       status: { default: 'unprocessed' },
       length: { default: 0 },
+      sourceType: { default: 'paragraph' },
+      level: { default: null },
+      fontSize: { default: '12pt' },
+      lineHeight: { default: '2.0' },
+      textIndent: { default: '0.5in' },
+      formatOverrides: { default: [] },
     };
   },
   renderHTML({ HTMLAttributes }) {
@@ -41,6 +48,65 @@ function createEditor(content) {
     content,
   });
 }
+
+test('Heading 1 uses the same tracked style and metadata as imported headings', () => {
+  assert.deepEqual(
+    trackedHeadingAttributes(1, { formatOverrides: ['fontFamily'] }),
+    {
+      sourceType: 'heading',
+      level: 1,
+      fontSize: '18pt',
+      lineHeight: '1.15',
+      textIndent: '0in',
+      formatOverrides: ['fontFamily', 'textIndent', 'lineHeight', 'fontSize'],
+    },
+  );
+});
+
+test('Heading 1 command updates the structural node, tracked style, and bold mark together', () => {
+  const text = 'Grammar and Sentence Editing Practice';
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [{
+        type: 'blockSegment',
+        attrs: {
+          blockId: 'block-1',
+          status: 'processing',
+          sourceType: 'paragraph',
+          fontSize: '12pt',
+        },
+        content: [{ type: 'text', text }],
+      }],
+    }],
+  });
+
+  editor.commands.setTextSelection({ from: 2, to: text.length + 2 });
+  const applied = editor.chain()
+    .setHeading({ level: 1 })
+    .updateAttributes(
+      'blockSegment',
+      trackedHeadingAttributes(1, editor.getAttributes('blockSegment')),
+    )
+    .setBold()
+    .run();
+
+  assert.equal(applied, true);
+  const heading = editor.getJSON().content[0];
+  const segment = heading.content[0];
+  assert.equal(heading.type, 'heading');
+  assert.equal(heading.attrs.level, 1);
+  assert.equal(segment.attrs.sourceType, 'heading');
+  assert.equal(segment.attrs.level, 1);
+  assert.equal(segment.attrs.fontSize, '18pt');
+  assert.equal(segment.attrs.lineHeight, '1.15');
+  assert.equal(segment.attrs.textIndent, '0in');
+  assert.deepEqual(segment.attrs.formatOverrides, ['textIndent', 'lineHeight', 'fontSize']);
+  assert.deepEqual(segment.content[0].marks, [{ type: 'bold' }]);
+
+  editor.destroy();
+});
 
 test('Enter command splits an inline processing block into two paragraphs', () => {
   const editor = createEditor({

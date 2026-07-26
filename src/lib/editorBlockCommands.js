@@ -5,6 +5,28 @@ import { TextSelection } from '@tiptap/pm/state';
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 const UNFINISHED_BLOCK_STATUSES = new Set(['unprocessed', 'processing']);
+const TRACKED_HEADING_STYLES = {
+  1: { fontSize: '18pt', lineHeight: '1.15', textIndent: '0in' },
+  2: { fontSize: '16pt', lineHeight: '1.15', textIndent: '0in' },
+  3: { fontSize: '14pt', lineHeight: '1.15', textIndent: '0in' },
+};
+const TRACKED_HEADING_FORMAT_OVERRIDES = ['textIndent', 'lineHeight', 'fontSize'];
+
+export function trackedHeadingAttributes(level, currentAttrs = {}) {
+  const normalizedLevel = Math.min(3, Math.max(1, Number(level) || 1));
+  const overrideValue = currentAttrs.formatOverrides;
+  const formatOverrides = new Set(Array.isArray(overrideValue)
+    ? overrideValue
+    : Object.keys(overrideValue ?? {}));
+  TRACKED_HEADING_FORMAT_OVERRIDES.forEach((property) => formatOverrides.add(property));
+
+  return {
+    sourceType: 'heading',
+    level: normalizedLevel,
+    ...TRACKED_HEADING_STYLES[normalizedLevel],
+    formatOverrides: [...formatOverrides],
+  };
+}
 
 function textFromJsonNode(node) {
   if (!node) return '';
