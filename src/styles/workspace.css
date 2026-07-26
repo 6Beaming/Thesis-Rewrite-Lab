@@ -3824,16 +3824,18 @@
   .home-header {
     height: auto;
     min-height: 104px;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
     grid-template-areas:
-      'pro left toggle'
-      'actions actions actions';
+      'left . pro toggle'
+      'actions actions actions actions';
+    column-gap: 10px;
+    row-gap: 14px;
     padding: 14px 18px;
   }
 
   .home-header-left {
     grid-area: left;
-    justify-self: center;
+    justify-self: start;
   }
 
   .home-header-actions {
@@ -3848,7 +3850,7 @@
 
   .home-pro {
     grid-area: pro;
-    justify-self: start;
+    justify-self: end;
   }
 
   .home-user-email {
@@ -3956,13 +3958,58 @@
   }
 
   .progress-banner {
+    min-height: 0;
     grid-template-columns: 1fr;
     justify-items: center;
+    gap: 12px;
+    border-radius: 16px;
+    padding: 16px 18px;
     text-align: center;
   }
 
+  .progress-ring {
+    width: 104px;
+    height: 104px;
+  }
+
+  .progress-ring strong {
+    font-size: 1.65rem;
+    transform: translateY(-6px);
+  }
+
+  .progress-ring small {
+    top: 59px;
+    font-size: 0.7rem;
+  }
+
+  .progress-spark {
+    width: 5px;
+    height: 5px;
+  }
+
+  .progress-spark--one {
+    top: 12px;
+    left: 14px;
+  }
+
+  .progress-spark--two {
+    right: 3px;
+    bottom: 16px;
+  }
+
+  .progress-copy h2 {
+    font-size: 1.15rem;
+  }
+
   .progress-copy p {
-    margin-bottom: 22px;
+    margin: 6px 0 12px;
+    font-size: 0.92rem;
+    line-height: 1.35;
+  }
+
+  .progress-bar {
+    width: min(100%, 240px);
+    height: 8px;
   }
 
   .documents-heading {
