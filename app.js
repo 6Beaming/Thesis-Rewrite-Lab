@@ -67,13 +67,12 @@ app.use(
 );
 
 // Stripe signs the original bytes. This route must be mounted before the
-// global JSON parser, and is authenticated only by Stripe's signature.
+// global body parsers, and is authenticated only by Stripe's signature.
 app.post(
   '/api/stripe/webhook',
   express.raw({ type: 'application/json' }),
   stripeWebhookHandler,
 );
-app.use(express.json({ limit: '15mb' }));
 
 // Prevent one client from sending too many sign-in requests.
 const authRateLimiter = rateLimit({
@@ -83,13 +82,39 @@ const authRateLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const authFormParser = express.urlencoded({ extended: true });
+
+function observeFailedAuthAction(req, res, next) {
+  res.on('finish', () => {
+    if (req.method !== 'POST' || res.statusCode < 500) return;
+    const cookieHeader = String(req.headers.cookie ?? '');
+    console.error(
+      '[auth][request-failed]',
+      JSON.stringify({
+        protocol: req.protocol,
+        trustedOrigin: `${req.protocol}://${req.get('host')}` === appOrigin,
+        contentType: req.get('content-type') ?? null,
+        hasCsrfCookie: /(?:^|;\s*)(?:__Host-)?authjs\.csrf-token=/u.test(
+          cookieHeader,
+        ),
+        hasCsrfBody: typeof req.body?.csrfToken === 'string',
+      }),
+    );
+  });
+  return next();
+}
+
 // Send every /auth/... request to Auth.js.
 app.use(
   /^\/auth\/(.*)$/,
   requireTrustedAuthHost,
   authRateLimiter,
+  authFormParser,
+  observeFailedAuthAction,
   ExpressAuth(authConfig),
 );
+
+app.use(express.json({ limit: '15mb' }));
 
 // The application's own API endpoints start with /api.
 app.use('/api', apiRouter);
