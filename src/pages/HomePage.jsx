@@ -265,7 +265,7 @@ export default function HomePage({ onOpenWorkspace }) {
     }
 
     if (activePage === 'support') {
-      return <HomepageSupport />;
+      return <HomepageSupport onOpenSubscription={() => navigate('/subscription')} />;
     }
 
     return <EmptyState title="Choose a workspace section">Select an option from the sidebar.</EmptyState>;
