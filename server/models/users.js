@@ -2,7 +2,7 @@ import { query, withTransaction } from './db.js';
 import {
   normalizeWritingPreferences,
   WRITING_PREFERENCE_SCHEMA_VERSION,
-} from '../../shared/writingPreferences.js';
+} from '../../src/shared/writingPreferences.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

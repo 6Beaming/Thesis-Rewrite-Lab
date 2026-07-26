@@ -10,7 +10,7 @@ import {
   stableWritingPreferenceValue,
   WRITING_PREFERENCE_COMPILER_VERSION,
   WRITING_PREFERENCE_SCHEMA_VERSION,
-} from '../../shared/writingPreferences.js';
+} from '../../src/shared/writingPreferences.js';
 
 export const REWRITE_TONES = Object.freeze([
   'formal-academic',

@@ -50,7 +50,7 @@ import {
   uploadDocument,
 } from '../services/documentsApi.js';
 import HomePage from './HomePage.jsx';
-import { writingPreferenceCacheKey } from '../../shared/writingPreferences.js';
+import { writingPreferenceCacheKey } from '../shared/writingPreferences.js';
 
 const PRACTICE_MAX_CHARS = 4000;
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);

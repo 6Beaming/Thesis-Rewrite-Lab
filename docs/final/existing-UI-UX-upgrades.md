@@ -17,7 +17,7 @@ The source code is the final authority. The principal modules are:
 | Save and version history | `src/lib/workspaceSavePolicy.js`, `src/lib/documentMutationCoordinator.js`, `server/models/documents.js`, `server/models/versions.js` |
 | AI workflows | `server/ai/blockRewrites.js`, `server/ai/blockAnalysis.js`, `server/ai/practiceFeedback.js`, `server/ai/rewriteWorker.js` |
 | AI persistence | `server/models/rewriteJobs.js`, `server/models/rewrites.js`, `server/models/analyses.js`, `server/models/practice.js` |
-| Writing preferences | `shared/writingPreferences.js`, `server/models/users.js` |
+| Writing preferences | `src/shared/writingPreferences.js`, `server/models/users.js` |
 | Owl animation | `src/components/OwlContainer.jsx`, `src/pages/libraries/animations/createOwlAnimator.jsx` |
 
 The final architecture intentionally separates:

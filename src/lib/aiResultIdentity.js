@@ -1,4 +1,4 @@
-import { writingPreferenceCacheKey } from '../../shared/writingPreferences.js';
+import { writingPreferenceCacheKey } from '../shared/writingPreferences.js';
 
 export function rewriteIdentityMatchesVisible(responseIdentity, visibleIdentity, requestKey, visibleKey) {
   return Boolean(

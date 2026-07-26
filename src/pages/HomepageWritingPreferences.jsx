@@ -5,7 +5,7 @@ import {
   WRITING_PREFERENCE_LABELS,
   WRITING_PREFERENCE_OPTIONS,
   writingPreferenceSummary,
-} from '../../shared/writingPreferences.js';
+} from '../shared/writingPreferences.js';
 import { DropdownSelect } from '../components/SortDropdown.jsx';
 
 const FIELD_ORDER = [
