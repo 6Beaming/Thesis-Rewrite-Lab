@@ -1,0 +1,24 @@
+.git
+.github
+.agents
+.env
+.env.*
+!.env.example
+local
+node_modules
+dist
+coverage
+test-results
+test
+docs/session transcripts
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+*.pem
+*.key
+*.crt
+pass-paraphrase.txt
+SSH_KEYS
+.DS_Store

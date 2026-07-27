@@ -1,0 +1,314 @@
+name: CI and production deployment
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_IMAGE: thesis-rewriter-node:ci
+  NLP_IMAGE: thesis-rewriter-nlp:ci
+  GHCR_NODE_IMAGE: ghcr.io/utsc-cscc09-programming-on-the-web/project-thesis-rewriter
+  GHCR_NLP_IMAGE: ghcr.io/utsc-cscc09-programming-on-the-web/project-thesis-rewriter-nlp
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Reject high or critical production advisories
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Validate Node source
+        run: npm run check:server
+
+      - name: Run tracked tests
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Compile Python source
+        run: python -m compileall -q server/nlp_service/app
+
+      - name: Build Node image
+        run: docker build --tag "${NODE_IMAGE}" .
+
+      - name: Build NLP image
+        run: docker build --tag "${NLP_IMAGE}" server/nlp_service
+
+      - name: Audit Python runtime packages
+        run: |
+          docker run --rm \
+            --user root \
+            --entrypoint sh \
+            "${NLP_IMAGE}" \
+            -c "python -m pip install --no-cache-dir --quiet pip-audit==2.10.1 &&
+                python -m pip_audit"
+
+      - name: Start validation services
+        run: |
+          docker network create thesis-rewriter-ci
+          docker run --detach \
+            --name postgres-ci \
+            --network thesis-rewriter-ci \
+            --env POSTGRES_DB=thesis_rewriter \
+            --env POSTGRES_USER=thesis_rewriter \
+            --env POSTGRES_PASSWORD=ci-only-password \
+            postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+          docker run --detach \
+            --name nlp-ci \
+            --network thesis-rewriter-ci \
+            "${NLP_IMAGE}"
+
+      - name: Wait for PostgreSQL and NLP
+        run: |
+          for attempt in $(seq 1 60); do
+            if docker exec postgres-ci pg_isready \
+                -U thesis_rewriter -d thesis_rewriter >/dev/null 2>&1; then
+              break
+            fi
+            if [ "${attempt}" -eq 60 ]; then
+              docker logs postgres-ci
+              exit 1
+            fi
+            sleep 2
+          done
+          for attempt in $(seq 1 120); do
+            if docker exec nlp-ci python -c \
+                "import json, urllib.request; payload=json.load(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)); assert payload.get('status') == 'ready'" \
+                >/dev/null 2>&1; then
+              break
+            fi
+            if [ "${attempt}" -eq 120 ]; then
+              docker logs nlp-ci
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Run migrations from Node image
+        run: |
+          docker run --rm \
+            --network thesis-rewriter-ci \
+            --env DATABASE_URL=postgresql://thesis_rewriter:ci-only-password@postgres-ci:5432/thesis_rewriter \
+            "${NODE_IMAGE}" npm run db:migrate
+
+      - name: Start and verify Node image
+        run: |
+          docker run --detach \
+            --name app-ci \
+            --network thesis-rewriter-ci \
+            --publish 127.0.0.1:3001:3001 \
+            --env NODE_ENV=production \
+            --env PORT=3001 \
+            --env TRUST_PROXY_HOPS=1 \
+            --env APP_ORIGIN=https://example.test \
+            --env DATABASE_URL=postgresql://thesis_rewriter:ci-only-password@postgres-ci:5432/thesis_rewriter \
+            --env GOOGLE_OAUTH_CLIENT_ID=ci-client-id \
+            --env GOOGLE_OAUTH_CLIENT_SECRET=ci-client-secret \
+            --env AUTH_SECRET=ci-only-auth-secret-with-at-least-32-characters \
+            --env NLP_SERVICE_URL=http://nlp-ci:8080 \
+            --env NLP_SERVICE_ENABLED=true \
+            "${NODE_IMAGE}"
+          for _ in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:3001/api/health \
+                | grep -q '"status":"ok"'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs app-ci
+          exit 1
+
+      - name: Show service logs after failure
+        if: failure()
+        run: |
+          docker logs postgres-ci || true
+          docker logs nlp-ci || true
+          docker logs app-ci || true
+
+      - name: Stop validation services
+        if: always()
+        run: |
+          docker rm --force app-ci nlp-ci postgres-ci 2>/dev/null || true
+          docker network rm thesis-rewriter-ci 2>/dev/null || true
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs:
+      - validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      node-digest: ${{ steps.push-node.outputs.digest }}
+      nlp-digest: ${{ steps.push-nlp.outputs.digest }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish Node image
+        id: push-node
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ env.GHCR_NODE_IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=node
+          cache-to: type=gha,mode=max,scope=node
+
+      - name: Build and publish NLP image
+        id: push-nlp
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: ./server/nlp_service
+          file: ./server/nlp_service/Dockerfile
+          push: true
+          tags: ${{ env.GHCR_NLP_IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=nlp
+          cache-to: type=gha,mode=max,scope=nlp
+
+  deploy:
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      vars.PRODUCTION_DEPLOY_ENABLED == 'true'
+    needs:
+      - publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Configure deployment SSH key
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 0700 -d ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_PRIVATE_KEY}" \
+            | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 0600 ~/.ssh/id_ed25519
+          printf '%s\n' "${DEPLOY_SSH_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/known_hosts
+
+      - name: Copy versioned deployment configuration
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+        run: |
+          tar -czf deployment-bundle.tgz compose.production.yaml deployment
+          scp -P "${DEPLOY_PORT}" deployment-bundle.tgz \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/thesis-rewriter-deployment.tgz"
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" '
+            set -eu
+            install -d -m 0750 /opt/thesis-rewriter
+            tar -xzf /tmp/thesis-rewriter-deployment.tgz \
+              -C /opt/thesis-rewriter
+            chmod 0755 /opt/thesis-rewriter/deployment/scripts/*.sh
+            rm -f /tmp/thesis-rewriter-deployment.tgz
+          '
+
+      - name: Authenticate VM to GHCR for this deployment
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "${GHCR_TOKEN}" \
+            | ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                docker login ghcr.io \
+                  --username "${GHCR_USER}" \
+                  --password-stdin
+
+      - name: Deploy immutable image pair
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          NODE_DIGEST: ${{ needs.publish.outputs.node-digest }}
+          NLP_DIGEST: ${{ needs.publish.outputs.nlp-digest }}
+        run: |
+          node_ref="${GHCR_NODE_IMAGE}@${NODE_DIGEST}"
+          nlp_ref="${GHCR_NLP_IMAGE}@${NLP_DIGEST}"
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "/opt/thesis-rewriter/deployment/scripts/deploy.sh '${node_ref}' '${nlp_ref}'"
+
+      - name: Verify public HTTPS health or roll back
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          PUBLIC_APP_ORIGIN: ${{ vars.PUBLIC_APP_ORIGIN }}
+        run: |
+          for _ in $(seq 1 20); do
+            if curl --fail --silent --show-error \
+                "${PUBLIC_APP_ORIGIN}/api/health" \
+                | grep -q '"status":"ok"'; then
+              exit 0
+            fi
+            sleep 3
+          done
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            /opt/thesis-rewriter/deployment/scripts/rollback.sh
+          exit 1
+
+      - name: Remove temporary VM registry credential
+        if: always()
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+        run: |
+          ssh -p "${DEPLOY_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            docker logout ghcr.io || true
