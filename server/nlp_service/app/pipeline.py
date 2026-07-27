@@ -288,8 +288,7 @@ def analyze_sentences(
             if issues
             else "pass"
         )
-        sentence_doc = SPACY(sentence_text)
-        terms = topic_terms(sentence_doc)
+        terms = topic_terms(span)
         public = SentenceResult(
             index=index,
             startCp=start_cp,
@@ -297,8 +296,8 @@ def analyze_sentences(
             textHash=text_hash(sentence_text),
             status=status,
             issues=issues,
-            entities=[entity.text for entity in sentence_doc.ents[:10]],
-            nounChunks=[chunk.text for chunk in list(sentence_doc.noun_chunks)[:10]],
+            entities=[entity.text for entity in span.ents[:10]],
+            nounChunks=[chunk.text for chunk in list(span.noun_chunks)[:10]],
             topicTerms=terms,
             reasonCodes=reasons,
             sourceType=source_type,
@@ -309,8 +308,11 @@ def analyze_sentences(
     return results, doc
 
 
-def block_result(text: str, source_type: str, known_terms: list[str]) -> AnalyzeBlockResponse:
-    sentences, doc = analyze_sentences(text, source_type, known_terms)
+def block_result_from_sentences(
+    text: str,
+    sentences: list[InternalSentence],
+    terms: list[str],
+) -> AnalyzeBlockResponse:
     issues = [issue for sentence in sentences for issue in sentence.public.issues]
     reasons = sorted({
         reason
@@ -332,7 +334,6 @@ def block_result(text: str, source_type: str, known_terms: list[str]) -> Analyze
         for item in sentences
         if item.public.status in {"pass", "warning"}
     ]
-    terms = topic_terms(doc)
     if valid and terms:
         centroid = np.mean([item.embedding for item in valid], axis=0)
         representative = max(
@@ -384,6 +385,53 @@ def block_result(text: str, source_type: str, known_terms: list[str]) -> Analyze
         semanticAnchor=anchor,
         rewriteEligible=status in {"pass", "warning"},
     )
+
+
+def block_result(text: str, source_type: str, known_terms: list[str]) -> AnalyzeBlockResponse:
+    sentences, doc = analyze_sentences(text, source_type, known_terms)
+    return block_result_from_sentences(text, sentences, topic_terms(doc))
+
+
+def rebase_group_sentences(
+    group: list[InternalSentence],
+    start_cp: int,
+) -> list[InternalSentence]:
+    rebased: list[InternalSentence] = []
+    for index, sentence in enumerate(group):
+        issues = [
+            issue.model_copy(update={
+                "startCp": issue.startCp - start_cp,
+                "endCp": issue.endCp - start_cp,
+            })
+            for issue in sentence.public.issues
+        ]
+        public = sentence.public.model_copy(update={
+            "index": index,
+            "startCp": sentence.public.startCp - start_cp,
+            "endCp": sentence.public.endCp - start_cp,
+            "issues": issues,
+        })
+        rebased.append(InternalSentence(
+            public=public,
+            text=sentence.text,
+            embedding=sentence.embedding,
+        ))
+    return rebased
+
+
+def topic_terms_from_sentences(sentences: list[InternalSentence]) -> list[str]:
+    counts = Counter(
+        term
+        for sentence in sentences
+        for term in sentence.public.topicTerms
+    )
+    return [
+        term
+        for term, _count in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:8]
+    ]
 
 
 def partition_document(
@@ -467,10 +515,11 @@ def partition_document(
             start_cp = group[0].public.startCp
             end_cp = group[-1].public.endCp
             candidate_text = text[start_cp:end_cp]
-            analysis = block_result(
+            candidate_sentences = rebase_group_sentences(group, start_cp)
+            analysis = block_result_from_sentences(
                 candidate_text,
-                structural.sourceType,
-                structural.knownTerms,
+                candidate_sentences,
+                topic_terms_from_sentences(candidate_sentences),
             )
             nlp_status = "skipped" if initial_status == "skipped" else analysis.status
             analysis.status = nlp_status

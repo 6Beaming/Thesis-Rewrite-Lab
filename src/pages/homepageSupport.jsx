@@ -119,7 +119,7 @@ const GUIDE_TOPICS = [
       'Select your account badge in the homepage header to open the account panel.',
       'Upload an avatar or open Writing preferences.',
       'Choose your audience, subject context, vocabulary, structure, claim style, and feedback detail, or add custom instructions.',
-      'Turn Autosave for docs on or off, then choose Save preferences.',
+      'Changes are saved automatically when you toggle Autosave, choose an option, or finish editing custom instructions.',
     ],
     note: 'Writing preferences refine the selected rewrite tone; they do not replace it.',
     keywords: 'account avatar profile writing preferences audience vocabulary autosave custom instructions',

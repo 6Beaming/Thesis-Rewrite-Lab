@@ -124,7 +124,7 @@ test('full snapshot replacement clears AI state for every Skipped block', async 
     },
   };
 
-  await replaceBlocksFromContentJson(client, documentId, {
+  const replaced = await replaceBlocksFromContentJson(client, documentId, {
     type: 'doc',
     content: [{
       type: 'paragraph',
@@ -154,4 +154,13 @@ test('full snapshot replacement clears AI state for every Skipped block', async 
     && sql.includes("safe_error_code = 'BLOCK_SKIPPED'")
   ));
   assert.deepEqual(cancellation?.params, [documentId, [skippedBlockId]]);
+
+  const summaryUpdate = calls.find(({ sql }) => (
+    sql === 'update documents set nlp_document_snapshot = $2::jsonb where id = $1'
+  ));
+  assert.deepEqual(summaryUpdate?.params, [
+    documentId,
+    JSON.stringify(replaced.nlpSummary),
+  ]);
+  assert.equal(replaced.nlpSummary.blockCount, 0);
 });

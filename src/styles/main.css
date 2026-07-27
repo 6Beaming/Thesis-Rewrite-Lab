@@ -76,6 +76,40 @@ body {
   color: #0a695d;
 }
 
+.app-loading-screen {
+  align-content: center;
+  grid-auto-flow: row;
+  gap: 14px;
+  text-align: center;
+}
+
+.app-loading-screen--overlay {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+}
+
+.app-loading-spinner {
+  width: 42px;
+  height: 42px;
+  border: 4px solid rgba(10, 105, 93, 0.18);
+  border-top-color: #0a695d;
+  border-radius: 50%;
+  animation: app-loading-spin 720ms linear infinite;
+}
+
+@keyframes app-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-loading-spinner {
+    animation-duration: 1.6s;
+  }
+}
+
 .subscription-shell {
   width: min(100%, 1300px);
 }

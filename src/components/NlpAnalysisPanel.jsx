@@ -93,7 +93,8 @@ export default function NlpAnalysisPanel({
           <h3>Document language review</h3>
           <p>
             {documentSummary.passCount ?? 0} ready · {documentSummary.warningCount ?? 0} with suggestions ·{' '}
-            {documentSummary.blockedCount ?? 0} needing changes · {documentSummary.skippedCount ?? 0} not needing review
+            {documentSummary.blockedCount ?? 0} needing changes · {documentSummary.skippedCount ?? 0} not needing review ·{' '}
+            {documentSummary.unknownCount ?? 0} awaiting review
           </p>
         </section>
       ) : null}

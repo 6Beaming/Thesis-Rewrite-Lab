@@ -1,4 +1,7 @@
 import { requestJson } from './request.js';
+import { DEFAULT_UPLOAD_ACADEMIC_STYLE } from '../shared/academicStyleTemplates.js';
+
+export { DEFAULT_UPLOAD_ACADEMIC_STYLE };
 
 export const MAX_DOCUMENT_UPLOAD_BYTES = Math.floor(2.5 * 1024 * 1024);
 export const DOCUMENT_UPLOAD_SIZE_MESSAGE = 'Files must be 2.5 MB or smaller.';
@@ -54,7 +57,7 @@ export function discardEmptyDocument(documentId, { keepalive = false } = {}) {
 
 export function uploadDocument(
   file,
-  academicStyle = 'APA',
+  academicStyle = DEFAULT_UPLOAD_ACADEMIC_STYLE,
   partitionMode = 'character',
   semanticProfile = 'medium',
 ) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_AUTOSAVE_DOCS,
   MAX_CUSTOM_WRITING_INSTRUCTIONS,
@@ -30,6 +30,10 @@ function settingsFromUser(user) {
   };
 }
 
+function settingsSignature(settings) {
+  return JSON.stringify(settings);
+}
+
 function Toggle({ checked, onChange, label, description }) {
   return (
     <label className="writing-preference-toggle">
@@ -57,49 +61,138 @@ export default function HomepageWritingPreferences({
   const [settings, setSettings] = useState(() => settingsFromUser(user));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const settingsRef = useRef(settings);
+  const saveQueueRef = useRef(Promise.resolve(true));
+  const queuedSignatureRef = useRef(settingsSignature(settings));
+  const lastSavedSignatureRef = useRef(settingsSignature(settings));
+  const latestSaveIdRef = useRef(0);
+  const pendingSaveCountRef = useRef(0);
+  const customSaveTimerRef = useRef(null);
+  const mountedRef = useRef(true);
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
 
   useEffect(() => {
-    setSettings(settingsFromUser(user));
+    if (pendingSaveCountRef.current > 0 || customSaveTimerRef.current) return;
+    const nextSettings = settingsFromUser(user);
+    const signature = settingsSignature(nextSettings);
+    settingsRef.current = nextSettings;
+    queuedSignatureRef.current = signature;
+    lastSavedSignatureRef.current = signature;
+    setSettings(nextSettings);
   }, [
     user?.autosaveDocs,
     user?.writingPreferences,
   ]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (!customSaveTimerRef.current) return;
+      clearTimeout(customSaveTimerRef.current);
+      customSaveTimerRef.current = null;
+      const latestSettings = settingsRef.current;
+      const signature = settingsSignature(latestSettings);
+      if (signature === queuedSignatureRef.current) return;
+      queuedSignatureRef.current = signature;
+      const persist = () => onSaveRef.current?.(latestSettings);
+      saveQueueRef.current = saveQueueRef.current
+        .then(persist, persist)
+        .catch(() => false);
+    };
+  }, []);
 
   const activeSummary = useMemo(
     () => writingPreferenceSummary(settings.writingPreferences),
     [settings.writingPreferences],
   );
 
-  function updatePreference(field, value) {
-    setSettings((current) => {
-      const writingPreferences = { ...current.writingPreferences };
-      if (value) writingPreferences[field] = value;
-      else delete writingPreferences[field];
-      return { ...current, writingPreferences };
-    });
+  function queueSettingsSave(nextSettings) {
+    const signature = settingsSignature(nextSettings);
+    if (signature === queuedSignatureRef.current) return saveQueueRef.current;
+
+    queuedSignatureRef.current = signature;
+    const saveId = latestSaveIdRef.current + 1;
+    latestSaveIdRef.current = saveId;
+    pendingSaveCountRef.current += 1;
+    if (mountedRef.current) {
+      setSaving(true);
+      setMessage('Saving changes...');
+    }
+
+    const persist = async () => {
+      try {
+        const saved = await onSaveRef.current?.(nextSettings);
+        if (saved === false) throw new Error('Could not save writing preferences.');
+        lastSavedSignatureRef.current = signature;
+        if (mountedRef.current && latestSaveIdRef.current === saveId) {
+          setMessage('Preferences saved.');
+        }
+        return true;
+      } catch (error) {
+        if (latestSaveIdRef.current === saveId) {
+          queuedSignatureRef.current = lastSavedSignatureRef.current;
+          if (mountedRef.current) {
+            setMessage(error.message || 'Could not save writing preferences.');
+          }
+        }
+        return false;
+      } finally {
+        pendingSaveCountRef.current = Math.max(0, pendingSaveCountRef.current - 1);
+        if (mountedRef.current) {
+          setSaving(pendingSaveCountRef.current > 0);
+        }
+      }
+    };
+
+    const queued = saveQueueRef.current.then(persist, persist);
+    saveQueueRef.current = queued;
+    return queued;
+  }
+
+  function applySettings(nextSettings, { debounce = false } = {}) {
+    settingsRef.current = nextSettings;
+    setSettings(nextSettings);
     setMessage('');
+    if (customSaveTimerRef.current) {
+      clearTimeout(customSaveTimerRef.current);
+      customSaveTimerRef.current = null;
+    }
+    if (!debounce) {
+      void queueSettingsSave(nextSettings);
+      return;
+    }
+    customSaveTimerRef.current = setTimeout(() => {
+      customSaveTimerRef.current = null;
+      void queueSettingsSave(settingsRef.current);
+    }, 450);
+  }
+
+  function updatePreference(field, value) {
+    const writingPreferences = { ...settingsRef.current.writingPreferences };
+    if (value) writingPreferences[field] = value;
+    else delete writingPreferences[field];
+    applySettings(
+      { ...settingsRef.current, writingPreferences },
+      { debounce: field === 'customInstructions' },
+    );
   }
 
   async function save() {
-    setSaving(true);
-    setMessage('');
-    try {
-      const saved = await onSave?.(settings);
-      if (saved === false) return;
-      onBack?.();
-    } catch (error) {
-      setMessage(error.message || 'Could not save writing preferences.');
-    } finally {
-      setSaving(false);
+    if (customSaveTimerRef.current) {
+      clearTimeout(customSaveTimerRef.current);
+      customSaveTimerRef.current = null;
     }
+    const saved = await queueSettingsSave(settingsRef.current);
+    if (saved !== false) onBack?.();
   }
 
   function reset() {
-    setSettings({
+    applySettings({
       autosaveDocs: DEFAULT_AUTOSAVE_DOCS,
       writingPreferences: {},
     });
-    setMessage('Defaults restored. Save to apply them.');
   }
 
   return (
@@ -114,17 +207,17 @@ export default function HomepageWritingPreferences({
       <div className="writing-preferences-scroll">
         <Toggle
           checked={settings.autosaveDocs}
-          onChange={(autosaveDocs) => setSettings((current) => ({ ...current, autosaveDocs }))}
+          onChange={(autosaveDocs) => applySettings({ ...settingsRef.current, autosaveDocs })}
           label="Autosave for docs"
-          description="Save document changes after a short pause. When off, Save remains fully manual."
+          description="Automatically save your progress as you write. Turn off to save manually."
         />
 
         <div className="writing-preferences-summary" aria-live="polite">
-          <strong>Applied globally</strong>
+          <strong>Your preferences</strong>
           <span>
             {activeSummary.length
               ? activeSummary.join(' · ')
-              : 'No supplemental writing constraints selected.'}
+              : "You haven't set any custom writing guidelines yet."}
           </span>
         </div>
 
@@ -153,8 +246,14 @@ export default function HomepageWritingPreferences({
           <textarea
             value={settings.writingPreferences.customInstructions ?? ''}
             onChange={(event) => updatePreference('customInstructions', event.target.value)}
+            onBlur={() => {
+              if (!customSaveTimerRef.current) return;
+              clearTimeout(customSaveTimerRef.current);
+              customSaveTimerRef.current = null;
+              void queueSettingsSave(settingsRef.current);
+            }}
             maxLength={MAX_CUSTOM_WRITING_INSTRUCTIONS}
-            placeholder="Example: Preserve established API names and TypeScript identifiers exactly."
+            placeholder="Maintain a persuasive but objective tone, avoiding first-person pronouns."
           />
           <small>
             {(settings.writingPreferences.customInstructions ?? '').length}

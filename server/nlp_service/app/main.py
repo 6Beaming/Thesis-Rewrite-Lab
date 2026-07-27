@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 import uuid
 
@@ -9,6 +10,7 @@ from .schemas import AnalyzeBlockRequest, PartitionDocumentRequest
 from .versioning import PIPELINE_VERSION, version_info
 
 LOGGER = logging.getLogger("thesis-rewriter-nlp")
+INFERENCE_SLOT = threading.BoundedSemaphore(value=1)
 app = FastAPI(
     title="Thesis Rewriter NLP Service",
     version=PIPELINE_VERSION,
@@ -32,6 +34,12 @@ def analyze_block(
     x_correlation_id: str | None = Header(default=None),
 ):
     correlation = correlation_id(x_correlation_id, request.requestId)
+    if not INFERENCE_SLOT.acquire(blocking=False):
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "NLP_BUSY", "correlationId": correlation},
+            headers={"Retry-After": "1"},
+        )
     started = time.monotonic()
     try:
         result = block_result(
@@ -57,6 +65,8 @@ def analyze_block(
             status_code=500,
             detail={"code": "NLP_INVALID_OUTPUT", "correlationId": correlation},
         ) from None
+    finally:
+        INFERENCE_SLOT.release()
 
 
 @app.post("/v1/partition-document")
@@ -69,6 +79,12 @@ def partition(
         raise HTTPException(
             status_code=409,
             detail={"code": "NLP_PIPELINE_MISMATCH", "correlationId": correlation},
+        )
+    if not INFERENCE_SLOT.acquire(blocking=False):
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "NLP_BUSY", "correlationId": correlation},
+            headers={"Retry-After": "1"},
         )
     started = time.monotonic()
     try:
@@ -94,3 +110,5 @@ def partition(
             status_code=500,
             detail={"code": "NLP_INVALID_OUTPUT", "correlationId": correlation},
         ) from None
+    finally:
+        INFERENCE_SLOT.release()

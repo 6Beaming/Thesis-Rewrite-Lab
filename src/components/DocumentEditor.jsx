@@ -46,9 +46,9 @@ import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
   hasUnfinishedBlocks,
-  insertSegmentedLineBreak,
   insertTextIntoSelectedSegment,
   selectEntireEditorDocument,
+  splitSegmentedTextBlock,
   trackedTextContentChanged,
 } from '../lib/editorBlockCommands.js';
 import {
@@ -213,6 +213,7 @@ const BlockSegment = Node.create({
   inline: true,
   content: '(text | hardBreak)*',
   defining: true,
+  atom: false,
   selectable: false,
   addAttributes() {
     return {
@@ -259,7 +260,7 @@ const BlockSegmentEnter = Extension.create({
   priority: 1100,
   addKeyboardShortcuts() {
     return {
-      Enter: () => insertSegmentedLineBreak(this.editor.state, this.editor.view.dispatch),
+      Enter: () => splitSegmentedTextBlock(this.editor.state, this.editor.view.dispatch),
     };
   },
   addProseMirrorPlugins() {

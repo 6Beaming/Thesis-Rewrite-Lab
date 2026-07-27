@@ -977,9 +977,19 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     [documentId],
   );
 
+  const nlpSummary = await getDocumentNlpSummary(
+    documentId,
+    client.query.bind(client),
+  );
+  await client.query(
+    'update documents set nlp_document_snapshot = $2::jsonb where id = $1',
+    [documentId, JSON.stringify(nlpSummary)],
+  );
+
   return {
     contentJson: normalized.contentJson,
     currentProcessingBlockId: normalized.currentProcessingBlockId,
+    nlpSummary,
   };
 }
 
