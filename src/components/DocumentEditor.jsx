@@ -36,7 +36,6 @@ import {
   normalizeChangeSource,
   normalizeResumeStatus,
 } from '../lib/blockState.js';
-import { auditDocumentFormatting } from '../lib/formatAudit.js';
 import {
   cancelScheduledAnimationFrame,
   EDITOR_PRESERVE_SCROLL_META,
@@ -2488,55 +2487,6 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       window.scrollTo(Number(position.windowX) || 0, Number(position.windowY) || 0);
     },
     getSnapshot: () => createEditorSnapshot(editor),
-    getFormatAudit: () => auditDocumentFormatting(editor?.getJSON(), normalizedStyle),
-    normalizeFormatting: () => {
-      if (!editor || editor.isDestroyed) return null;
-      const textStyle = editor.schema.marks.textStyle;
-      editor.commands.command(({ state, tr, dispatch }) => {
-        state.doc.descendants((node, pos) => {
-          if (!isTrackedTextBlockNode(node)) return;
-          tr.setNodeMarkup(pos, undefined, {
-            ...node.attrs,
-            lineHeight: normalizedStyle.lineHeight,
-            textIndent: normalizedStyle.textIndent,
-            textAlign: 'left',
-            fontFamily: normalizedStyle.fontFamily,
-            fontSize: normalizedStyle.fontSize,
-            formatOverrides: [],
-          });
-          if (textStyle && node.content.size) {
-            const from = pos + 1;
-            const to = pos + node.nodeSize - 1;
-            tr.removeMark(from, to, textStyle);
-            tr.addMark(from, to, textStyle.create({
-              fontFamily: normalizedStyle.fontFamily,
-              fontSize: normalizedStyle.fontSize,
-            }));
-          }
-        });
-        tr.setMeta(SKIP_BLOCK_PARTITION_META, true);
-        dispatch?.(tr);
-        return true;
-      });
-      return createEditorSnapshot(editor);
-    },
-    keepLocalFormatting: () => {
-      if (!editor || editor.isDestroyed) return null;
-      const audit = auditDocumentFormatting(editor.getJSON(), normalizedStyle);
-      const byId = new Map(audit.differences.map((item) => [item.blockId, item.properties]));
-      editor.commands.command(({ state, tr, dispatch }) => {
-        state.doc.descendants((node, pos) => {
-          if (!isTrackedTextBlockNode(node) || !byId.has(node.attrs.blockId)) return;
-          tr.setNodeMarkup(pos, undefined, {
-            ...node.attrs,
-            formatOverrides: byId.get(node.attrs.blockId),
-          });
-        });
-        dispatch?.(tr);
-        return true;
-      });
-      return createEditorSnapshot(editor);
-    },
   }), [editor, onBlockStatusChange, normalizedStyle]);
 
   function setSelectedBlockStatus(status, targetBlockId = null) {

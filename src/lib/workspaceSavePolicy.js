@@ -7,7 +7,6 @@ export function shouldScheduleWorkspaceAutosave({
   workspaceSaving,
   hasDocument,
   leavePromptOpen,
-  formatReviewOpen,
 }) {
   return Boolean(
     autosaveDocs
@@ -16,7 +15,6 @@ export function shouldScheduleWorkspaceAutosave({
     && !workspaceSaving
     && hasDocument
     && !leavePromptOpen
-    && !formatReviewOpen
   );
 }
 

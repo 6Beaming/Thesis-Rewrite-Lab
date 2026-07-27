@@ -5,6 +5,7 @@ const STRUCTURAL_PROPERTIES = Object.freeze([
   'textIndent',
   'textAlign',
 ]);
+const ACADEMIC_TEMPLATE_NAMES = new Set(['APA', 'MLA', 'Chicago']);
 
 function globalFormat(style = {}) {
   return {
@@ -52,6 +53,11 @@ export function auditDocumentFormatting(contentJson, style = {}) {
     differences,
     expected,
   };
+}
+
+export function matchingAcademicTemplate(contentJson, styleName, style = {}) {
+  if (!ACADEMIC_TEMPLATE_NAMES.has(styleName)) return null;
+  return auditDocumentFormatting(contentJson, style).hasDifferences ? null : styleName;
 }
 
 export { STRUCTURAL_PROPERTIES };

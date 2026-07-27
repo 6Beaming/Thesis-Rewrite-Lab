@@ -22,6 +22,7 @@ import {
 } from '../lib/editorBlockCommands.js';
 import { countCharacters } from '../lib/blockSegmentation/index.js';
 import { createDocumentMutationCoordinator } from '../lib/documentMutationCoordinator.js';
+import { matchingAcademicTemplate } from '../lib/formatAudit.js';
 import {
   aiSavePolicy,
   shouldScheduleWorkspaceAutosave,
@@ -566,7 +567,6 @@ export default function WorkspacePage() {
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [workspaceExporting, setWorkspaceExporting] = useState(false);
   const [showUnsavedBackPrompt, setShowUnsavedBackPrompt] = useState(false);
-  const [formatReview, setFormatReview] = useState(null);
   const [templateSwitchReview, setTemplateSwitchReview] = useState(null);
   const [templateSwitchBusy, setTemplateSwitchBusy] = useState(false);
   const [templateSwitchError, setTemplateSwitchError] = useState('');
@@ -578,6 +578,7 @@ export default function WorkspacePage() {
   const [workspaceOwlError, setWorkspaceOwlError] = useState(false);
   const [workspaceOwlErrorKey, setWorkspaceOwlErrorKey] = useState(0);
   const [styleName, setStyleName] = useState('APA');
+  const [selectedTemplate, setSelectedTemplate] = useState('APA');
   const [styleSettings, setStyleSettings] = useState(TEMPLATE_STYLE_SETTINGS.APA);
   const [editorContent, setEditorContent] = useState(null);
   const [activeEditorBlock, setActiveEditorBlock] = useState({ blockId: null, status: 'unprocessed' });
@@ -809,6 +810,29 @@ export default function WorkspacePage() {
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!mobileOwlOpen) return undefined;
+
+    function closeMobileAssistantOnOutsideTap(event) {
+      const target = event.target;
+      if (
+        target instanceof Element
+        && (
+          target.closest('.workspace-mobile-assistant-panel')
+          || target.closest('.workspace-mobile-owl-window')
+        )
+      ) {
+        return;
+      }
+      setMobileOwlOpen(false);
+    }
+
+    document.addEventListener('pointerdown', closeMobileAssistantOnOutsideTap, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeMobileAssistantOnOutsideTap, true);
+    };
+  }, [mobileOwlOpen]);
 
   useEffect(() => {
     clearTimeout(nlpCheckTimerRef.current);
@@ -1142,7 +1166,6 @@ export default function WorkspacePage() {
       workspaceSaving,
       hasDocument: Boolean(selectedDocument?.id),
       leavePromptOpen: showUnsavedBackPrompt,
-      formatReviewOpen: Boolean(formatReview),
     })) {
       return undefined;
     }
@@ -1160,7 +1183,6 @@ export default function WorkspacePage() {
   }, [
     autosaveDocs,
     editorContent,
-    formatReview,
     selectedDocument?.id,
     showUnsavedBackPrompt,
     styleName,
@@ -1308,7 +1330,10 @@ export default function WorkspacePage() {
     };
   }, [view, selectedDocument?.id]);
 
-  function openWorkspace(document, { updateRoute = true } = {}) {
+  function openWorkspace(document, {
+    updateRoute = true,
+    selectedTemplateOverride,
+  } = {}) {
     const hydratedDocument = hydrateWorkspaceDocument(document);
     if (!hydratedDocument) return;
     const previousDocumentId = activeDocumentIdRef.current;
@@ -1343,6 +1368,11 @@ export default function WorkspacePage() {
     setActiveEditorBlock(activeBlockInfoFromDraft(nextDraft));
     setEditorReloadKey((value) => value + 1);
     setStyleName(nextStyleName);
+    setSelectedTemplate(
+      selectedTemplateOverride === undefined
+        ? matchingAcademicTemplate(nextDraft.contentJson, nextStyleName, nextStyleSettings)
+        : selectedTemplateOverride,
+    );
     setStyleSettings(nextStyleSettings);
     resetWorkspaceDirty();
     setWorkspaceNotice('');
@@ -1372,7 +1402,11 @@ export default function WorkspacePage() {
   }
 
   function handleTemplateChange(nextStyleName) {
-    if (nextStyleName === styleName || templateSwitchBusy) return;
+    if (templateSwitchBusy) return;
+    if (nextStyleName === styleName) {
+      setSelectedTemplate(nextStyleName);
+      return;
+    }
     setTemplateSwitchError('');
     setTemplateSwitchReview({
       previousStyleName: styleName,
@@ -1402,6 +1436,7 @@ export default function WorkspacePage() {
       return;
     }
     setStyleName('Customized');
+    setSelectedTemplate(null);
     setStyleSettings({ ...DEFAULT_CUSTOM_STYLE, ...nextSettings });
     markWorkspaceDirty('ai-context');
   }
@@ -1421,7 +1456,12 @@ export default function WorkspacePage() {
           'Switched to Customized formatting',
         );
         setTemplateSwitchReview(null);
-        if (persisted) openWorkspace(persisted, { updateRoute: false });
+        if (persisted) {
+          openWorkspace(persisted, {
+            updateRoute: false,
+            selectedTemplateOverride: null,
+          });
+        }
         setWorkspaceNotice('Customized formatting selected. Citation checking is disabled.');
         return;
       }
@@ -1440,7 +1480,10 @@ export default function WorkspacePage() {
         expectedPartitionRevision: Number(persistedDocument.partition_revision),
       });
       applyDocument('document:updated', response.document);
-      openWorkspace(response.document, { updateRoute: false });
+      openWorkspace(response.document, {
+        updateRoute: false,
+        selectedTemplateOverride: nextStyleName,
+      });
       setTemplateSwitchReview(null);
       const bibliographyCount = response.conversion?.bibliographyChanges ?? 0;
       const inlineCount = response.conversion?.inlineChanges ?? 0;
@@ -1586,39 +1629,17 @@ export default function WorkspacePage() {
   async function saveWorkspaceDocument({
     leaveAfterSave = false,
     exportAfterSave = false,
-    formatDecision = null,
     automatic = false,
   } = {}) {
-    const audit = documentEditorRef.current?.getFormatAudit?.();
-    if (!automatic && !formatDecision && audit?.hasDifferences) {
-      setFormatReview({ audit, leaveAfterSave, exportAfterSave });
-      return false;
-    }
-
-    let nextStyleName = styleName;
-    let nextStyleSettings = styleSettings;
-    let snapshot = null;
-    if (formatDecision === 'normalize') {
-      snapshot = documentEditorRef.current?.normalizeFormatting?.();
-    } else if (formatDecision === 'keep') {
-      snapshot = documentEditorRef.current?.keepLocalFormatting?.();
-      nextStyleName = 'Customized';
-      setStyleName('Customized');
-    }
-
-    const document = snapshot?.contentJson && selectedDocument
-      ? documentFromContent(
-        selectedDocument,
-        snapshot.contentJson,
-        nextStyleName,
-        nextStyleSettings,
-        snapshot.blocks,
-        snapshot.currentProcessingBlockId,
-      )
-      : normalizedWorkspaceDocument();
+    const document = normalizedWorkspaceDocument();
     if (!document?.id) return false;
-    document.academic_style = nextStyleName;
-    document.style_settings = nextStyleSettings;
+    document.academic_style = styleName;
+    document.style_settings = styleSettings;
+    const savedTemplateSelection = matchingAcademicTemplate(
+      document.content_json,
+      styleName,
+      academicStyleSettings(styleName, styleSettings),
+    );
 
     setWorkspaceSaving(true);
     try {
@@ -1627,9 +1648,9 @@ export default function WorkspacePage() {
         automatic ? 'Autosave' : 'Manual save',
         { createVersion: !automatic },
       );
+      setSelectedTemplate(savedTemplateSelection);
       setWorkspaceNotice(automatic ? 'Autosaved' : 'Saved');
       setShowUnsavedBackPrompt(false);
-      setFormatReview(null);
       if (exportAfterSave && !await exportWorkspaceDocument(persistedDocument)) {
         return false;
       }
@@ -3197,6 +3218,7 @@ export default function WorkspacePage() {
             <>
               <AcademicStylePanel
                 styleName={styleName}
+                selectedTemplate={selectedTemplate}
                 customStyle={styleSettings}
                 onTemplateChange={handleTemplateChange}
                 onCustomModeSelect={handleCustomModeSelect}
@@ -3314,6 +3336,7 @@ export default function WorkspacePage() {
               ) : null}
             <AcademicStylePanel
               styleName={styleName}
+              selectedTemplate={selectedTemplate}
               customStyle={styleSettings}
               onTemplateChange={handleTemplateChange}
               onCustomModeSelect={handleCustomModeSelect}
@@ -3477,48 +3500,6 @@ export default function WorkspacePage() {
                   disabled={workspaceSaving}
                 >
                   {workspaceSaving ? 'Saving...' : 'Save'}
-                </button>
-              </div>
-            </section>
-          </div>
-        ) : null}
-        {formatReview ? (
-          <div className="confirm-backdrop" role="presentation">
-            <section className="confirm-modal format-review-modal" role="dialog" aria-modal="true" aria-labelledby="format-review-title">
-              <h2 id="format-review-title">Review local formatting</h2>
-              <p>
-                {formatReview.audit.differences.length} block(s) differ from the global format.
-                Choose whether to normalize them or preserve their property-level overrides.
-              </p>
-              <ul>
-                {formatReview.audit.differences.slice(0, 8).map((item, index) => (
-                  <li key={item.blockId || index}>
-                    Block {index + 1}: {item.properties.join(', ')}
-                  </li>
-                ))}
-              </ul>
-              <div className="confirm-actions">
-                <button type="button" onClick={() => setFormatReview(null)}>Cancel</button>
-                <button
-                  type="button"
-                  onClick={() => saveWorkspaceDocument({
-                    leaveAfterSave: formatReview.leaveAfterSave,
-                    exportAfterSave: formatReview.exportAfterSave,
-                    formatDecision: 'keep',
-                  })}
-                >
-                  Keep local formatting
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => saveWorkspaceDocument({
-                    leaveAfterSave: formatReview.leaveAfterSave,
-                    exportAfterSave: formatReview.exportAfterSave,
-                    formatDecision: 'normalize',
-                  })}
-                >
-                  Normalize to global
                 </button>
               </div>
             </section>

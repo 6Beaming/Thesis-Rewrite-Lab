@@ -58,6 +58,7 @@ function normalizeLegacyStyle(style = {}) {
 
 export default function AcademicStylePanel({
   styleName = 'APA',
+  selectedTemplate = styleName,
   customStyle = DEFAULT_CUSTOM_STYLE,
   onTemplateChange,
   onCustomModeSelect,
@@ -109,7 +110,7 @@ export default function AcademicStylePanel({
       </div>
 
       {mode === 'templates' ? (
-        <TemplateCards selected={styleName} onSelect={onTemplateChange} />
+        <TemplateCards selected={selectedTemplate} onSelect={onTemplateChange} />
       ) : (
         <div className="custom-style-grid">
           <label>

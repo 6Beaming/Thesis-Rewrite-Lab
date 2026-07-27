@@ -4,7 +4,7 @@ const templates = [
   { id: 'Chicago', title: 'Chicago', detail: 'Double-spaced body with student-paper notes and bibliography.' },
 ];
 
-export default function TemplateCards({ selected = 'APA', onSelect }) {
+export default function TemplateCards({ selected = null, onSelect }) {
   return (
     <div className="template-cards">
       {templates.map((template) => (
