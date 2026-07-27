@@ -5,6 +5,10 @@ import { documentUpload } from '../middlewares/upload.js';
 import { resolveDocumentUpload } from '../../src/services/documentResolver.js';
 import { segmentText } from '../../src/lib/blockSegmentation/index.js';
 import { rejectLanguageIssue } from '../../src/lib/nlp/issueRejections.js';
+import {
+  DEFAULT_CUSTOM_STYLE,
+  DEFAULT_UPLOAD_ACADEMIC_STYLE,
+} from '../../src/shared/academicStyleTemplates.js';
 import { getOrCreateUserFromSession, getUserStats } from '../models/users.js';
 import {
   getDocumentNlpSummary,
@@ -485,12 +489,13 @@ router.post('/upload', documentUpload.single('file'), async (req, res) => {
     partitionMode,
     semanticProfile,
   );
-  const academicStyle = req.body.academicStyle ?? 'APA';
+  const academicStyle = req.body.academicStyle ?? DEFAULT_UPLOAD_ACADEMIC_STYLE;
   validateAcademicStyle(academicStyle);
   const mutation = await createDocumentWithBlocks({
     userId: user.id,
     title: titleFromFilename(req.file.originalname),
     academicStyle,
+    styleSettings: academicStyle === 'Customized' ? DEFAULT_CUSTOM_STYLE : {},
     textBlocks: extracted.blocks,
     originalFile: req.file.buffer,
     originalFilename: req.file.originalname,

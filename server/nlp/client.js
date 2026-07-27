@@ -17,6 +17,24 @@ import {
 
 const activeBlockRequests = new Map();
 const activePartitionRequests = new Map();
+const completedBlockResults = new Map();
+const MAX_COMPLETED_BLOCK_RESULTS = 256;
+
+function getCompletedBlockResult(key) {
+  const result = completedBlockResults.get(key);
+  if (!result) return null;
+  completedBlockResults.delete(key);
+  completedBlockResults.set(key, result);
+  return result;
+}
+
+function setCompletedBlockResult(key, result) {
+  completedBlockResults.delete(key);
+  completedBlockResults.set(key, result);
+  while (completedBlockResults.size > MAX_COMPLETED_BLOCK_RESULTS) {
+    completedBlockResults.delete(completedBlockResults.keys().next().value);
+  }
+}
 
 function nlpServiceUrl() {
   return String(process.env.NLP_SERVICE_URL ?? '').replace(/\/+$/u, '');
@@ -140,6 +158,14 @@ export async function analyzeTemporaryBlock({
     [...knownTerms].sort().join(','),
     CURRENT_NLP_PIPELINE_VERSION,
   ].join('|');
+  const completed = getCompletedBlockResult(key);
+  if (completed) {
+    return {
+      ...completed,
+      correlationId,
+      source: 'remote',
+    };
+  }
   return withDeduplication(activeBlockRequests, key, async () => {
     if (!environmentFlag('NLP_SERVICE_ENABLED', true)) {
       return {
@@ -162,11 +188,11 @@ export async function analyzeTemporaryBlock({
         requestId,
       }, { kind: 'block', correlationId });
       const parsed = AnalyzeBlockResultSchema.parse(raw);
-      return {
+      const result = {
         ...assertCurrentResult(parsed, textHash, correlationId),
-        correlationId,
-        source: 'remote',
       };
+      setCompletedBlockResult(key, result);
+      return { ...result, correlationId, source: 'remote' };
     } catch (error) {
       if (!environmentFlag('NLP_FAIL_OPEN', true)) throw safeNlpError(error, correlationId);
       return {

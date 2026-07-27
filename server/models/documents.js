@@ -92,7 +92,12 @@ async function loadDocument(runQuery, documentId, userId) {
     `,
     [documentId]
   );
-  return { ...document, blocks: blocks.rows };
+  const nlpSummary = await getDocumentNlpSummary(documentId, runQuery);
+  return {
+    ...document,
+    nlp_document_snapshot: nlpSummary,
+    blocks: blocks.rows,
+  };
 }
 
 export async function listDocuments({ userId, q = '', sort = 'most_recent', trashed = false }) {

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import DocumentsSection from '../components/DocumentsSection.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import HomeShell from '../components/HomeShell.jsx';
+import LoadingScreen from '../components/LoadingScreen.jsx';
 import ProgressBanner from '../components/ProgressBanner.jsx';
 import { useAuth } from '../components/AuthProvider.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
@@ -277,25 +278,26 @@ export default function HomePage({ onOpenWorkspace }) {
   const hideHeaderActions = ['trash', 'support', 'credits'].includes(activePage);
 
   return (
-    <HomeShell
-      user={user}
-      activePage={activePage}
-      sidebarOpen={sidebarOpen}
-      query={query}
-      busy={busy}
-      onQueryChange={setQuery}
-      onNewDocument={handleNewDocument}
-      onUpload={handleUpload}
-      onSelectPage={(page) => {
-        setActionError('');
-        setActivePage(page);
-        setSidebarOpen(false);
-      }}
-      onToggleSidebar={() => setSidebarOpen((value) => !value)}
-      onAccount={() => setAccountOpen(true)}
-      onSubscription={() => navigate('/subscription')}
-      actionsHidden={hideHeaderActions}
-    >
+    <>
+      <HomeShell
+        user={user}
+        activePage={activePage}
+        sidebarOpen={sidebarOpen}
+        query={query}
+        busy={busy}
+        onQueryChange={setQuery}
+        onNewDocument={handleNewDocument}
+        onUpload={handleUpload}
+        onSelectPage={(page) => {
+          setActionError('');
+          setActivePage(page);
+          setSidebarOpen(false);
+        }}
+        onToggleSidebar={() => setSidebarOpen((value) => !value)}
+        onAccount={() => setAccountOpen(true)}
+        onSubscription={() => navigate('/subscription')}
+        actionsHidden={hideHeaderActions}
+      >
       <div className="home-main-inner">
         {homeError ? (
           <div className="home-api-notice" role="alert">
@@ -321,6 +323,8 @@ export default function HomePage({ onOpenWorkspace }) {
           onUpdateWritingPreferences={handleWritingPreferencesUpdate}
         />
       ) : null}
-    </HomeShell>
+      </HomeShell>
+      {busy ? <LoadingScreen overlay /> : null}
+    </>
   );
 }

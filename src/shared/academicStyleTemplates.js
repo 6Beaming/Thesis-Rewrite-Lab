@@ -10,6 +10,8 @@ export const DEFAULT_CUSTOM_STYLE = Object.freeze({
   pageNumber: 'Bottom center',
 });
 
+export const DEFAULT_UPLOAD_ACADEMIC_STYLE = 'Customized';
+
 const DOUBLE_SPACED_REFERENCE_LIST = Object.freeze({
   lineHeight: '2.0',
   hangingIndent: '0.5in',

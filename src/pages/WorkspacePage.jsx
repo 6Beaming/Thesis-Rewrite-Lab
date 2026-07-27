@@ -5,9 +5,13 @@ import AcademicStylePanel, {
   DEFAULT_CUSTOM_STYLE,
   TEMPLATE_STYLE_SETTINGS,
 } from '../components/AcademicStylePanel.jsx';
-import { academicStyleSettings } from '../shared/academicStyleTemplates.js';
+import {
+  academicStyleSettings,
+  DEFAULT_UPLOAD_ACADEMIC_STYLE,
+} from '../shared/academicStyleTemplates.js';
 import { resolveAutosaveDocs } from '../shared/writingPreferences.js';
 import DocumentEditor from '../components/DocumentEditor.jsx';
+import LoadingScreen from '../components/LoadingScreen.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
 import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
@@ -72,6 +76,10 @@ import {
   nlpResponseMatchesIdentity,
 } from '../lib/nlp/nlpRequestIdentity.js';
 import { normalizeBlockNlpSnapshot } from '../lib/nlp/blockNlpSnapshot.js';
+import {
+  scopeDocumentNlpSummary,
+  visibleDocumentNlpSummary,
+} from '../lib/nlp/documentNlpSummary.js';
 import {
   applyLanguageIssueRejections,
   rejectLanguageIssue,
@@ -547,6 +555,10 @@ function hydrateWorkspaceDocument(document) {
   return document;
 }
 
+function hasWorkspaceDocumentPayload(document) {
+  return Boolean(document?.content_json && Array.isArray(document?.blocks));
+}
+
 export default function WorkspacePage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -564,6 +576,8 @@ export default function WorkspacePage() {
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const [workspaceAiContextDirty, setWorkspaceAiContextDirty] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
+  const [workspaceSaveOverlay, setWorkspaceSaveOverlay] = useState(false);
+  const [workspaceUploading, setWorkspaceUploading] = useState(false);
   const [workspaceExporting, setWorkspaceExporting] = useState(false);
   const [showUnsavedBackPrompt, setShowUnsavedBackPrompt] = useState(false);
   const [formatReview, setFormatReview] = useState(null);
@@ -611,7 +625,10 @@ export default function WorkspacePage() {
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
   const [visibleBlockNlp, setVisibleBlockNlp] = useState(null);
-  const [documentNlpSummary, setDocumentNlpSummary] = useState(null);
+  const [documentNlpSummaryState, setDocumentNlpSummaryState] = useState({
+    documentId: null,
+    summary: null,
+  });
   const [nlpCheckState, setNlpCheckState] = useState('idle');
   const [nlpCheckError, setNlpCheckError] = useState('');
   const [rejectingLanguageIssueKey, setRejectingLanguageIssueKey] = useState('');
@@ -776,6 +793,10 @@ export default function WorkspacePage() {
     ),
     [activeSourceBlock, currentRewriteBlock, visibleBlockNlp],
   );
+  const documentNlpSummary = visibleDocumentNlpSummary(
+    documentNlpSummaryState,
+    selectedDocument?.id,
+  );
   const activeBlockNlpIssues = useMemo(
     () => activeBlockNlpSnapshot.issues.map((issue) => ({
       ...issue,
@@ -797,6 +818,10 @@ export default function WorkspacePage() {
     rewriteCards,
     currentRewriteBlock,
   });
+  const selectedDocumentIsLoaded = (
+    selectedDocument?.id === documentId
+    && hasWorkspaceDocumentPayload(selectedDocument)
+  );
 
   useEffect(() => {
     let alive = true;
@@ -871,7 +896,10 @@ export default function WorkspacePage() {
           ),
         };
         setVisibleBlockNlp(visibleResponse);
-        setDocumentNlpSummary(response.documentSummary ?? null);
+        setDocumentNlpSummaryState(scopeDocumentNlpSummary(
+          selectedDocument.id,
+          response.documentSummary,
+        ));
         setNlpCheckState(visibleResponse.nlp?.degraded ? 'degraded' : 'ready');
         setNlpCheckError('');
         documentEditorRef.current?.applyBlockNlpResult?.(
@@ -905,6 +933,8 @@ export default function WorkspacePage() {
 
   async function rejectActiveLanguageIssue(issue, issueKey) {
     if (!selectedDocument?.id || !activeEditorBlock?.blockId || !issue) return;
+    const requestDocumentId = selectedDocument.id;
+    const requestBlockId = activeEditorBlock.blockId;
     setRejectingLanguageIssueKey(issueKey);
     setNlpCheckError('');
     try {
@@ -918,8 +948,8 @@ export default function WorkspacePage() {
         const sourceTextHash = activeBlockNlpSnapshot.textHash
           ?? await hashAiSourceText(activeSourceText);
         response = await rejectDocumentBlockLanguageIssue(
-          selectedDocument.id,
-          activeEditorBlock.blockId,
+          requestDocumentId,
+          requestBlockId,
           {
             issue,
             sourceTextHash,
@@ -931,13 +961,18 @@ export default function WorkspacePage() {
           },
         );
       }
+      if (activeDocumentIdRef.current !== requestDocumentId) return;
       setVisibleBlockNlp(response);
-      setDocumentNlpSummary(response.documentSummary ?? documentNlpSummary);
+      setDocumentNlpSummaryState(scopeDocumentNlpSummary(
+        requestDocumentId,
+        response.documentSummary ?? documentNlpSummary,
+      ));
       documentEditorRef.current?.applyBlockNlpResult?.(
-        activeEditorBlock.blockId,
+        requestBlockId,
         response,
       );
     } catch (error) {
+      if (activeDocumentIdRef.current !== requestDocumentId) return;
       setNlpCheckError(error.message || 'The writing suggestion could not be rejected.');
     } finally {
       setRejectingLanguageIssueKey('');
@@ -1194,6 +1229,7 @@ export default function WorkspacePage() {
       }
       setView('home');
       setSelectedDocument(null);
+      setDocumentNlpSummaryState(scopeDocumentNlpSummary(null, null));
       return undefined;
     }
 
@@ -1208,6 +1244,10 @@ export default function WorkspacePage() {
       void discardEmptyCreatedDocument(previousDocumentId).catch(() => {});
     }
     setView('workspace');
+    if (selectedDocumentIsLoaded) {
+      setWorkspaceNotice('');
+      return undefined;
+    }
     let alive = true;
     setWorkspaceNotice('Loading document...');
     getDocument(documentId)
@@ -1219,13 +1259,19 @@ export default function WorkspacePage() {
       .catch((error) => {
         if (!alive) return;
         setSelectedDocument(null);
+        setDocumentNlpSummaryState(scopeDocumentNlpSummary(null, null));
         setWorkspaceNotice(error.message || 'Could not load the document.');
       });
 
     return () => {
       alive = false;
     };
-  }, [applyDocument, discardEmptyCreatedDocument, documentId]);
+  }, [
+    applyDocument,
+    discardEmptyCreatedDocument,
+    documentId,
+    selectedDocumentIsLoaded,
+  ]);
 
   useEffect(() => {
     if (view !== 'workspace' || !documentId) return undefined;
@@ -1311,7 +1357,25 @@ export default function WorkspacePage() {
   function openWorkspace(document, { updateRoute = true } = {}) {
     const hydratedDocument = hydrateWorkspaceDocument(document);
     if (!hydratedDocument) return;
+    const targetPath = `/workspace/${hydratedDocument.id}`;
     const previousDocumentId = activeDocumentIdRef.current;
+    if (updateRoute && !hasWorkspaceDocumentPayload(hydratedDocument)) {
+      if (
+        previousDocumentId
+        && previousDocumentId !== hydratedDocument.id
+        && activeDocumentIsEmptyRef.current
+      ) {
+        void discardEmptyCreatedDocument(previousDocumentId).catch(() => {});
+      }
+      setSelectedDocument(null);
+      setWorkspaceDraft(null);
+      setEditorContent(null);
+      setDocumentNlpSummaryState(scopeDocumentNlpSummary(null, null));
+      setView('workspace');
+      setWorkspaceNotice('Loading document...');
+      if (location.pathname !== targetPath) navigate(targetPath);
+      return;
+    }
     if (
       previousDocumentId
       && previousDocumentId !== hydratedDocument.id
@@ -1338,6 +1402,10 @@ export default function WorkspacePage() {
 
     setWorkspaceDraft(nextDraft);
     workspaceEditGenerationRef.current = 0;
+    setDocumentNlpSummaryState(scopeDocumentNlpSummary(
+      hydratedDocument.id,
+      hydratedDocument.nlp_document_snapshot,
+    ));
     setSelectedDocument(documentFromWorkspaceDraft(hydratedDocument, nextDraft, nextStyleName, nextStyleSettings));
     setEditorContent(nextDraft.contentJson ?? null);
     setActiveEditorBlock(activeBlockInfoFromDraft(nextDraft));
@@ -1365,7 +1433,6 @@ export default function WorkspacePage() {
     setMobilePracticeIndex(0);
     setWorkspaceHistoryExpanded(false);
     setView('workspace');
-    const targetPath = `/workspace/${hydratedDocument.id}`;
     if (updateRoute && location.pathname !== targetPath) {
       navigate(targetPath);
     }
@@ -1567,6 +1634,10 @@ export default function WorkspacePage() {
         );
         const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
         setWorkspaceDraft(persistedDraft);
+        setDocumentNlpSummaryState(scopeDocumentNlpSummary(
+          persistedDocument.id,
+          persistedDocument.nlp_document_snapshot,
+        ));
         setSelectedDocument(documentFromWorkspaceDraft(
           persistedDocument,
           persistedDraft,
@@ -1590,7 +1661,12 @@ export default function WorkspacePage() {
     automatic = false,
   } = {}) {
     const audit = documentEditorRef.current?.getFormatAudit?.();
-    if (!automatic && !formatDecision && audit?.hasDifferences) {
+    if (
+      !automatic
+      && styleName !== 'Customized'
+      && !formatDecision
+      && audit?.hasDifferences
+    ) {
       setFormatReview({ audit, leaveAfterSave, exportAfterSave });
       return false;
     }
@@ -1621,6 +1697,7 @@ export default function WorkspacePage() {
     document.style_settings = nextStyleSettings;
 
     setWorkspaceSaving(true);
+    setWorkspaceSaveOverlay(!automatic);
     try {
       const persistedDocument = await persistWorkspaceDocument(
         document,
@@ -1643,6 +1720,7 @@ export default function WorkspacePage() {
       return false;
     } finally {
       setWorkspaceSaving(false);
+      setWorkspaceSaveOverlay(false);
     }
   }
 
@@ -1845,8 +1923,14 @@ export default function WorkspacePage() {
   async function handleWorkspaceUploadFile(file) {
     if (!file) return;
 
+    setWorkspaceUploading(true);
     try {
-      const result = await uploadDocument(file, styleName, 'character', semanticProfile);
+      const result = await uploadDocument(
+        file,
+        DEFAULT_UPLOAD_ACADEMIC_STYLE,
+        'character',
+        semanticProfile,
+      );
       applyDocument('document:created', result.document);
       openWorkspace(result.document);
       const skipped = Number(result.importSummary?.skippedBlockCount) || 0;
@@ -1857,6 +1941,8 @@ export default function WorkspacePage() {
       );
     } catch (error) {
       setWorkspaceNotice(error.message || 'Could not upload the document.');
+    } finally {
+      setWorkspaceUploading(false);
     }
   }
 
@@ -3273,11 +3359,7 @@ export default function WorkspacePage() {
 
   if (view === 'workspace') {
     if (!selectedDocument) {
-      return (
-        <main className="document-workspace-page">
-          <p role="status">{workspaceNotice || 'Loading document...'}</p>
-        </main>
-      );
+      return <LoadingScreen />;
     }
 
     const documentTitle = selectedDocument.title ?? '';
@@ -3551,6 +3633,9 @@ export default function WorkspacePage() {
             </section>
           </div>
         ) : null}
+        {workspaceSaveOverlay || workspaceUploading || templateSwitchBusy
+          ? <LoadingScreen overlay />
+          : null}
       </main>
     );
   }

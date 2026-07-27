@@ -23,6 +23,15 @@ function walk(node, visit) {
   node.content?.forEach((child) => walk(child, visit));
 }
 
+function declaredOverrides(node) {
+  const value = node?.attrs?.formatOverrides;
+  return new Set(
+    Array.isArray(value)
+      ? value
+      : Object.keys(value ?? {}),
+  );
+}
+
 export function auditDocumentFormatting(contentJson, style = {}) {
   const expected = globalFormat(style);
   const differences = [];
@@ -31,16 +40,34 @@ export function auditDocumentFormatting(contentJson, style = {}) {
     if (node.type !== 'blockSegment') return;
     const blockId = node.attrs?.blockId ?? null;
     const properties = new Set();
+    const overrides = declaredOverrides(node);
     for (const property of STRUCTURAL_PROPERTIES) {
       const actual = node.attrs?.[property] ?? expected[property];
-      if (String(actual) !== String(expected[property])) properties.add(property);
+      if (
+        !overrides.has(property)
+        && String(actual) !== String(expected[property])
+      ) {
+        properties.add(property);
+      }
     }
     walk({ content: node.content }, (child) => {
       if (child.type !== 'text') return;
       const textStyle = child.marks?.find((mark) => mark.type === 'textStyle')?.attrs ?? {};
-      if (textStyle.fontFamily && textStyle.fontFamily !== expected.fontFamily) properties.add('fontFamily');
-      if (textStyle.fontSize && textStyle.fontSize !== expected.fontSize) properties.add('fontSize');
-      if (textStyle.color) properties.add('color');
+      if (
+        !overrides.has('fontFamily')
+        && textStyle.fontFamily
+        && textStyle.fontFamily !== expected.fontFamily
+      ) {
+        properties.add('fontFamily');
+      }
+      if (
+        !overrides.has('fontSize')
+        && textStyle.fontSize
+        && textStyle.fontSize !== expected.fontSize
+      ) {
+        properties.add('fontSize');
+      }
+      if (!overrides.has('color') && textStyle.color) properties.add('color');
     });
     if (properties.size) {
       differences.push({ blockId, properties: [...properties].sort() });

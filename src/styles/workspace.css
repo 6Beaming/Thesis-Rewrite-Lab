@@ -1206,7 +1206,7 @@
 }
 
 .document-editor-surface .doc-block + .doc-block {
-  margin-inline-start: 0.28em;
+  margin-inline-start: 0;
 }
 
 .doc-block--processing,
