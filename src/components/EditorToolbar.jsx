@@ -10,6 +10,7 @@ import {
   isolateSelectionInTransaction,
   trackedHeadingAttributes,
   trackedParagraphAttributes,
+  updateTrackedBlocksInSelectedTextBlocks,
 } from '../lib/editorBlockCommands.js';
 import { EDITOR_PRESERVE_SCROLL_META } from '../lib/editorScrollGuard.js';
 
@@ -89,8 +90,7 @@ const fontSizeOptions = fontSizes.map((size) => ({
   label: size.replace(/pt$/i, ''),
 }));
 const headingOptions = [
-  { value: 'none', label: 'None' },
-  { value: 'paragraph', label: 'Paragraph' },
+  { value: 'none', label: 'Normal text' },
   { value: '1', label: 'Heading 1' },
   { value: '2', label: 'Heading 2' },
   { value: '3', label: 'Heading 3' },
@@ -356,7 +356,7 @@ export default function EditorToolbar({
     : '';
   const currentHeading = editor.isActive('heading')
     ? String(headingAttrs.level || 1)
-    : paragraphAttrs.outlineLevel === 'paragraph' ? 'paragraph' : 'none';
+    : 'none';
   const currentTextAlign = currentProcessingTextAlign(editor);
 
   function setFontSize(value) {
@@ -409,35 +409,43 @@ export default function EditorToolbar({
           options={headingOptions}
           onChange={(value) => {
             runToolbarCommand(editor, (chain) => {
-              if (value === 'none' || value === 'paragraph') {
-                const paragraphStyle = trackedParagraphAttributes(
-                  blockSegmentAttrs,
-                  normalTextStyle,
-                );
-                let paragraphChain = chain
+              if (value === 'none') {
+                return chain
                   .setParagraph({
                     outlineLevel: value,
-                    lineHeight: paragraphStyle.lineHeight,
-                    textIndent: paragraphStyle.textIndent,
+                    lineHeight: normalTextStyle?.lineHeight,
+                    textIndent: normalTextStyle?.textIndent,
                     fontFamily: normalTextStyle?.fontFamily,
-                    fontSize: paragraphStyle.fontSize,
+                    fontSize: normalTextStyle?.fontSize,
                   })
-                  .updateAttributes('blockSegment', paragraphStyle);
-                if (
-                  blockSegmentAttrs.sourceType === 'heading'
-                  && !blockSegmentAttrs.headingRestoreAttrs
-                ) {
-                  paragraphChain = paragraphChain.unsetBold();
-                }
-                return paragraphChain;
+                  .command(({ tr }) => {
+                    const boldMark = tr.doc.type.schema.marks.bold;
+                    updateTrackedBlocksInSelectedTextBlocks(
+                      tr,
+                      (attrs, { node, pos }) => {
+                        if (
+                          boldMark
+                          && attrs.sourceType === 'heading'
+                          && !attrs.headingRestoreAttrs
+                        ) {
+                          tr.removeMark(pos + 1, pos + node.nodeSize - 1, boldMark);
+                        }
+                        return trackedParagraphAttributes(attrs, normalTextStyle);
+                      },
+                    );
+                    return true;
+                  });
               }
               const level = Number(value);
               return chain
                 .setHeading({ level, outlineLevel: value })
-                .updateAttributes(
-                  'blockSegment',
-                  trackedHeadingAttributes(level, blockSegmentAttrs),
-                );
+                .command(({ tr }) => {
+                  updateTrackedBlocksInSelectedTextBlocks(
+                    tr,
+                    (attrs) => trackedHeadingAttributes(level, attrs),
+                  );
+                  return true;
+                });
             }, { restoreSelection: false });
           }}
           ariaLabel="Paragraph or heading level"

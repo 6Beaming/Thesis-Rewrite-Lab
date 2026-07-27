@@ -14,6 +14,7 @@ import {
   trackedHeadingAttributes,
   trackedParagraphAttributes,
   trackedTextContentChanged,
+  updateTrackedBlocksInSelectedTextBlocks,
 } from './editorBlockCommands.js';
 
 const BlockSegment = Node.create({
@@ -95,9 +96,11 @@ test('Heading 1 command updates the structural node and tracked style without ad
   editor.commands.setTextSelection({ from: 2, to: text.length + 2 });
   const applied = editor.chain()
     .setHeading({ level: 1 })
-    .updateAttributes(
-      'blockSegment',
-      trackedHeadingAttributes(1, editor.getAttributes('blockSegment')),
+    .command(
+      ({ tr }) => updateTrackedBlocksInSelectedTextBlocks(
+        tr,
+        (attrs) => trackedHeadingAttributes(1, attrs),
+      ),
     )
     .run();
 
@@ -113,6 +116,123 @@ test('Heading 1 command updates the structural node and tracked style without ad
   assert.equal(segment.attrs.textIndent, '0in');
   assert.deepEqual(segment.attrs.formatOverrides, ['textIndent', 'lineHeight', 'fontSize']);
   assert.equal(segment.content[0].marks, undefined);
+
+  editor.destroy();
+});
+
+test('heading and paragraph commands update every tracked block in the affected paragraph', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [
+        {
+          type: 'blockSegment',
+          attrs: {
+            blockId: 'block-1',
+            status: 'processing',
+            fontSize: '12pt',
+            lineHeight: '2.0',
+            textIndent: '0.5in',
+          },
+          content: [{ type: 'text', text: 'First sentence.' }],
+        },
+        { type: 'text', text: ' ' },
+        {
+          type: 'blockSegment',
+          attrs: {
+            blockId: 'block-2',
+            status: 'unprocessed',
+            fontSize: '11pt',
+            lineHeight: '1.5',
+            textIndent: '0.25in',
+          },
+          content: [{ type: 'text', text: 'Second sentence.' }],
+        },
+      ],
+    }],
+  });
+
+  editor.commands.setTextSelection({ from: 2, to: 17 });
+  const headingApplied = editor.chain()
+    .setHeading({ level: 1 })
+    .command(
+      ({ tr }) => updateTrackedBlocksInSelectedTextBlocks(
+        tr,
+        (attrs) => trackedHeadingAttributes(1, attrs),
+      ),
+    )
+    .run();
+
+  assert.equal(headingApplied, true);
+  const heading = editor.getJSON().content[0];
+  const headingSegments = heading.content.filter((node) => node.type === 'blockSegment');
+  assert.equal(heading.type, 'heading');
+  assert.deepEqual(
+    headingSegments.map((segment) => ({
+      sourceType: segment.attrs.sourceType,
+      level: segment.attrs.level,
+      fontSize: segment.attrs.fontSize,
+      lineHeight: segment.attrs.lineHeight,
+      textIndent: segment.attrs.textIndent,
+    })),
+    [
+      {
+        sourceType: 'heading',
+        level: 1,
+        fontSize: '18pt',
+        lineHeight: '1.15',
+        textIndent: '0in',
+      },
+      {
+        sourceType: 'heading',
+        level: 1,
+        fontSize: '18pt',
+        lineHeight: '1.15',
+        textIndent: '0in',
+      },
+    ],
+  );
+
+  const paragraphApplied = editor.chain()
+    .setParagraph()
+    .command(
+      ({ tr }) => updateTrackedBlocksInSelectedTextBlocks(
+        tr,
+        (attrs) => trackedParagraphAttributes(attrs),
+      ),
+    )
+    .run();
+
+  assert.equal(paragraphApplied, true);
+  const paragraph = editor.getJSON().content[0];
+  const paragraphSegments = paragraph.content.filter((node) => node.type === 'blockSegment');
+  assert.equal(paragraph.type, 'paragraph');
+  assert.deepEqual(
+    paragraphSegments.map((segment) => ({
+      sourceType: segment.attrs.sourceType,
+      level: segment.attrs.level,
+      fontSize: segment.attrs.fontSize,
+      lineHeight: segment.attrs.lineHeight,
+      textIndent: segment.attrs.textIndent,
+    })),
+    [
+      {
+        sourceType: 'paragraph',
+        level: null,
+        fontSize: '12pt',
+        lineHeight: '2.0',
+        textIndent: '0.5in',
+      },
+      {
+        sourceType: 'paragraph',
+        level: null,
+        fontSize: '11pt',
+        lineHeight: '1.5',
+        textIndent: '0.25in',
+      },
+    ],
+  );
 
   editor.destroy();
 });
@@ -395,6 +515,74 @@ test('converts legacy paragraph and heading blocks into block segments', () => {
   assert.equal(currentParagraph.content[0].type, 'blockSegment');
   assert.equal(currentParagraph.content[0].attrs.blockId, 'current-block');
   assert.equal(currentParagraph.content[0].attrs.status, 'processed');
+});
+
+test('loading a heading normalizes every existing tracked block to its heading level', () => {
+  const normalized = convertLegacyTrackedBlocks({
+    type: 'doc',
+    content: [{
+      type: 'heading',
+      attrs: { level: 2 },
+      content: [
+        {
+          type: 'blockSegment',
+          attrs: {
+            blockId: 'heading-block-1',
+            status: 'processing',
+            sourceType: 'heading',
+            level: 2,
+            fontSize: '16pt',
+            lineHeight: '1.15',
+            textIndent: '0in',
+          },
+          content: [{ type: 'text', text: 'First heading block.' }],
+        },
+        { type: 'text', text: ' ' },
+        {
+          type: 'blockSegment',
+          attrs: {
+            blockId: 'heading-block-2',
+            status: 'unprocessed',
+            sourceType: 'paragraph',
+            fontSize: '12pt',
+            lineHeight: '2.0',
+            textIndent: '0.5in',
+          },
+          content: [{ type: 'text', text: 'Second heading block.' }],
+        },
+      ],
+    }],
+  });
+
+  const segments = normalized.content[0].content.filter(
+    (node) => node.type === 'blockSegment',
+  );
+  assert.deepEqual(
+    segments.map((segment) => ({
+      sourceType: segment.attrs.sourceType,
+      level: segment.attrs.level,
+      fontSize: segment.attrs.fontSize,
+      lineHeight: segment.attrs.lineHeight,
+      textIndent: segment.attrs.textIndent,
+    })),
+    [
+      {
+        sourceType: 'heading',
+        level: 2,
+        fontSize: '16pt',
+        lineHeight: '1.15',
+        textIndent: '0in',
+      },
+      {
+        sourceType: 'heading',
+        level: 2,
+        fontSize: '16pt',
+        lineHeight: '1.15',
+        textIndent: '0in',
+      },
+    ],
+  );
+  assert.equal(segments[1].attrs.headingRestoreAttrs.fontSize, '12pt');
 });
 
 test('next unfinished block wraps from the document end to an earlier block', () => {

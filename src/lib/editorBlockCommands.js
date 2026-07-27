@@ -57,6 +57,52 @@ export function trackedParagraphAttributes(currentAttrs = {}, fallbackAttrs = {}
   };
 }
 
+export function updateTrackedBlocksInSelectedTextBlocks(transaction, updateAttrs) {
+  if (!transaction || typeof updateAttrs !== 'function') return false;
+
+  const structuralPositions = new Set();
+  const collectStructuralAncestor = ($position) => {
+    for (let depth = $position.depth; depth > 0; depth -= 1) {
+      const node = $position.node(depth);
+      if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type.name)) continue;
+      structuralPositions.add($position.before(depth));
+      break;
+    }
+  };
+
+  collectStructuralAncestor(transaction.selection.$from);
+  collectStructuralAncestor(transaction.selection.$to);
+  transaction.doc.nodesBetween(
+    transaction.selection.from,
+    transaction.selection.to,
+    (node, pos) => {
+      if (STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type.name)) {
+        structuralPositions.add(pos);
+      }
+    },
+  );
+
+  let changed = false;
+  [...structuralPositions].sort((left, right) => left - right).forEach((structuralPos) => {
+    const structuralNode = transaction.doc.nodeAt(structuralPos);
+    if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(structuralNode?.type?.name)) return;
+
+    structuralNode.descendants((node, offset) => {
+      if (node.type.name !== 'blockSegment') return;
+      const pos = structuralPos + offset + 1;
+      const nextAttrs = updateAttrs(node.attrs, { node, pos, structuralNode });
+      if (!nextAttrs) return;
+      transaction.setNodeMarkup(pos, undefined, {
+        ...node.attrs,
+        ...nextAttrs,
+      });
+      changed = true;
+    });
+  });
+
+  return changed;
+}
+
 function textFromJsonNode(node) {
   if (!node) return '';
   if (node.type === 'text') return node.text ?? '';
@@ -125,18 +171,29 @@ export function convertLegacyTrackedBlocks(
       structuralIndex += 1;
       const content = Array.isArray(node.content) ? node.content : [];
       const hasBlockSegments = content.some((child) => child?.type === 'blockSegment');
+      const normalizeStructuralSegment = (child) => {
+        const normalizedSegment = normalizeBlockSegment(child, paragraphIndex);
+        if (node.type !== 'heading') return normalizedSegment;
+        return {
+          ...normalizedSegment,
+          attrs: {
+            ...normalizedSegment.attrs,
+            ...trackedHeadingAttributes(node.attrs?.level, normalizedSegment.attrs),
+          },
+        };
+      };
       const normalizedContent = hasBlockSegments
         ? content.map((child) => (
           child?.type === 'blockSegment'
-            ? normalizeBlockSegment(child, paragraphIndex)
+            ? normalizeStructuralSegment(child)
             : child
         ))
         : (textFromJsonNode(node).trim()
-          ? [normalizeBlockSegment({
+          ? [normalizeStructuralSegment({
             type: 'blockSegment',
             attrs: legacyBlockSegmentAttrs(node.attrs),
             content,
-          }, paragraphIndex)]
+          })]
           : content);
 
       return {
