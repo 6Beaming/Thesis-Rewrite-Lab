@@ -568,6 +568,34 @@ function selectedBlockDecorationRange(state) {
   return null;
 }
 
+function citationTextRange(doc, anchor) {
+  if (!doc || !anchor?.blockId) return null;
+  let targetRange = null;
+  doc.descendants((node, pos) => {
+    if (
+      targetRange
+      || !isTrackedTextBlockNode(node)
+      || node.attrs.blockId !== anchor.blockId
+    ) return;
+    const codePoints = Array.from(node.textContent);
+    const startCp = Math.max(
+      0,
+      Math.min(codePoints.length, Number(anchor.citationStartCp) || 0),
+    );
+    const endCp = Math.max(
+      startCp,
+      Math.min(codePoints.length, Number(anchor.citationEndCp) || startCp),
+    );
+    const startOffset = codePoints.slice(0, startCp).join('').length;
+    const endOffset = codePoints.slice(0, endCp).join('').length;
+    targetRange = {
+      from: pos + 1 + startOffset,
+      to: pos + 1 + endOffset,
+    };
+  });
+  return targetRange;
+}
+
 function lineRectsForBlock(blockElement) {
   const range = window.document.createRange();
   range.selectNodeContents(blockElement);
@@ -2203,6 +2231,85 @@ const DocumentEditor = forwardRef(function DocumentEditor({
 
   useImperativeHandle(ref, () => ({
     applyCurrentBlockStatus,
+    applyCitationPatch: ({ anchor, replacementText } = {}) => {
+      if (!editor || editor.isDestroyed || !anchor?.blockId) return null;
+      const targetRange = citationTextRange(editor.state.doc, anchor);
+      if (!targetRange) return null;
+
+      let applied = false;
+      editor.commands.command(({ state, tr, dispatch }) => {
+        const currentText = state.doc.textBetween(
+          targetRange.from,
+          targetRange.to,
+          '',
+          '',
+        );
+        if (
+          typeof anchor.originalText === 'string'
+          && currentText !== anchor.originalText
+        ) return false;
+
+        tr
+          .insertText(String(replacementText ?? ''), targetRange.from, targetRange.to)
+          .setMeta(SKIP_BLOCK_PARTITION_META, true)
+          .setMeta(EDITOR_PRESERVE_SCROLL_META, true)
+          .setMeta('workspaceMutationKind', 'citation');
+        applied = true;
+        dispatch?.(tr);
+        return true;
+      });
+      return applied ? createEditorSnapshot(editor) : null;
+    },
+    focusCitationAnchor: (anchor) => {
+      if (!editor || editor.isDestroyed || !anchor?.blockId) return false;
+      const targetRange = citationTextRange(editor.state.doc, anchor);
+      if (!targetRange) return false;
+
+      const applyCitationSelection = () => {
+        if (editor.isDestroyed) return false;
+        editor.storage.blockSelectionDecoration.active = true;
+        const applied = editor
+          .chain()
+          .focus(undefined, { scrollIntoView: false })
+          .setTextSelection(targetRange)
+          .command(({ tr }) => {
+            tr.setMeta('blockSelectionActivation', true);
+            tr.setMeta('addToHistory', false);
+            return true;
+          })
+          .run();
+        if (!applied) return false;
+
+        activateSelectedEditorBlock(editor);
+        const info = selectedParagraphInfo(editor);
+        scheduleBlockFrameSync(editor);
+        callbacksRef.current.onActiveBlockChange?.(info);
+        return true;
+      };
+
+      if (!applyCitationSelection()) return false;
+      window.requestAnimationFrame(() => {
+        if (!applyCitationSelection()) return;
+        const blockElement = Array.from(
+          editor.view.dom.querySelectorAll('.doc-block[data-block-id]'),
+        ).find((element) => element.dataset.blockId === anchor.blockId);
+        const scrollContainer = paperScrollRef.current;
+        if (!blockElement || !scrollContainer) return;
+        const blockRect = blockElement.getBoundingClientRect();
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const centeredTop = (
+          scrollContainer.scrollTop
+          + blockRect.top
+          - containerRect.top
+          - Math.max(0, (scrollContainer.clientHeight - blockRect.height) / 2)
+        );
+        scrollContainer.scrollTo({
+          top: Math.max(0, centeredTop),
+          behavior: 'smooth',
+        });
+      });
+      return true;
+    },
     applyBlockNlpResult: (blockId, response) => {
       if (!editor || editor.isDestroyed || !blockId || !response?.nlp) return null;
       let applied = false;

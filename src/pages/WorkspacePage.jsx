@@ -1936,7 +1936,7 @@ export default function WorkspacePage() {
     }
   }
 
-  async function applySemanticProfile() {
+  async function applySemanticProfile(nextSemanticProfile = semanticProfile) {
     if (!selectedDocument?.id || nlpRepartitionBusy) return;
     setNlpRepartitionBusy(true);
     setNlpRepartitionStatus('Saving the current document…');
@@ -1950,7 +1950,7 @@ export default function WorkspacePage() {
       }
       setNlpRepartitionStatus('Regrouping related sentences…');
       const { job } = await repartitionDocument(selectedDocument.id, {
-        semanticProfile,
+        semanticProfile: nextSemanticProfile,
         expectedRevision: Number(persisted.revision ?? selectedDocument.revision),
       });
       for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -1978,6 +1978,12 @@ export default function WorkspacePage() {
     } finally {
       setNlpRepartitionBusy(false);
     }
+  }
+
+  function handleSemanticProfileChange(nextSemanticProfile) {
+    if (nextSemanticProfile === semanticProfile || nlpRepartitionBusy) return;
+    setSemanticProfile(nextSemanticProfile);
+    void applySemanticProfile(nextSemanticProfile);
   }
 
   async function handleEditorBlockStatusChange(payload = {}) {
@@ -2571,12 +2577,16 @@ export default function WorkspacePage() {
           </button>
         </div>
         <div className="practice-goals">
-          <strong>Practice goals from analysis</strong>
-          <ul>
-            {learningGoals.length
-              ? learningGoals.map((goal) => <li key={goal}>{goal}</li>)
-              : <li>Analyze this block first to get targeted practice goals.</li>}
-          </ul>
+          <strong>Practice goals</strong>
+          {learningGoals.length ? (
+            <ul>
+              {learningGoals.map((goal) => <li key={goal}>{goal}</li>)}
+            </ul>
+          ) : (
+            <p className="practice-goals-empty">
+              Analyze this block from the writing coach to get targeted practice goals.
+            </p>
+          )}
         </div>
         <textarea
           value={practiceInput}
@@ -2834,6 +2844,67 @@ export default function WorkspacePage() {
     setMobileOwlOpen((value) => !value);
   }
 
+  function navigateToCitation(anchor) {
+    const focused = documentEditorRef.current?.focusCitationAnchor?.(anchor);
+    if (focused) setMobileOwlOpen(false);
+  }
+
+  function handleCitationDocumentApplied(document, patch) {
+    const wasWorkspaceDirty = workspaceDirty;
+    const snapshot = documentEditorRef.current?.applyCitationPatch?.(patch);
+    if (!snapshot) {
+      openWorkspace(document, { updateRoute: false });
+      setWorkspaceNotice('Citation patch applied and versioned.');
+      return;
+    }
+
+    const hydratedDocument = hydrateWorkspaceDocument(document);
+    const nextStyleName = hydratedDocument?.academic_style || styleName;
+    const nextStyleSettings = academicStyleSettings(
+      nextStyleName,
+      hydratedDocument?.style_settings ?? styleSettings,
+    );
+    const normalized = normalizeWorkspaceContent(
+      hydratedDocument,
+      snapshot.contentJson,
+      nextStyleName,
+      nextStyleSettings,
+      snapshot.blocks,
+      snapshot.currentProcessingBlockId,
+    );
+    const synchronizedDocument = documentFromWorkspaceDraft(
+      hydratedDocument,
+      normalized.draft,
+      nextStyleName,
+      nextStyleSettings,
+    );
+    const revision = Number(synchronizedDocument.revision);
+    if (Number.isFinite(revision)) {
+      localDocumentRevisionsRef.current.set(
+        synchronizedDocument.id,
+        Math.max(
+          revision,
+          localDocumentRevisionsRef.current.get(synchronizedDocument.id) ?? 0,
+        ),
+      );
+    }
+
+    activeDocumentIsEmptyRef.current = isDocumentTitleAndBodyEmpty(synchronizedDocument);
+    applyDocument('document:updated', synchronizedDocument);
+    setWorkspaceDraft(normalized.draft);
+    setSelectedDocument(synchronizedDocument);
+    setEditorContent(normalized.contentJson ?? snapshot.contentJson);
+    setActiveEditorBlock(activeBlockInfoFromDraft(normalized.draft));
+    setBlockAnalyses({});
+    setBlockAnalysisHighlights({});
+    setAnalysisError('');
+    if (!wasWorkspaceDirty) {
+      workspaceEditGenerationRef.current = 0;
+      resetWorkspaceDirty();
+    }
+    setWorkspaceNotice('Citation patch applied and versioned.');
+  }
+
   function renderAnalyzingCard() {
     return (
       <>
@@ -2842,29 +2913,29 @@ export default function WorkspacePage() {
             face={analysisFace}
             onFaceChange={handleAnalysisFaceChange}
             nlpPanel={(
-              <NlpAnalysisPanel
-                snapshot={activeBlockNlpSnapshot}
-                checkState={nlpCheckState}
-                error={nlpCheckError}
-                documentSummary={documentNlpSummary}
-                onRejectIssue={rejectActiveLanguageIssue}
-                rejectingIssueKey={rejectingLanguageIssueKey}
-              />
+              <>
+                <NlpAnalysisPanel
+                  snapshot={activeBlockNlpSnapshot}
+                  checkState={nlpCheckState}
+                  error={nlpCheckError}
+                  documentSummary={documentNlpSummary}
+                  onRejectIssue={rejectActiveLanguageIssue}
+                  rejectingIssueKey={rejectingLanguageIssueKey}
+                />
+                {nlpFeatureFlags.MCP_CITATION_V2_ENABLED ? (
+                  <CitationReviewPanel
+                    key={`${selectedDocument?.id}-${styleName}`}
+                    document={selectedDocument}
+                    disabled={styleName === 'Customized'}
+                    onDocumentApplied={handleCitationDocumentApplied}
+                    onNavigateToCitation={navigateToCitation}
+                  />
+                ) : null}
+              </>
             )}
             aiPanel={renderAnalysisStats()}
           />
         ) : renderAnalysisStats()}
-        {nlpFeatureFlags.MCP_CITATION_V2_ENABLED ? (
-          <CitationReviewPanel
-            key={`${selectedDocument?.id}-${selectedDocument?.revision}-${styleName}`}
-            document={selectedDocument}
-            disabled={styleName === 'Customized'}
-            onDocumentApplied={(document) => {
-              openWorkspace(document, { updateRoute: false });
-              setWorkspaceNotice('Citation patch applied and versioned.');
-            }}
-          />
-        ) : null}
       </>
     );
   }
@@ -3135,8 +3206,7 @@ export default function WorkspacePage() {
                 && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
                   <SemanticProfileControl
                     value={semanticProfile}
-                    onChange={setSemanticProfile}
-                    onApply={applySemanticProfile}
+                    onChange={handleSemanticProfileChange}
                     busy={nlpRepartitionBusy}
                     status={nlpRepartitionStatus}
                   />
@@ -3164,9 +3234,6 @@ export default function WorkspacePage() {
       return (
         <section className="workspace-mode-card workspace-mode-card--interactive" role="tabpanel" id="workspace-mode-panel" aria-labelledby="workspace-mode-tab-analyzing">
           <div className="workspace-mode-card-content">
-          {!currentBlockAnalysis ? (
-            <p>Select a block, choose your goals, and learn with our AI coach.</p>
-          ) : null}
           {renderAnalyzingCard()}
           </div>
         </section>
@@ -3236,13 +3303,15 @@ export default function WorkspacePage() {
             variant="side"
           />
           <div className="workspace-left-panel-content">
-            <section className="workspace-upload-note">
-              <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
-                <UploadDocIcon />
-                Upload
-              </button>
-              <span>Upload a new document. Save current edits before leaving.</span>
-            </section>
+            {nlpFeatureFlags.NLP_SEMANTIC_PROFILE_ENABLED
+              && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
+                <SemanticProfileControl
+                  value={semanticProfile}
+                  onChange={handleSemanticProfileChange}
+                  busy={nlpRepartitionBusy}
+                  status={nlpRepartitionStatus}
+                />
+              ) : null}
             <AcademicStylePanel
               styleName={styleName}
               customStyle={styleSettings}
@@ -3250,16 +3319,13 @@ export default function WorkspacePage() {
               onCustomModeSelect={handleCustomModeSelect}
               onCustomStyleChange={handleCustomStyleChange}
             />
-            {nlpFeatureFlags.NLP_SEMANTIC_PROFILE_ENABLED
-              && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
-                <SemanticProfileControl
-                  value={semanticProfile}
-                  onChange={setSemanticProfile}
-                  onApply={applySemanticProfile}
-                  busy={nlpRepartitionBusy}
-                  status={nlpRepartitionStatus}
-                />
-              ) : null}
+            <section className="workspace-upload-note">
+              <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
+                <UploadDocIcon />
+                Upload
+              </button>
+              <span>Upload a new document to work on</span>
+            </section>
             <HistorySelector
               documents={recentDocuments}
               expanded={workspaceHistoryExpanded}
