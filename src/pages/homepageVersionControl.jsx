@@ -5,6 +5,7 @@ import EmptyState from '../components/EmptyState.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
 import { getVersion, revertVersion } from '../services/versionsApi.js';
 import { diffLogicalBlocks } from '../lib/versionDiff.js';
+import versionHistoryUrl from '../assets/version_history.png?url';
 
 function textFromTiptap(node) {
   if (!node) return '';
@@ -185,11 +186,12 @@ export default function HomepageVersionControl({
 
   return (
     <section className="home-subpage">
-      <header className="home-subpage-header">
-        <div>
+      <header className="home-subpage-header home-subpage-header--illustrated">
+        <div className="home-subpage-header-copy">
           <h1><strong>Version history</strong></h1>
           <p>Select a document to inspect its saved versions.</p>
         </div>
+        <img className="home-subpage-header-art" src={versionHistoryUrl} alt="" />
       </header>
 
       {!selectedDocument ? (

@@ -57,11 +57,12 @@ export default function HomepageTrash({ onError, onChanged }) {
 
   return (
     <section className="home-subpage">
-      <header className="home-subpage-header">
-        <div>
+      <header className="home-subpage-header home-subpage-header--illustrated">
+        <div className="home-subpage-header-copy">
           <h1><strong>Trash</strong></h1>
           <p>{documents.length} items, {totalSize} characters</p>
         </div>
+        <img className="home-subpage-header-art" src={trashUrl} alt="" />
       </header>
       {visibleNotice ? <p className="trash-local-notice">{visibleNotice}</p> : null}
       <div className="trash-grid">

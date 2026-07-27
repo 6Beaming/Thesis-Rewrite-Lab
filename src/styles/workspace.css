@@ -2973,7 +2973,9 @@ body:not(.home-feedback-widget-visible) #givefeedback-dev-root {
 }
 
 .progress-mountain-art {
-  width: min(100%, 230px);
+  width: clamp(96px, 22cqi, 230px);
+  height: auto;
+  max-width: 100%;
   max-height: 150px;
   justify-self: end;
   display: block;
@@ -3277,7 +3279,7 @@ body:not(.home-feedback-widget-visible) #givefeedback-dev-root {
 }
 
 .home-subpage-header {
-  min-height: 110px;
+  min-height: 206px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3288,6 +3290,27 @@ body:not(.home-feedback-widget-visible) #givefeedback-dev-root {
   background: var(--home-card);
   padding: 24px 30px;
   box-shadow: 0 20px 52px rgba(16, 44, 28, 0.07);
+}
+
+.home-subpage-header--illustrated {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 230px;
+  gap: 26px;
+  padding: 24px 34px;
+}
+
+.home-subpage-header-copy {
+  min-width: 0;
+}
+
+.home-subpage-header-art {
+  width: clamp(96px, 22cqi, 230px);
+  height: auto;
+  max-width: 100%;
+  max-height: 150px;
+  justify-self: end;
+  display: block;
+  object-fit: contain;
 }
 
 .home-subpage-header h1 {
@@ -3601,13 +3624,39 @@ body:not(.home-feedback-widget-visible) #givefeedback-dev-root {
 }
 
 @container (max-width: 760px) {
-  .progress-banner {
-    grid-template-columns: clamp(96px, 22vw, 142px) minmax(0, 1fr);
+  .progress-banner,
+  .home-subpage-header--illustrated {
+    gap: clamp(10px, 2.5cqi, 20px);
     padding: clamp(16px, 4vw, 28px);
   }
 
-  .progress-mountain-art {
-    display: none;
+  .progress-banner {
+    grid-template-columns:
+      clamp(96px, 22cqi, 142px)
+      minmax(0, 1fr)
+      clamp(72px, 20cqi, 150px);
+  }
+
+  .home-subpage-header--illustrated {
+    grid-template-columns:
+      minmax(0, 1fr)
+      clamp(72px, 20cqi, 150px);
+  }
+
+  .progress-mountain-art,
+  .home-subpage-header-art {
+    width: 100%;
+    max-width: 150px;
+  }
+}
+
+@container (max-width: 480px) {
+  .home-subpage-header--illustrated {
+    grid-template-columns:
+      minmax(0, 1fr)
+      clamp(56px, 20cqi, 96px);
+    gap: clamp(8px, 2cqi, 12px);
+    padding-inline: 16px;
   }
 }
 
@@ -4311,14 +4360,6 @@ body:not(.home-feedback-widget-visible) #givefeedback-dev-root {
     justify-content: flex-end;
   }
 
-  .progress-banner {
-    grid-template-columns: 140px minmax(0, 1fr);
-    padding: 20px;
-  }
-
-  .progress-mountain-art {
-    display: none;
-  }
 }
 
 @media (max-width: 576px) {
