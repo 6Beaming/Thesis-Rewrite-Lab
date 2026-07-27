@@ -73,11 +73,11 @@ export default function HomepageAccount({
           <span className="account-streak-spark account-streak-spark--two" aria-hidden="true" />
           <div className="account-streak-copy">
             <strong>{streakDays}</strong>
-            <span>day streak</span>
+            <span>{streakDays === 1 ? 'Day streak' : 'Days streak'}</span>
           </div>
         </section>
         <div className="account-settings">
-          <button type="button" onClick={() => setActiveView('writing-preferences')}>
+          <button type="button" style={{ textAlign: 'center' }} onClick={() => setActiveView('writing-preferences')}>
             Writing preferences
           </button>
         </div>

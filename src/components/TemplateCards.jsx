@@ -1,10 +1,10 @@
 const templates = [
-  { id: 'APA', title: 'APA', detail: 'Double spaced, serif body, first-line indent.' },
-  { id: 'MLA', title: 'MLA', detail: 'Readable humanities layout with simple citations.' },
-  { id: 'Chicago', title: 'Chicago', detail: 'Footnote-friendly manuscript structure.' },
+  { id: 'APA', title: 'APA', detail: 'Double-spaced with 1-inch margins and hanging references.' },
+  { id: 'MLA', title: 'MLA', detail: 'Double-spaced with indented quotes and hanging works cited.' },
+  { id: 'Chicago', title: 'Chicago', detail: 'Double-spaced body with student-paper notes and bibliography.' },
 ];
 
-export default function TemplateCards({ selected = 'APA', onSelect }) {
+export default function TemplateCards({ selected = null, onSelect }) {
   return (
     <div className="template-cards">
       {templates.map((template) => (

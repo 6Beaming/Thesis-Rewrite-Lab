@@ -22,6 +22,19 @@ const SORT_MAP = {
   least_completed: 'completed_rate asc, updated_at desc',
 };
 
+function textFromContentNode(node) {
+  if (!node || typeof node !== 'object') return '';
+  if (node.type === 'text') return String(node.text ?? '');
+  if (!Array.isArray(node.content)) return '';
+  return node.content.map(textFromContentNode).join('');
+}
+
+export function documentHasUserContent(document) {
+  const title = String(document?.title ?? '').trim();
+  const body = textFromContentNode(document?.content_json).trim();
+  return Boolean(title || body);
+}
+
 function replaceTrackedNodes(node, byId) {
   if (!node || typeof node !== 'object') return node;
   if (node.type === 'blockSegment' && byId.has(node.attrs?.blockId)) {
@@ -79,7 +92,12 @@ async function loadDocument(runQuery, documentId, userId) {
     `,
     [documentId]
   );
-  return { ...document, blocks: blocks.rows };
+  const nlpSummary = await getDocumentNlpSummary(documentId, runQuery);
+  return {
+    ...document,
+    nlp_document_snapshot: nlpSummary,
+    blocks: blocks.rows,
+  };
 }
 
 export async function listDocuments({ userId, q = '', sort = 'most_recent', trashed = false }) {
@@ -152,10 +170,10 @@ export async function createDocumentWithBlocks({
   originalFilename = null,
   originalMime = null,
   semanticProfile = 'medium',
+  discardIfEmpty = false,
   returnMutation = false,
 }) {
-  const safeBlocks = textBlocks.length ? textBlocks : ['Start writing your document.'];
-  const blocks = createBlockRecords(safeBlocks, styleSettings);
+  const blocks = createBlockRecords(textBlocks, styleSettings);
   const contentJson = createContentJson(blocks);
   const processingBlock = blocks.find((block) => block.status === 'processing') ?? null;
   const hasNlp = blocks.some((block) => block.nlpPipelineVersion);
@@ -168,9 +186,9 @@ export async function createDocumentWithBlocks({
         insert into documents (
           user_id, title, academic_style, style_settings, content_json,
           original_filename, original_mime, original_file, current_processing_block_id,
-          nlp_semantic_profile, nlp_status, nlp_pipeline_version
+          nlp_semantic_profile, nlp_status, nlp_pipeline_version, discard_if_empty
         )
-        values ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+        values ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
         returning *
       `,
       [
@@ -186,6 +204,7 @@ export async function createDocumentWithBlocks({
         normalizedSemanticProfile,
         hasNlp ? (degradedNlp ? 'degraded' : 'ready') : 'pending',
         hasNlp ? CURRENT_NLP_PIPELINE_VERSION : null,
+        discardIfEmpty,
       ]
     );
 
@@ -208,8 +227,9 @@ export async function createDocumentWithBlocks({
 export async function createBlankDocument(userId, options = {}) {
   return createDocumentWithBlocks({
     userId,
-    title: 'Untitled document',
-    textBlocks: ['Start writing your document.'],
+    title: '',
+    textBlocks: [],
+    discardIfEmpty: true,
     returnMutation: Boolean(options.returnMutation),
   });
 }
@@ -275,6 +295,13 @@ export async function saveDocument(documentId, userId, payload, options = {}) {
     const document = result.rows[0] ?? null;
     if (!document) return null;
 
+    if (document.discard_if_empty && documentHasUserContent(document)) {
+      await client.query(
+        'update documents set discard_if_empty = false where id = $1',
+        [documentId],
+      );
+    }
+
     if (payload.contentJson) {
       await recalculateDocumentProgress(client, documentId);
     }
@@ -289,6 +316,39 @@ export async function saveDocument(documentId, userId, payload, options = {}) {
   });
   if (!mutation) return null;
   return options.returnMutation ? mutation : mutation.document;
+}
+
+export async function discardEmptyDocument(documentId, userId) {
+  return withTransaction(async (client) => {
+    const existing = await client.query(
+      `
+        select id, title, content_json, revision, discard_if_empty
+        from documents
+        where id = $1
+          and user_id = $2
+          and trashed = false
+        for update
+      `,
+      [documentId, userId],
+    );
+    const document = existing.rows[0];
+    if (!document) return null;
+    if (!document.discard_if_empty || documentHasUserContent(document)) {
+      return { deleted: false, document: null };
+    }
+
+    await client.query('delete from documents where id = $1', [documentId]);
+    await recalculateUserProgress(client, userId);
+    return {
+      deleted: true,
+      document: {
+        id: document.id,
+        title: document.title,
+        revision: Number(document.revision) + 1,
+        deleted: true,
+      },
+    };
+  });
 }
 
 export async function userOwnsActiveDocument(documentId, userId) {

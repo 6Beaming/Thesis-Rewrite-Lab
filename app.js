@@ -47,6 +47,14 @@ app.use(
   helmet({
     contentSecurityPolicy: {
       directives: {
+        'script-src': [
+          "'self'",
+          'https://app.givefeedback.dev',
+        ],
+        'connect-src': [
+          "'self'",
+          'https://app.givefeedback.dev',
+        ],
         // Auth.js starts with a same-origin form POST, then redirects that
         // navigation to Google's authorization endpoint.
         'form-action': ["'self'", 'https://accounts.google.com'],

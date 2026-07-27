@@ -3,21 +3,28 @@ import { useNavigate } from 'react-router';
 import DocumentsSection from '../components/DocumentsSection.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import HomeShell from '../components/HomeShell.jsx';
+import LoadingScreen from '../components/LoadingScreen.jsx';
 import ProgressBanner from '../components/ProgressBanner.jsx';
 import { useAuth } from '../components/AuthProvider.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
-import { createDocument, moveToTrash, uploadDocument } from '../services/documentsApi.js';
+import {
+  createDocument,
+  downloadDocument,
+  moveToTrash,
+  uploadDocument,
+} from '../services/documentsApi.js';
 import { updateWritingPreferences, uploadProfilePicture } from '../services/usersApi.js';
 import HomepageAccount from './homepageAccount.jsx';
 import HomepageCredits from './homepageCredits.jsx';
 import HomepageSupport from './homepageSupport.jsx';
 import HomepageTrash from './homepageTrash.jsx';
 import HomepageVersionControl from './homepageVersionControl.jsx';
+import { DEFAULT_AUTOSAVE_DOCS } from '../shared/writingPreferences.js';
 
 const EMPTY_USER = {
   display_name: 'Signed-in user',
   email: '',
-  autosaveDocs: false,
+  autosaveDocs: DEFAULT_AUTOSAVE_DOCS,
   useWritingPreferences: true,
   writingPreferences: {},
   stats: {
@@ -65,6 +72,7 @@ export default function HomePage({ onOpenWorkspace }) {
     state: realtimeState,
     applyDocument,
     applyProfile,
+    clearError,
     refreshShared,
   } = useRealtime();
   const [user, setUser] = useState(() => ({
@@ -79,11 +87,18 @@ export default function HomePage({ onOpenWorkspace }) {
   const [accountOpen, setAccountOpen] = useState(false);
   const [historyDocument, setHistoryDocument] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState('');
+  const [exportingDocumentId, setExportingDocumentId] = useState(null);
+  const [actionError, setActionError] = useState('');
   const documents = useMemo(
     () => visibleDocuments(realtimeState.documents, query, sort),
     [query, realtimeState.documents, sort],
   );
+  const homeError = actionError || realtimeState.error;
+
+  function dismissHomeError() {
+    setActionError('');
+    clearError();
+  }
 
   useEffect(() => {
     if (!authUser) return;
@@ -109,57 +124,65 @@ export default function HomePage({ onOpenWorkspace }) {
     setHistoryDocument((current) => pickHistoryDocument(documents, current));
   }, [documents]);
 
-  useEffect(() => {
-    if (realtimeState.error) setNotice(realtimeState.error);
-  }, [realtimeState.error]);
-
   const progressValue = useMemo(() => {
     return Math.round(Number(user?.stats?.completed_rate ?? 0) * 100);
   }, [user]);
 
   async function handleNewDocument() {
+    setActionError('');
     setBusy(true);
     try {
       const result = await createDocument();
       applyDocument('document:created', result.document);
       onOpenWorkspace?.(result.document);
     } catch (error) {
-      setNotice(error.message || 'Could not create a document.');
+      setActionError(error.message || 'Could not create a document.');
     } finally {
       setBusy(false);
     }
   }
 
   async function handleUpload(file) {
+    setActionError('');
     setBusy(true);
     try {
       const result = await uploadDocument(file);
       applyDocument('document:created', result.document);
       onOpenWorkspace?.(result.document);
     } catch (error) {
-      if (file.name.toLowerCase().endsWith('.doc')) {
-        setNotice('.doc uploads are not supported. Please upload .docx, .md, or .txt.');
-      } else {
-        setNotice(error.message || 'Upload failed.');
-      }
+      setActionError(error.message || 'Upload failed.');
     } finally {
       setBusy(false);
     }
   }
 
   async function handleDelete(document) {
+    setActionError('');
     setBusy(true);
     try {
       const result = await moveToTrash(document.id);
       applyDocument('document:trashed', result.document);
     } catch (error) {
-      setNotice(error.message || 'Could not move document to trash.');
+      setActionError(error.message || 'Could not move document to trash.');
     } finally {
       setBusy(false);
     }
   }
 
+  async function handleExport(document) {
+    setActionError('');
+    setExportingDocumentId(document.id);
+    try {
+      await downloadDocument(document.id);
+    } catch (error) {
+      setActionError(error.message || 'Could not export the document.');
+    } finally {
+      setExportingDocumentId(null);
+    }
+  }
+
   async function handleProfileUpload(file) {
+    setActionError('');
     try {
       const nextUser = await uploadProfilePicture(file);
       applyProfile(nextUser);
@@ -169,23 +192,22 @@ export default function HomePage({ onOpenWorkspace }) {
         profilePictureUrl: `/api/users/me/profile-picture?v=${encodeURIComponent(nextUser.updated_at || Date.now())}`,
         hasProfilePicture: true,
       }));
-      setNotice('Profile picture updated.');
       return true;
     } catch (error) {
-      setNotice(error.message || 'Profile upload failed.');
+      setActionError(error.message || 'Profile upload failed.');
       return false;
     }
   }
 
   async function handleWritingPreferencesUpdate(settings) {
+    setActionError('');
     try {
       const nextUser = await updateWritingPreferences(settings);
       applyProfile(nextUser);
       setUser((current) => ({ ...current, ...nextUser }));
-      setNotice('Writing preferences updated.');
       return true;
     } catch (error) {
-      setNotice(error.message || 'Could not update writing preferences.');
+      setActionError(error.message || 'Could not update writing preferences.');
       throw error;
     }
   }
@@ -213,6 +235,8 @@ export default function HomePage({ onOpenWorkspace }) {
               onSortChange={setSort}
               onOpenDocument={handleOpenDocument}
               onDeleteDocument={handleDelete}
+              onExportDocument={handleExport}
+              exportingDocumentId={exportingDocumentId}
             />
           ) : (
             <EmptyState title="No documents yet">Create or upload a document to start practicing.</EmptyState>
@@ -224,7 +248,7 @@ export default function HomePage({ onOpenWorkspace }) {
     if (activePage === 'trash') {
       return (
           <HomepageTrash
-            onNotice={setNotice}
+            onError={setActionError}
             onChanged={refreshShared}
         />
       );
@@ -238,14 +262,14 @@ export default function HomePage({ onOpenWorkspace }) {
       return (
         <HomepageVersionControl
           documents={realtimeState.documents}
-          onNotice={setNotice}
+          onError={setActionError}
           onDocumentReverted={handleDocumentReverted}
         />
       );
     }
 
     if (activePage === 'support') {
-      return <HomepageSupport />;
+      return <HomepageSupport onOpenSubscription={() => navigate('/subscription')} />;
     }
 
     return <EmptyState title="Choose a workspace section">Select an option from the sidebar.</EmptyState>;
@@ -254,26 +278,40 @@ export default function HomePage({ onOpenWorkspace }) {
   const hideHeaderActions = ['trash', 'support', 'credits'].includes(activePage);
 
   return (
-    <HomeShell
-      user={user}
-      activePage={activePage}
-      sidebarOpen={sidebarOpen}
-      query={query}
-      busy={busy}
-      onQueryChange={setQuery}
-      onNewDocument={handleNewDocument}
-      onUpload={handleUpload}
-      onSelectPage={(page) => {
-        setActivePage(page);
-        setSidebarOpen(false);
-      }}
-      onToggleSidebar={() => setSidebarOpen((value) => !value)}
-      onAccount={() => setAccountOpen(true)}
-      onSubscription={() => navigate('/subscription')}
-      actionsHidden={hideHeaderActions}
-    >
+    <>
+      <HomeShell
+        user={user}
+        activePage={activePage}
+        sidebarOpen={sidebarOpen}
+        query={query}
+        busy={busy}
+        onQueryChange={setQuery}
+        onNewDocument={handleNewDocument}
+        onUpload={handleUpload}
+        onSelectPage={(page) => {
+          setActionError('');
+          setActivePage(page);
+          setSidebarOpen(false);
+        }}
+        onToggleSidebar={() => setSidebarOpen((value) => !value)}
+        onAccount={() => setAccountOpen(true)}
+        onSubscription={() => navigate('/subscription')}
+        actionsHidden={hideHeaderActions}
+      >
       <div className="home-main-inner">
-        {notice ? <p className="home-api-notice" role="status">{notice}</p> : null}
+        {homeError ? (
+          <div className="home-api-notice" role="alert">
+            <span>{homeError}</span>
+            <button
+              type="button"
+              className="home-api-notice-close"
+              onClick={dismissHomeError}
+              aria-label="Dismiss error message"
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
         {renderMainContent()}
       </div>
       {accountOpen ? (
@@ -285,6 +323,8 @@ export default function HomePage({ onOpenWorkspace }) {
           onUpdateWritingPreferences={handleWritingPreferencesUpdate}
         />
       ) : null}
-    </HomeShell>
+      </HomeShell>
+      {busy ? <LoadingScreen overlay /> : null}
+    </>
   );
 }

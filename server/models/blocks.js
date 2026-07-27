@@ -717,14 +717,22 @@ export function normalizeContentJsonBlocks(contentJson, styleSettings = {}) {
   const content = Array.isArray(contentJson?.content) ? contentJson.content : [];
   const styleAttrs = { ...DEFAULT_BLOCK_ATTRS, ...styleAttrsFromSettings(styleSettings) };
   const blockEntries = [];
+  const usedBlockIds = new Set();
   let structuralIndex = 0;
+
+  function uniqueBlockId(value) {
+    let blockId = validBlockId(value) ? value : randomUUID();
+    while (usedBlockIds.has(blockId)) blockId = randomUUID();
+    usedBlockIds.add(blockId);
+    return blockId;
+  }
 
   function normalizeTrackedNode(node, paragraphIndex) {
     const textContent = textFromNode(node).trim();
     if (!textContent) return node;
 
     const existingAttrs = node.attrs ?? {};
-    const blockId = validBlockId(existingAttrs.blockId) ? existingAttrs.blockId : randomUUID();
+    const blockId = uniqueBlockId(existingAttrs.blockId);
     const status = normalizeBlockStatus(existingAttrs.status);
     const resumeStatus = status === 'processing'
       ? normalizeResumeStatus(existingAttrs.resumeStatus)
@@ -969,9 +977,19 @@ export async function replaceBlocksFromContentJson(client, documentId, contentJs
     [documentId],
   );
 
+  const nlpSummary = await getDocumentNlpSummary(
+    documentId,
+    client.query.bind(client),
+  );
+  await client.query(
+    'update documents set nlp_document_snapshot = $2::jsonb where id = $1',
+    [documentId, JSON.stringify(nlpSummary)],
+  );
+
   return {
     contentJson: normalized.contentJson,
     currentProcessingBlockId: normalized.currentProcessingBlockId,
+    nlpSummary,
   };
 }
 

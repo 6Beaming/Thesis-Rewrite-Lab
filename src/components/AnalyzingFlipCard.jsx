@@ -15,7 +15,7 @@ export default function AnalyzingFlipCard({
           className={!showAi ? 'is-active' : ''}
           onClick={() => onFaceChange('nlp')}
         >
-          Automatic language review
+          Standard check
         </button>
         <button
           type="button"

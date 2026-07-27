@@ -5,7 +5,13 @@ import AcademicStylePanel, {
   DEFAULT_CUSTOM_STYLE,
   TEMPLATE_STYLE_SETTINGS,
 } from '../components/AcademicStylePanel.jsx';
+import {
+  academicStyleSettings,
+  DEFAULT_UPLOAD_ACADEMIC_STYLE,
+} from '../shared/academicStyleTemplates.js';
+import { resolveAutosaveDocs } from '../shared/writingPreferences.js';
 import DocumentEditor from '../components/DocumentEditor.jsx';
+import LoadingScreen from '../components/LoadingScreen.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
 import MobileSidebarToggle from '../components/MobileSidebarToggle.jsx';
@@ -20,8 +26,10 @@ import {
 } from '../lib/editorBlockCommands.js';
 import { countCharacters } from '../lib/blockSegmentation/index.js';
 import { createDocumentMutationCoordinator } from '../lib/documentMutationCoordinator.js';
+import { templateCardSelectionForStyle } from '../lib/formatAudit.js';
 import {
   aiSavePolicy,
+  prepareWorkspaceCitationCheck,
   shouldScheduleWorkspaceAutosave,
   workspaceLeavePolicy,
   WORKSPACE_AUTOSAVE_DELAY_MS,
@@ -44,10 +52,12 @@ import { useFloatingWindow } from './libraries/useFloatingWindow.js';
 import {
   acceptDocumentBlockRewrite,
   analyzeDocumentBlock,
+  discardEmptyDocument,
   generateDocumentBlockRewrites,
   getDocumentBlockRewrites,
   getDocument,
   listDocuments,
+  downloadDocument,
   requestDocumentBlockPracticeFeedback,
   prewarmDocumentBlockRewrites,
   repartitionDocument,
@@ -68,6 +78,10 @@ import {
   nlpResponseMatchesIdentity,
 } from '../lib/nlp/nlpRequestIdentity.js';
 import { normalizeBlockNlpSnapshot } from '../lib/nlp/blockNlpSnapshot.js';
+import {
+  scopeDocumentNlpSummary,
+  visibleDocumentNlpSummary,
+} from '../lib/nlp/documentNlpSummary.js';
 import {
   applyLanguageIssueRejections,
   rejectLanguageIssue,
@@ -172,6 +186,13 @@ function textFromNode(node) {
   if (node.type === 'hardBreak') return '\n';
   if (!Array.isArray(node.content)) return '';
   return node.content.map(textFromNode).join('');
+}
+
+function isDocumentTitleAndBodyEmpty(document) {
+  return (
+    !String(document?.title ?? '').trim()
+    && !textFromNode(document?.content_json).trim()
+  );
 }
 
 function CloseIcon() {
@@ -536,6 +557,10 @@ function hydrateWorkspaceDocument(document) {
   return document;
 }
 
+function hasWorkspaceDocumentPayload(document) {
+  return Boolean(document?.content_json && Array.isArray(document?.blocks));
+}
+
 export default function WorkspacePage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -553,8 +578,10 @@ export default function WorkspacePage() {
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const [workspaceAiContextDirty, setWorkspaceAiContextDirty] = useState(false);
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
+  const [workspaceSaveOverlay, setWorkspaceSaveOverlay] = useState(false);
+  const [workspaceUploading, setWorkspaceUploading] = useState(false);
+  const [workspaceExporting, setWorkspaceExporting] = useState(false);
   const [showUnsavedBackPrompt, setShowUnsavedBackPrompt] = useState(false);
-  const [formatReview, setFormatReview] = useState(null);
   const [templateSwitchReview, setTemplateSwitchReview] = useState(null);
   const [templateSwitchBusy, setTemplateSwitchBusy] = useState(false);
   const [templateSwitchError, setTemplateSwitchError] = useState('');
@@ -566,6 +593,7 @@ export default function WorkspacePage() {
   const [workspaceOwlError, setWorkspaceOwlError] = useState(false);
   const [workspaceOwlErrorKey, setWorkspaceOwlErrorKey] = useState(0);
   const [styleName, setStyleName] = useState('APA');
+  const [selectedTemplate, setSelectedTemplate] = useState('APA');
   const [styleSettings, setStyleSettings] = useState(TEMPLATE_STYLE_SETTINGS.APA);
   const [editorContent, setEditorContent] = useState(null);
   const [activeEditorBlock, setActiveEditorBlock] = useState({ blockId: null, status: 'unprocessed' });
@@ -599,7 +627,10 @@ export default function WorkspacePage() {
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
   const [visibleBlockNlp, setVisibleBlockNlp] = useState(null);
-  const [documentNlpSummary, setDocumentNlpSummary] = useState(null);
+  const [documentNlpSummaryState, setDocumentNlpSummaryState] = useState({
+    documentId: null,
+    summary: null,
+  });
   const [nlpCheckState, setNlpCheckState] = useState('idle');
   const [nlpCheckError, setNlpCheckError] = useState('');
   const [rejectingLanguageIssueKey, setRejectingLanguageIssueKey] = useState('');
@@ -628,6 +659,9 @@ export default function WorkspacePage() {
   const aiBlockEpochRef = useRef(new Map());
   const wandHoverTimerRef = useRef(null);
   const autosaveTimerRef = useRef(null);
+  const activeDocumentIdRef = useRef(null);
+  const activeDocumentIsEmptyRef = useRef(false);
+  const discardEmptyRequestsRef = useRef(new Map());
   const nlpCheckTimerRef = useRef(null);
   const nlpAbortControllerRef = useRef(null);
   const visibleNlpIdentityRef = useRef(null);
@@ -639,6 +673,33 @@ export default function WorkspacePage() {
     documentMutationCoordinatorRef.current = createDocumentMutationCoordinator();
   }
   const localDocumentRevisionsRef = useRef(new Map());
+  if (selectedDocument?.id === activeDocumentIdRef.current) {
+    activeDocumentIsEmptyRef.current = isDocumentTitleAndBodyEmpty(selectedDocument);
+  }
+  const discardEmptyCreatedDocument = useCallback((targetDocumentId, {
+    keepalive = true,
+  } = {}) => {
+    if (!targetDocumentId) return Promise.resolve(false);
+    const pending = discardEmptyRequestsRef.current.get(targetDocumentId);
+    if (pending) return pending;
+
+    const request = discardEmptyDocument(targetDocumentId, { keepalive })
+      .then((result) => {
+        if (result.deleted && result.document) {
+          applyDocument('document:deleted', result.document);
+        }
+        return Boolean(result.deleted);
+      })
+      .catch((error) => {
+        if (error.status === 404) return false;
+        throw error;
+      })
+      .finally(() => {
+        discardEmptyRequestsRef.current.delete(targetDocumentId);
+      });
+    discardEmptyRequestsRef.current.set(targetDocumentId, request);
+    return request;
+  }, [applyDocument]);
   const blackboardStyle = getBlackboardCssVars();
   const {
     windowRef: mobileOwlRef,
@@ -725,12 +786,18 @@ export default function WorkspacePage() {
     : '';
   const currentPracticeRequestKey = `${currentPracticeKey}|${practiceInput}`;
   practiceContextKeyRef.current = currentPracticeRequestKey;
-  const autosaveDocs = Boolean(realtimeState.profile?.autosaveDocs);
+  const autosaveDocs = realtimeState.profile
+    ? resolveAutosaveDocs(realtimeState.profile.autosaveDocs)
+    : false;
   const activeBlockNlpSnapshot = useMemo(
     () => normalizeBlockNlpSnapshot(
       visibleBlockNlp?.nlp ?? currentRewriteBlock ?? activeSourceBlock ?? {},
     ),
     [activeSourceBlock, currentRewriteBlock, visibleBlockNlp],
+  );
+  const documentNlpSummary = visibleDocumentNlpSummary(
+    documentNlpSummaryState,
+    selectedDocument?.id,
   );
   const activeBlockNlpIssues = useMemo(
     () => activeBlockNlpSnapshot.issues.map((issue) => ({
@@ -753,6 +820,10 @@ export default function WorkspacePage() {
     rewriteCards,
     currentRewriteBlock,
   });
+  const selectedDocumentIsLoaded = (
+    selectedDocument?.id === documentId
+    && hasWorkspaceDocumentPayload(selectedDocument)
+  );
 
   useEffect(() => {
     let alive = true;
@@ -765,6 +836,29 @@ export default function WorkspacePage() {
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!mobileOwlOpen) return undefined;
+
+    function closeMobileAssistantOnOutsideTap(event) {
+      const target = event.target;
+      if (
+        target instanceof Element
+        && (
+          target.closest('.workspace-mobile-assistant-panel')
+          || target.closest('.workspace-mobile-owl-window')
+        )
+      ) {
+        return;
+      }
+      setMobileOwlOpen(false);
+    }
+
+    document.addEventListener('pointerdown', closeMobileAssistantOnOutsideTap, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeMobileAssistantOnOutsideTap, true);
+    };
+  }, [mobileOwlOpen]);
 
   useEffect(() => {
     clearTimeout(nlpCheckTimerRef.current);
@@ -827,7 +921,10 @@ export default function WorkspacePage() {
           ),
         };
         setVisibleBlockNlp(visibleResponse);
-        setDocumentNlpSummary(response.documentSummary ?? null);
+        setDocumentNlpSummaryState(scopeDocumentNlpSummary(
+          selectedDocument.id,
+          response.documentSummary,
+        ));
         setNlpCheckState(visibleResponse.nlp?.degraded ? 'degraded' : 'ready');
         setNlpCheckError('');
         documentEditorRef.current?.applyBlockNlpResult?.(
@@ -861,6 +958,8 @@ export default function WorkspacePage() {
 
   async function rejectActiveLanguageIssue(issue, issueKey) {
     if (!selectedDocument?.id || !activeEditorBlock?.blockId || !issue) return;
+    const requestDocumentId = selectedDocument.id;
+    const requestBlockId = activeEditorBlock.blockId;
     setRejectingLanguageIssueKey(issueKey);
     setNlpCheckError('');
     try {
@@ -874,8 +973,8 @@ export default function WorkspacePage() {
         const sourceTextHash = activeBlockNlpSnapshot.textHash
           ?? await hashAiSourceText(activeSourceText);
         response = await rejectDocumentBlockLanguageIssue(
-          selectedDocument.id,
-          activeEditorBlock.blockId,
+          requestDocumentId,
+          requestBlockId,
           {
             issue,
             sourceTextHash,
@@ -887,13 +986,18 @@ export default function WorkspacePage() {
           },
         );
       }
+      if (activeDocumentIdRef.current !== requestDocumentId) return;
       setVisibleBlockNlp(response);
-      setDocumentNlpSummary(response.documentSummary ?? documentNlpSummary);
+      setDocumentNlpSummaryState(scopeDocumentNlpSummary(
+        requestDocumentId,
+        response.documentSummary ?? documentNlpSummary,
+      ));
       documentEditorRef.current?.applyBlockNlpResult?.(
-        activeEditorBlock.blockId,
+        requestBlockId,
         response,
       );
     } catch (error) {
+      if (activeDocumentIdRef.current !== requestDocumentId) return;
       setNlpCheckError(error.message || 'The writing suggestion could not be rejected.');
     } finally {
       setRejectingLanguageIssueKey('');
@@ -1098,7 +1202,6 @@ export default function WorkspacePage() {
       workspaceSaving,
       hasDocument: Boolean(selectedDocument?.id),
       leavePromptOpen: showUnsavedBackPrompt,
-      formatReviewOpen: Boolean(formatReview),
     })) {
       return undefined;
     }
@@ -1116,7 +1219,6 @@ export default function WorkspacePage() {
   }, [
     autosaveDocs,
     editorContent,
-    formatReview,
     selectedDocument?.id,
     showUnsavedBackPrompt,
     styleName,
@@ -1127,13 +1229,48 @@ export default function WorkspacePage() {
   ]);
 
   useEffect(() => {
+    function discardOnPageHide() {
+      const activeDocumentId = activeDocumentIdRef.current;
+      if (!activeDocumentId || !activeDocumentIsEmptyRef.current) return;
+      void discardEmptyCreatedDocument(activeDocumentId, { keepalive: true }).catch(() => {});
+    }
+
+    window.addEventListener('pagehide', discardOnPageHide);
+    return () => {
+      window.removeEventListener('pagehide', discardOnPageHide);
+    };
+  }, [discardEmptyCreatedDocument]);
+
+  useEffect(() => {
     if (!documentId) {
+      const previousDocumentId = activeDocumentIdRef.current;
+      const previousDocumentWasEmpty = activeDocumentIsEmptyRef.current;
+      activeDocumentIdRef.current = null;
+      activeDocumentIsEmptyRef.current = false;
+      if (previousDocumentId && previousDocumentWasEmpty) {
+        void discardEmptyCreatedDocument(previousDocumentId).catch(() => {});
+      }
       setView('home');
       setSelectedDocument(null);
+      setDocumentNlpSummaryState(scopeDocumentNlpSummary(null, null));
       return undefined;
     }
 
+    const previousDocumentId = activeDocumentIdRef.current;
+    if (
+      previousDocumentId
+      && previousDocumentId !== documentId
+      && activeDocumentIsEmptyRef.current
+    ) {
+      activeDocumentIdRef.current = null;
+      activeDocumentIsEmptyRef.current = false;
+      void discardEmptyCreatedDocument(previousDocumentId).catch(() => {});
+    }
     setView('workspace');
+    if (selectedDocumentIsLoaded) {
+      setWorkspaceNotice('');
+      return undefined;
+    }
     let alive = true;
     setWorkspaceNotice('Loading document...');
     getDocument(documentId)
@@ -1145,13 +1282,19 @@ export default function WorkspacePage() {
       .catch((error) => {
         if (!alive) return;
         setSelectedDocument(null);
+        setDocumentNlpSummaryState(scopeDocumentNlpSummary(null, null));
         setWorkspaceNotice(error.message || 'Could not load the document.');
       });
 
     return () => {
       alive = false;
     };
-  }, [applyDocument, documentId]);
+  }, [
+    applyDocument,
+    discardEmptyCreatedDocument,
+    documentId,
+    selectedDocumentIsLoaded,
+  ]);
 
   useEffect(() => {
     if (view !== 'workspace' || !documentId) return undefined;
@@ -1165,6 +1308,8 @@ export default function WorkspacePage() {
       || realtimeState.deletedDocumentIds.some((document) => document.id === documentId)
     ) {
       resetWorkspaceDirty();
+      activeDocumentIdRef.current = null;
+      activeDocumentIsEmptyRef.current = false;
       setWorkspaceNotice('This document was removed from the workspace in another session.');
       setView('home');
       navigate('/');
@@ -1232,9 +1377,40 @@ export default function WorkspacePage() {
     };
   }, [view, selectedDocument?.id]);
 
-  function openWorkspace(document, { updateRoute = true } = {}) {
+  function openWorkspace(document, {
+    updateRoute = true,
+    selectedTemplateOverride,
+  } = {}) {
     const hydratedDocument = hydrateWorkspaceDocument(document);
     if (!hydratedDocument) return;
+    const targetPath = `/workspace/${hydratedDocument.id}`;
+    const previousDocumentId = activeDocumentIdRef.current;
+    if (updateRoute && !hasWorkspaceDocumentPayload(hydratedDocument)) {
+      if (
+        previousDocumentId
+        && previousDocumentId !== hydratedDocument.id
+        && activeDocumentIsEmptyRef.current
+      ) {
+        void discardEmptyCreatedDocument(previousDocumentId).catch(() => {});
+      }
+      setSelectedDocument(null);
+      setWorkspaceDraft(null);
+      setEditorContent(null);
+      setDocumentNlpSummaryState(scopeDocumentNlpSummary(null, null));
+      setView('workspace');
+      setWorkspaceNotice('Loading document...');
+      if (location.pathname !== targetPath) navigate(targetPath);
+      return;
+    }
+    if (
+      previousDocumentId
+      && previousDocumentId !== hydratedDocument.id
+      && activeDocumentIsEmptyRef.current
+    ) {
+      void discardEmptyCreatedDocument(previousDocumentId).catch(() => {});
+    }
+    activeDocumentIdRef.current = hydratedDocument.id;
+    activeDocumentIsEmptyRef.current = isDocumentTitleAndBodyEmpty(hydratedDocument);
     if (hydratedDocument.id === selectedDocument?.id) {
       pendingEditorScrollRestoreRef.current = (
         documentEditorRef.current?.getScrollPosition?.() ?? null
@@ -1244,19 +1420,28 @@ export default function WorkspacePage() {
     }
 
     const nextStyleName = hydratedDocument?.academic_style || 'APA';
-    const nextStyleSettings = {
-      ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
-      ...(hydratedDocument?.style_settings ?? {}),
-    };
+    const nextStyleSettings = academicStyleSettings(
+      nextStyleName,
+      hydratedDocument?.style_settings,
+    );
     const nextDraft = draftFromDocument(hydratedDocument, nextStyleSettings);
 
     setWorkspaceDraft(nextDraft);
     workspaceEditGenerationRef.current = 0;
+    setDocumentNlpSummaryState(scopeDocumentNlpSummary(
+      hydratedDocument.id,
+      hydratedDocument.nlp_document_snapshot,
+    ));
     setSelectedDocument(documentFromWorkspaceDraft(hydratedDocument, nextDraft, nextStyleName, nextStyleSettings));
     setEditorContent(nextDraft.contentJson ?? null);
     setActiveEditorBlock(activeBlockInfoFromDraft(nextDraft));
     setEditorReloadKey((value) => value + 1);
     setStyleName(nextStyleName);
+    setSelectedTemplate(
+      selectedTemplateOverride === undefined
+        ? templateCardSelectionForStyle(nextStyleName)
+        : selectedTemplateOverride,
+    );
     setStyleSettings(nextStyleSettings);
     resetWorkspaceDirty();
     setWorkspaceNotice('');
@@ -1279,14 +1464,17 @@ export default function WorkspacePage() {
     setMobilePracticeIndex(0);
     setWorkspaceHistoryExpanded(false);
     setView('workspace');
-    const targetPath = `/workspace/${hydratedDocument.id}`;
     if (updateRoute && location.pathname !== targetPath) {
       navigate(targetPath);
     }
   }
 
   function handleTemplateChange(nextStyleName) {
-    if (nextStyleName === styleName || templateSwitchBusy) return;
+    if (templateSwitchBusy) return;
+    if (nextStyleName === styleName) {
+      setSelectedTemplate(nextStyleName);
+      return;
+    }
     setTemplateSwitchError('');
     setTemplateSwitchReview({
       previousStyleName: styleName,
@@ -1316,6 +1504,7 @@ export default function WorkspacePage() {
       return;
     }
     setStyleName('Customized');
+    setSelectedTemplate(null);
     setStyleSettings({ ...DEFAULT_CUSTOM_STYLE, ...nextSettings });
     markWorkspaceDirty('ai-context');
   }
@@ -1335,7 +1524,12 @@ export default function WorkspacePage() {
           'Switched to Customized formatting',
         );
         setTemplateSwitchReview(null);
-        if (persisted) openWorkspace(persisted, { updateRoute: false });
+        if (persisted) {
+          openWorkspace(persisted, {
+            updateRoute: false,
+            selectedTemplateOverride: null,
+          });
+        }
         setWorkspaceNotice('Customized formatting selected. Citation checking is disabled.');
         return;
       }
@@ -1354,7 +1548,10 @@ export default function WorkspacePage() {
         expectedPartitionRevision: Number(persistedDocument.partition_revision),
       });
       applyDocument('document:updated', response.document);
-      openWorkspace(response.document, { updateRoute: false });
+      openWorkspace(response.document, {
+        updateRoute: false,
+        selectedTemplateOverride: nextStyleName,
+      });
       setTemplateSwitchReview(null);
       const bibliographyCount = response.conversion?.bibliographyChanges ?? 0;
       const inlineCount = response.conversion?.inlineChanges ?? 0;
@@ -1475,12 +1672,16 @@ export default function WorkspacePage() {
         }
 
         const persistedStyleName = persistedDocument.academic_style || styleName;
-        const persistedStyleSettings = {
-          ...(TEMPLATE_STYLE_SETTINGS[persistedStyleName] ?? DEFAULT_CUSTOM_STYLE),
-          ...(persistedDocument.style_settings ?? styleSettings),
-        };
+        const persistedStyleSettings = academicStyleSettings(
+          persistedStyleName,
+          persistedDocument.style_settings ?? styleSettings,
+        );
         const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
         setWorkspaceDraft(persistedDraft);
+        setDocumentNlpSummaryState(scopeDocumentNlpSummary(
+          persistedDocument.id,
+          persistedDocument.nlp_document_snapshot,
+        ));
         setSelectedDocument(documentFromWorkspaceDraft(
           persistedDocument,
           persistedDraft,
@@ -1499,41 +1700,16 @@ export default function WorkspacePage() {
 
   async function saveWorkspaceDocument({
     leaveAfterSave = false,
-    formatDecision = null,
+    exportAfterSave = false,
     automatic = false,
   } = {}) {
-    const audit = documentEditorRef.current?.getFormatAudit?.();
-    if (!automatic && !formatDecision && audit?.hasDifferences) {
-      setFormatReview({ audit, leaveAfterSave });
-      return false;
-    }
-
-    let nextStyleName = styleName;
-    let nextStyleSettings = styleSettings;
-    let snapshot = null;
-    if (formatDecision === 'normalize') {
-      snapshot = documentEditorRef.current?.normalizeFormatting?.();
-    } else if (formatDecision === 'keep') {
-      snapshot = documentEditorRef.current?.keepLocalFormatting?.();
-      nextStyleName = 'Customized';
-      setStyleName('Customized');
-    }
-
-    const document = snapshot?.contentJson && selectedDocument
-      ? documentFromContent(
-        selectedDocument,
-        snapshot.contentJson,
-        nextStyleName,
-        nextStyleSettings,
-        snapshot.blocks,
-        snapshot.currentProcessingBlockId,
-      )
-      : normalizedWorkspaceDocument();
+    const document = normalizedWorkspaceDocument();
     if (!document?.id) return false;
-    document.academic_style = nextStyleName;
-    document.style_settings = nextStyleSettings;
+    document.academic_style = styleName;
+    document.style_settings = styleSettings;
 
     setWorkspaceSaving(true);
+    setWorkspaceSaveOverlay(!automatic);
     try {
       const persistedDocument = await persistWorkspaceDocument(
         document,
@@ -1542,10 +1718,12 @@ export default function WorkspacePage() {
       );
       setWorkspaceNotice(automatic ? 'Autosaved' : 'Saved');
       setShowUnsavedBackPrompt(false);
-      setFormatReview(null);
+      if (exportAfterSave && !await exportWorkspaceDocument(persistedDocument)) {
+        return false;
+      }
       if (leaveAfterSave) {
-        setView('home');
-        navigate('/');
+        const leftWorkspace = await leaveWorkspace(persistedDocument);
+        if (!leftWorkspace) return false;
       }
       return persistedDocument ?? true;
     } catch (error) {
@@ -1553,7 +1731,38 @@ export default function WorkspacePage() {
       return false;
     } finally {
       setWorkspaceSaving(false);
+      setWorkspaceSaveOverlay(false);
     }
+  }
+
+  function prepareCitationReviewCheck() {
+    return prepareWorkspaceCitationCheck({
+      workspaceDirty,
+      saveWorkspaceDocument,
+    });
+  }
+
+  async function exportWorkspaceDocument(document = selectedDocument) {
+    if (!document?.id) return false;
+    setWorkspaceExporting(true);
+    try {
+      const result = await downloadDocument(document.id);
+      setWorkspaceNotice(`${result.filename} exported.`);
+      return true;
+    } catch (error) {
+      setWorkspaceNotice(error.message || 'Could not export the document.');
+      return false;
+    } finally {
+      setWorkspaceExporting(false);
+    }
+  }
+
+  async function handleWorkspaceExport() {
+    if (workspaceDirty) {
+      await saveWorkspaceDocument({ exportAfterSave: true });
+      return;
+    }
+    await exportWorkspaceDocument();
   }
 
   async function ensureWorkspaceSavedForAi(setError) {
@@ -1568,6 +1777,30 @@ export default function WorkspacePage() {
     return saveWorkspaceDocument({ automatic: true });
   }
 
+  async function leaveWorkspace(document = selectedDocument) {
+    const targetDocumentId = document?.id ?? activeDocumentIdRef.current;
+    if (isDocumentTitleAndBodyEmpty(document)) {
+      try {
+        await discardEmptyCreatedDocument(targetDocumentId);
+      } catch (error) {
+        setWorkspaceNotice(error.message || 'Could not finish leaving the document.');
+        return false;
+      }
+    }
+
+    activeDocumentIdRef.current = null;
+    activeDocumentIsEmptyRef.current = false;
+    setShowUnsavedBackPrompt(false);
+    setSelectedDocument(null);
+    setWorkspaceDraft(null);
+    setEditorContent(null);
+    setActiveEditorBlock({ blockId: null, status: 'unprocessed' });
+    resetWorkspaceDirty();
+    setView('home');
+    navigate('/');
+    return true;
+  }
+
   function requestWorkspaceBack() {
     const policy = workspaceLeavePolicy({ workspaceDirty, autosaveDocs });
     if (policy === 'autosave-and-leave') {
@@ -1578,19 +1811,12 @@ export default function WorkspacePage() {
       setShowUnsavedBackPrompt(true);
       return;
     }
-    setView('home');
-    navigate('/');
+    void leaveWorkspace();
   }
 
-  function leaveWorkspaceWithoutSaving() {
+  async function leaveWorkspaceWithoutSaving() {
     setShowUnsavedBackPrompt(false);
-    setSelectedDocument(null);
-    setWorkspaceDraft(null);
-    setEditorContent(null);
-    setActiveEditorBlock({ blockId: null, status: 'unprocessed' });
-    resetWorkspaceDirty();
-    setView('home');
-    navigate('/');
+    await leaveWorkspace();
   }
 
   function handleWorkspaceUploadInputChange(event) {
@@ -1715,13 +1941,14 @@ export default function WorkspacePage() {
   async function handleWorkspaceUploadFile(file) {
     if (!file) return;
 
-    if (/\.doc$/i.test(file.name)) {
-      setWorkspaceNotice('.doc uploads are not supported. Please upload .docx, .md, or .txt.');
-      return;
-    }
-
+    setWorkspaceUploading(true);
     try {
-      const result = await uploadDocument(file, styleName, 'character', semanticProfile);
+      const result = await uploadDocument(
+        file,
+        DEFAULT_UPLOAD_ACADEMIC_STYLE,
+        'character',
+        semanticProfile,
+      );
       applyDocument('document:created', result.document);
       openWorkspace(result.document);
       const skipped = Number(result.importSummary?.skippedBlockCount) || 0;
@@ -1732,6 +1959,8 @@ export default function WorkspacePage() {
       );
     } catch (error) {
       setWorkspaceNotice(error.message || 'Could not upload the document.');
+    } finally {
+      setWorkspaceUploading(false);
     }
   }
 
@@ -1811,7 +2040,7 @@ export default function WorkspacePage() {
     }
   }
 
-  async function applySemanticProfile() {
+  async function applySemanticProfile(nextSemanticProfile = semanticProfile) {
     if (!selectedDocument?.id || nlpRepartitionBusy) return;
     setNlpRepartitionBusy(true);
     setNlpRepartitionStatus('Saving the current document…');
@@ -1825,7 +2054,7 @@ export default function WorkspacePage() {
       }
       setNlpRepartitionStatus('Regrouping related sentences…');
       const { job } = await repartitionDocument(selectedDocument.id, {
-        semanticProfile,
+        semanticProfile: nextSemanticProfile,
         expectedRevision: Number(persisted.revision ?? selectedDocument.revision),
       });
       for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -1853,6 +2082,12 @@ export default function WorkspacePage() {
     } finally {
       setNlpRepartitionBusy(false);
     }
+  }
+
+  function handleSemanticProfileChange(nextSemanticProfile) {
+    if (nextSemanticProfile === semanticProfile || nlpRepartitionBusy) return;
+    setSemanticProfile(nextSemanticProfile);
+    void applySemanticProfile(nextSemanticProfile);
   }
 
   async function handleEditorBlockStatusChange(payload = {}) {
@@ -2446,12 +2681,16 @@ export default function WorkspacePage() {
           </button>
         </div>
         <div className="practice-goals">
-          <strong>Practice goals from analysis</strong>
-          <ul>
-            {learningGoals.length
-              ? learningGoals.map((goal) => <li key={goal}>{goal}</li>)
-              : <li>Analyze this block first to get targeted practice goals.</li>}
-          </ul>
+          <strong>Practice goals</strong>
+          {learningGoals.length ? (
+            <ul>
+              {learningGoals.map((goal) => <li key={goal}>{goal}</li>)}
+            </ul>
+          ) : (
+            <p className="practice-goals-empty">
+              Analyze this block from the writing coach to get targeted practice goals.
+            </p>
+          )}
         </div>
         <textarea
           value={practiceInput}
@@ -2709,6 +2948,67 @@ export default function WorkspacePage() {
     setMobileOwlOpen((value) => !value);
   }
 
+  function navigateToCitation(anchor) {
+    const focused = documentEditorRef.current?.focusCitationAnchor?.(anchor);
+    if (focused) setMobileOwlOpen(false);
+  }
+
+  function handleCitationDocumentApplied(document, patch) {
+    const wasWorkspaceDirty = workspaceDirty;
+    const snapshot = documentEditorRef.current?.applyCitationPatch?.(patch);
+    if (!snapshot) {
+      openWorkspace(document, { updateRoute: false });
+      setWorkspaceNotice('Citation patch applied and versioned.');
+      return;
+    }
+
+    const hydratedDocument = hydrateWorkspaceDocument(document);
+    const nextStyleName = hydratedDocument?.academic_style || styleName;
+    const nextStyleSettings = academicStyleSettings(
+      nextStyleName,
+      hydratedDocument?.style_settings ?? styleSettings,
+    );
+    const normalized = normalizeWorkspaceContent(
+      hydratedDocument,
+      snapshot.contentJson,
+      nextStyleName,
+      nextStyleSettings,
+      snapshot.blocks,
+      snapshot.currentProcessingBlockId,
+    );
+    const synchronizedDocument = documentFromWorkspaceDraft(
+      hydratedDocument,
+      normalized.draft,
+      nextStyleName,
+      nextStyleSettings,
+    );
+    const revision = Number(synchronizedDocument.revision);
+    if (Number.isFinite(revision)) {
+      localDocumentRevisionsRef.current.set(
+        synchronizedDocument.id,
+        Math.max(
+          revision,
+          localDocumentRevisionsRef.current.get(synchronizedDocument.id) ?? 0,
+        ),
+      );
+    }
+
+    activeDocumentIsEmptyRef.current = isDocumentTitleAndBodyEmpty(synchronizedDocument);
+    applyDocument('document:updated', synchronizedDocument);
+    setWorkspaceDraft(normalized.draft);
+    setSelectedDocument(synchronizedDocument);
+    setEditorContent(normalized.contentJson ?? snapshot.contentJson);
+    setActiveEditorBlock(activeBlockInfoFromDraft(normalized.draft));
+    setBlockAnalyses({});
+    setBlockAnalysisHighlights({});
+    setAnalysisError('');
+    if (!wasWorkspaceDirty) {
+      workspaceEditGenerationRef.current = 0;
+      resetWorkspaceDirty();
+    }
+    setWorkspaceNotice('Citation patch applied and versioned.');
+  }
+
   function renderAnalyzingCard() {
     return (
       <>
@@ -2717,29 +3017,30 @@ export default function WorkspacePage() {
             face={analysisFace}
             onFaceChange={handleAnalysisFaceChange}
             nlpPanel={(
-              <NlpAnalysisPanel
-                snapshot={activeBlockNlpSnapshot}
-                checkState={nlpCheckState}
-                error={nlpCheckError}
-                documentSummary={documentNlpSummary}
-                onRejectIssue={rejectActiveLanguageIssue}
-                rejectingIssueKey={rejectingLanguageIssueKey}
-              />
+              <>
+                <NlpAnalysisPanel
+                  snapshot={activeBlockNlpSnapshot}
+                  checkState={nlpCheckState}
+                  error={nlpCheckError}
+                  documentSummary={documentNlpSummary}
+                  onRejectIssue={rejectActiveLanguageIssue}
+                  rejectingIssueKey={rejectingLanguageIssueKey}
+                />
+                {nlpFeatureFlags.MCP_CITATION_V2_ENABLED ? (
+                  <CitationReviewPanel
+                    key={`${selectedDocument?.id}-${styleName}`}
+                    document={selectedDocument}
+                    disabled={styleName === 'Customized'}
+                    onBeforeCheck={prepareCitationReviewCheck}
+                    onDocumentApplied={handleCitationDocumentApplied}
+                    onNavigateToCitation={navigateToCitation}
+                  />
+                ) : null}
+              </>
             )}
             aiPanel={renderAnalysisStats()}
           />
         ) : renderAnalysisStats()}
-        {nlpFeatureFlags.MCP_CITATION_V2_ENABLED ? (
-          <CitationReviewPanel
-            key={`${selectedDocument?.id}-${selectedDocument?.revision}-${styleName}`}
-            document={selectedDocument}
-            disabled={styleName === 'Customized'}
-            onDocumentApplied={(document) => {
-              openWorkspace(document, { updateRoute: false });
-              setWorkspaceNotice('Citation patch applied and versioned.');
-            }}
-          />
-        ) : null}
       </>
     );
   }
@@ -3001,6 +3302,7 @@ export default function WorkspacePage() {
             <>
               <AcademicStylePanel
                 styleName={styleName}
+                selectedTemplate={selectedTemplate}
                 customStyle={styleSettings}
                 onTemplateChange={handleTemplateChange}
                 onCustomModeSelect={handleCustomModeSelect}
@@ -3010,8 +3312,7 @@ export default function WorkspacePage() {
                 && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
                   <SemanticProfileControl
                     value={semanticProfile}
-                    onChange={setSemanticProfile}
-                    onApply={applySemanticProfile}
+                    onChange={handleSemanticProfileChange}
                     busy={nlpRepartitionBusy}
                     status={nlpRepartitionStatus}
                   />
@@ -3039,9 +3340,6 @@ export default function WorkspacePage() {
       return (
         <section className="workspace-mode-card workspace-mode-card--interactive" role="tabpanel" id="workspace-mode-panel" aria-labelledby="workspace-mode-tab-analyzing">
           <div className="workspace-mode-card-content">
-          {!currentBlockAnalysis ? (
-            <p>Select a block, choose your goals, and learn with our AI coach.</p>
-          ) : null}
           {renderAnalyzingCard()}
           </div>
         </section>
@@ -3081,14 +3379,10 @@ export default function WorkspacePage() {
 
   if (view === 'workspace') {
     if (!selectedDocument) {
-      return (
-        <main className="document-workspace-page">
-          <p role="status">{workspaceNotice || 'Loading document...'}</p>
-        </main>
-      );
+      return <LoadingScreen />;
     }
 
-    const documentTitle = selectedDocument.title || 'Untitled document';
+    const documentTitle = selectedDocument.title ?? '';
     const recentDocuments = workspaceHistoryDocuments;
 
     return (
@@ -3111,30 +3405,30 @@ export default function WorkspacePage() {
             variant="side"
           />
           <div className="workspace-left-panel-content">
-            <section className="workspace-upload-note">
-              <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
-                <UploadDocIcon />
-                Upload
-              </button>
-              <span>Upload a new document. Save current edits before leaving.</span>
-            </section>
+            {nlpFeatureFlags.NLP_SEMANTIC_PROFILE_ENABLED
+              && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
+                <SemanticProfileControl
+                  value={semanticProfile}
+                  onChange={handleSemanticProfileChange}
+                  busy={nlpRepartitionBusy}
+                  status={nlpRepartitionStatus}
+                />
+              ) : null}
             <AcademicStylePanel
               styleName={styleName}
+              selectedTemplate={selectedTemplate}
               customStyle={styleSettings}
               onTemplateChange={handleTemplateChange}
               onCustomModeSelect={handleCustomModeSelect}
               onCustomStyleChange={handleCustomStyleChange}
             />
-            {nlpFeatureFlags.NLP_SEMANTIC_PROFILE_ENABLED
-              && nlpFeatureFlags.NLP_REPARTITION_ENABLED ? (
-                <SemanticProfileControl
-                  value={semanticProfile}
-                  onChange={setSemanticProfile}
-                  onApply={applySemanticProfile}
-                  busy={nlpRepartitionBusy}
-                  status={nlpRepartitionStatus}
-                />
-              ) : null}
+            <section className="workspace-upload-note">
+              <button type="button" className="home-upload workspace-upload-button" onClick={() => workspaceUploadInputRef.current?.click()}>
+                <UploadDocIcon />
+                Upload
+              </button>
+              <span style={{ fontSize: '14.4px'}}> Upload a new document to work on</span>
+            </section>
             <HistorySelector
               documents={recentDocuments}
               expanded={workspaceHistoryExpanded}
@@ -3150,6 +3444,7 @@ export default function WorkspacePage() {
               <input
                 className="workspace-title-input"
                 value={documentTitle}
+                placeholder="Untitled document"
                 onChange={(event) => handleWorkspaceTitleChange(event.target.value)}
                 aria-label="Document title"
               />
@@ -3187,8 +3482,10 @@ export default function WorkspacePage() {
             analysisHighlights={analysisHighlights}
             nlpIssues={activeBlockNlpIssues}
             onSave={() => saveWorkspaceDocument()}
+            onExport={handleWorkspaceExport}
             saveDisabled={!workspaceDirty}
             saving={workspaceSaving}
+            exporting={workspaceExporting}
             initialScrollPosition={pendingEditorScrollRestoreRef.current}
             onInitialScrollRestored={() => {
               pendingEditorScrollRestoreRef.current = null;
@@ -3288,46 +3585,6 @@ export default function WorkspacePage() {
             </section>
           </div>
         ) : null}
-        {formatReview ? (
-          <div className="confirm-backdrop" role="presentation">
-            <section className="confirm-modal format-review-modal" role="dialog" aria-modal="true" aria-labelledby="format-review-title">
-              <h2 id="format-review-title">Review local formatting</h2>
-              <p>
-                {formatReview.audit.differences.length} block(s) differ from the global format.
-                Choose whether to normalize them or preserve their property-level overrides.
-              </p>
-              <ul>
-                {formatReview.audit.differences.slice(0, 8).map((item, index) => (
-                  <li key={item.blockId || index}>
-                    Block {index + 1}: {item.properties.join(', ')}
-                  </li>
-                ))}
-              </ul>
-              <div className="confirm-actions">
-                <button type="button" onClick={() => setFormatReview(null)}>Cancel</button>
-                <button
-                  type="button"
-                  onClick={() => saveWorkspaceDocument({
-                    leaveAfterSave: formatReview.leaveAfterSave,
-                    formatDecision: 'keep',
-                  })}
-                >
-                  Keep local formatting
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => saveWorkspaceDocument({
-                    leaveAfterSave: formatReview.leaveAfterSave,
-                    formatDecision: 'normalize',
-                  })}
-                >
-                  Normalize to global
-                </button>
-              </div>
-            </section>
-          </div>
-        ) : null}
         {templateSwitchReview ? (
           <div className="confirm-backdrop" role="presentation">
             <section className="confirm-modal template-switch-modal" role="dialog" aria-modal="true" aria-labelledby="template-switch-title">
@@ -3355,6 +3612,9 @@ export default function WorkspacePage() {
             </section>
           </div>
         ) : null}
+        {workspaceSaveOverlay || workspaceUploading || templateSwitchBusy
+          ? <LoadingScreen overlay />
+          : null}
       </main>
     );
   }

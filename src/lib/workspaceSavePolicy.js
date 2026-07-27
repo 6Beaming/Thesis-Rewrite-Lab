@@ -7,7 +7,6 @@ export function shouldScheduleWorkspaceAutosave({
   workspaceSaving,
   hasDocument,
   leavePromptOpen,
-  formatReviewOpen,
 }) {
   return Boolean(
     autosaveDocs
@@ -16,7 +15,6 @@ export function shouldScheduleWorkspaceAutosave({
     && !workspaceSaving
     && hasDocument
     && !leavePromptOpen
-    && !formatReviewOpen
   );
 }
 
@@ -28,4 +26,13 @@ export function aiSavePolicy({ aiContextDirty, autosaveDocs }) {
 export function workspaceLeavePolicy({ workspaceDirty, autosaveDocs }) {
   if (!workspaceDirty) return 'leave';
   return autosaveDocs ? 'autosave-and-leave' : 'prompt';
+}
+
+export async function prepareWorkspaceCitationCheck({
+  workspaceDirty,
+  saveWorkspaceDocument,
+}) {
+  if (!workspaceDirty) return true;
+  if (typeof saveWorkspaceDocument !== 'function') return false;
+  return Boolean(await saveWorkspaceDocument({ automatic: true }));
 }

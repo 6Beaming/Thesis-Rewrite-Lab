@@ -1,6 +1,11 @@
 export const WRITING_PREFERENCE_SCHEMA_VERSION = 1;
 export const WRITING_PREFERENCE_COMPILER_VERSION = 'writing-preferences-v1';
 export const MAX_CUSTOM_WRITING_INSTRUCTIONS = 500;
+export const DEFAULT_AUTOSAVE_DOCS = true;
+
+export function resolveAutosaveDocs(value) {
+  return typeof value === 'boolean' ? value : DEFAULT_AUTOSAVE_DOCS;
+}
 
 export const WRITING_PREFERENCE_FIELDS = Object.freeze([
   'audienceKnowledge',

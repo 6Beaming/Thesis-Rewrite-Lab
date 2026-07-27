@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { upload } from '../middlewares/upload.js';
+import { profilePictureUpload } from '../middlewares/upload.js';
 import {
   getCurrentUserProfile,
   getOrCreateUserFromSession,
@@ -51,7 +51,7 @@ router.get('/me/profile-picture', async (_req, res) => {
   res.send(picture.profile_picture);
 });
 
-router.post('/me/profile-picture', upload.single('file'), async (req, res) => {
+router.post('/me/profile-picture', profilePictureUpload.single('file'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: 'Profile picture file is required' });
     return;

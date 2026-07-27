@@ -68,3 +68,17 @@ export function separateAdjacentBlockRects(frames, minimumGap = 4) {
 
   return separated;
 }
+
+export function frameAtPoint(frames, x, y, tolerance = 0) {
+  const pointX = Number(x);
+  const pointY = Number(y);
+  const safeTolerance = Math.max(0, Number(tolerance) || 0);
+  if (!Number.isFinite(pointX) || !Number.isFinite(pointY)) return null;
+
+  return (frames ?? []).find(({ rects = [] }) => rects.some((rect) => (
+    pointX >= rect.left - safeTolerance
+    && pointX <= rect.right + safeTolerance
+    && pointY >= rect.top - safeTolerance
+    && pointY <= rect.bottom + safeTolerance
+  ))) ?? null;
+}

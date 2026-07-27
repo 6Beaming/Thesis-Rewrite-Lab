@@ -34,6 +34,8 @@ export default function HomeSidebar({ active, onSelect, open = false }) {
             key={item.id}
             type="button"
             className={`home-sidebar-item${active === item.id ? ' is-active' : ''}`}
+            style={{ textAlign: 'center' }}
+            data-home-page={item.id}
             onClick={() => onSelect(item.id)}
           >
             <Icon type={item.icon} />
@@ -48,6 +50,7 @@ export default function HomeSidebar({ active, onSelect, open = false }) {
             key={item.id}
             type="button"
             className={`home-sidebar-item${active === item.id ? ' is-active' : ''}`}
+            data-home-page={item.id}
             onClick={() => onSelect(item.id)}
           >
             <Icon type={item.icon} />

@@ -1,7 +1,24 @@
 import { requestJson } from './request.js';
+import { DEFAULT_UPLOAD_ACADEMIC_STYLE } from '../shared/academicStyleTemplates.js';
+
+export { DEFAULT_UPLOAD_ACADEMIC_STYLE };
 
 export const MAX_DOCUMENT_UPLOAD_BYTES = Math.floor(2.5 * 1024 * 1024);
 export const DOCUMENT_UPLOAD_SIZE_MESSAGE = 'Files must be 2.5 MB or smaller.';
+export const DOCUMENT_UPLOAD_TYPE_MESSAGE =
+  'File type is not supported. Please upload a .txt, .md, or .docx file.';
+
+const DOCUMENT_UPLOAD_EXTENSIONS = ['.txt', '.md', '.docx'];
+
+export function validateDocumentUploadType(file) {
+  const lowerName = String(file?.name ?? '').toLowerCase();
+  const supported = DOCUMENT_UPLOAD_EXTENSIONS.some((extension) => lowerName.endsWith(extension));
+  if (!supported) {
+    const error = new Error(DOCUMENT_UPLOAD_TYPE_MESSAGE);
+    error.code = 'UNSUPPORTED_FILE_TYPE';
+    throw error;
+  }
+}
 
 export function validateDocumentUploadSize(file) {
   if (Number(file?.size ?? 0) > MAX_DOCUMENT_UPLOAD_BYTES) {
@@ -31,12 +48,20 @@ export function saveDocument(documentId, payload) {
   });
 }
 
+export function discardEmptyDocument(documentId, { keepalive = false } = {}) {
+  return requestJson(`/documents/${documentId}/discard-empty`, {
+    method: 'DELETE',
+    keepalive,
+  });
+}
+
 export function uploadDocument(
   file,
-  academicStyle = 'APA',
+  academicStyle = DEFAULT_UPLOAD_ACADEMIC_STYLE,
   partitionMode = 'character',
   semanticProfile = 'medium',
 ) {
+  validateDocumentUploadType(file);
   validateDocumentUploadSize(file);
   const formData = new FormData();
   formData.append('file', file);
@@ -51,6 +76,68 @@ export function uploadDocument(
 
 export function moveToTrash(documentId) {
   return requestJson(`/documents/${documentId}`, { method: 'DELETE' });
+}
+
+function filenameFromContentDisposition(value) {
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(String(value ?? ''));
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // Fall back to the ASCII filename below.
+    }
+  }
+
+  const quotedMatch = /filename="([^"]+)"/i.exec(String(value ?? ''));
+  return quotedMatch?.[1] || 'document.docx';
+}
+
+export async function downloadDocument(documentId) {
+  const response = await fetch(`/api/documents/${documentId}/export`, {
+    headers: {
+      Accept: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    },
+  });
+
+  if (!response.ok) {
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      // Use the status fallback when an upstream server returns a non-JSON error.
+    }
+
+    const error = new Error(data?.error || `Export failed with ${response.status}`);
+    error.status = response.status;
+    error.code = data?.code ?? null;
+    if (response.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('app:auth-expired'));
+    }
+    if (
+      response.status === 403
+      && data?.code === 'SUBSCRIPTION_REQUIRED'
+      && typeof window !== 'undefined'
+    ) {
+      window.dispatchEvent(new CustomEvent('app:subscription-required', { detail: data }));
+    }
+    throw error;
+  }
+
+  const blob = await response.blob();
+  const filename = filenameFromContentDisposition(response.headers.get('content-disposition'));
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = filename;
+    link.hidden = true;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  }
+
+  return { blob, filename };
 }
 
 export function updateDocumentBlockStatus(documentId, blockId, status) {

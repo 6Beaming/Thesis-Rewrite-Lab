@@ -52,6 +52,40 @@ test('stores legacy paragraph blocks as block segments', () => {
   assert.equal(normalized.blockEntries[0].tiptapNode.type, 'blockSegment');
 });
 
+test('assigns a fresh ID when pasted block segments reuse a block ID', () => {
+  const duplicatedBlockId = randomUUID();
+  const normalized = normalizeContentJsonBlocks({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [
+        {
+          type: 'blockSegment',
+          attrs: { blockId: duplicatedBlockId },
+          content: [{ type: 'text', text: 'Original block.' }],
+        },
+        { type: 'text', text: ' ' },
+        {
+          type: 'blockSegment',
+          attrs: { blockId: duplicatedBlockId },
+          content: [{ type: 'text', text: 'Pasted block.' }],
+        },
+      ],
+    }],
+  });
+
+  const blockIds = normalized.blockEntries.map((entry) => entry.id);
+  assert.equal(blockIds[0], duplicatedBlockId);
+  assert.notEqual(blockIds[1], duplicatedBlockId);
+  assert.equal(new Set(blockIds).size, 2);
+  assert.deepEqual(
+    normalized.contentJson.content[0].content
+      .filter((node) => node.type === 'blockSegment')
+      .map((node) => node.attrs.blockId),
+    blockIds,
+  );
+});
+
 test('preserves resolved headings and source-format overrides in editor JSON', () => {
   const records = createBlockRecords([
     {
@@ -90,7 +124,7 @@ test('full snapshot replacement clears AI state for every Skipped block', async 
     },
   };
 
-  await replaceBlocksFromContentJson(client, documentId, {
+  const replaced = await replaceBlocksFromContentJson(client, documentId, {
     type: 'doc',
     content: [{
       type: 'paragraph',
@@ -120,4 +154,13 @@ test('full snapshot replacement clears AI state for every Skipped block', async 
     && sql.includes("safe_error_code = 'BLOCK_SKIPPED'")
   ));
   assert.deepEqual(cancellation?.params, [documentId, [skippedBlockId]]);
+
+  const summaryUpdate = calls.find(({ sql }) => (
+    sql === 'update documents set nlp_document_snapshot = $2::jsonb where id = $1'
+  ));
+  assert.deepEqual(summaryUpdate?.params, [
+    documentId,
+    JSON.stringify(replaced.nlpSummary),
+  ]);
+  assert.equal(replaced.nlpSummary.blockCount, 0);
 });

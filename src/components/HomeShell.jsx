@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import HomeFeedbackWidget from './HomeFeedbackWidget.jsx';
 import HomeHeader from './HomeHeader.jsx';
 import HomeSidebar from './HomeSidebar.jsx';
 
@@ -29,6 +30,7 @@ export default function HomeShell({
       if (
         target.closest?.('.home-sidebar')
         || target.closest?.('.home-sidebar-toggle')
+        || target.closest?.('#givefeedback-dev-root')
       ) {
         return;
       }
@@ -43,6 +45,7 @@ export default function HomeShell({
 
   return (
     <main className="home-page">
+      <HomeFeedbackWidget sidebarOpen={sidebarOpen} />
       <HomeHeader
         user={user}
         query={query}

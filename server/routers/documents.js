@@ -1,10 +1,14 @@
 import { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import path from 'path';
-import { upload } from '../middlewares/upload.js';
+import { documentUpload } from '../middlewares/upload.js';
 import { resolveDocumentUpload } from '../../src/services/documentResolver.js';
 import { segmentText } from '../../src/lib/blockSegmentation/index.js';
 import { rejectLanguageIssue } from '../../src/lib/nlp/issueRejections.js';
+import {
+  DEFAULT_CUSTOM_STYLE,
+  DEFAULT_UPLOAD_ACADEMIC_STYLE,
+} from '../../src/shared/academicStyleTemplates.js';
 import { getOrCreateUserFromSession, getUserStats } from '../models/users.js';
 import {
   getDocumentNlpSummary,
@@ -15,6 +19,7 @@ import {
   checkExpiredTrash,
   createBlankDocument,
   createDocumentWithBlocks,
+  discardEmptyDocument,
   getDocument,
   getDocumentRate,
   listDocuments,
@@ -109,6 +114,11 @@ import {
   findCitationResult,
   saveCitationResult,
 } from '../models/citations.js';
+import {
+  contentDispositionForTitle,
+  createDocumentExport,
+  DOCX_MIME,
+} from '../export/documentExport.js';
 
 const router = Router();
 const aiRateLimiter = rateLimit({
@@ -241,10 +251,9 @@ function validateSavePayload(payload) {
   }
   if (payload.title !== undefined && (
     typeof payload.title !== 'string'
-    || !payload.title.trim()
     || payload.title.length > 300
   )) {
-    throw invalidInput('Title must contain 1 to 300 characters');
+    throw invalidInput('Title must contain no more than 300 characters');
   }
   if (payload.academicStyle !== undefined) {
     validateAcademicStyle(payload.academicStyle);
@@ -461,7 +470,7 @@ router.post('/', async (_req, res) => {
   res.status(201).json({ document: mutation.document });
 });
 
-router.post('/upload', upload.single('file'), async (req, res) => {
+router.post('/upload', documentUpload.single('file'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: 'File is required' });
     return;
@@ -480,12 +489,13 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     partitionMode,
     semanticProfile,
   );
-  const academicStyle = req.body.academicStyle ?? 'APA';
+  const academicStyle = req.body.academicStyle ?? DEFAULT_UPLOAD_ACADEMIC_STYLE;
   validateAcademicStyle(academicStyle);
   const mutation = await createDocumentWithBlocks({
     userId: user.id,
     title: titleFromFilename(req.file.originalname),
     academicStyle,
+    styleSettings: academicStyle === 'Customized' ? DEFAULT_CUSTOM_STYLE : {},
     textBlocks: extracted.blocks,
     originalFile: req.file.buffer,
     originalFilename: req.file.originalname,
@@ -1147,6 +1157,27 @@ router.get('/:id/rate', async (req, res) => {
   res.json(rate);
 });
 
+router.get('/:id/export', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const document = await getDocument(req.params.id, user.id);
+  if (!document || document.trashed) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+
+  const buffer = await createDocumentExport(document);
+  res
+    .status(200)
+    .set({
+      'Cache-Control': 'private, no-store',
+      'Content-Disposition': contentDispositionForTitle(document.title),
+      'Content-Length': String(buffer.length),
+      'Content-Type': DOCX_MIME,
+    })
+    .send(buffer);
+});
+
 router.patch('/:id', async (req, res) => {
   requireUuid(req.params.id, 'Document ID');
   validateSavePayload(req.body);
@@ -1161,6 +1192,23 @@ router.patch('/:id', async (req, res) => {
   publishVersion(req, user, mutation.document, mutation.version, mutationId);
   await publishProgress(req, user, mutation.document, mutationId);
   res.json({ document: mutation.document });
+});
+
+router.delete('/:id/discard-empty', async (req, res) => {
+  requireUuid(req.params.id, 'Document ID');
+  const user = await getOrCreateUserFromSession(res.locals.session.user);
+  const result = await discardEmptyDocument(req.params.id, user.id);
+  if (!result) {
+    res.status(404).json({ error: 'Document not found' });
+    return;
+  }
+
+  if (result.deleted) {
+    const mutationId = mutationIdFromRequest(req);
+    publishDeletedDocument(req, result.document, mutationId);
+    await publishProgress(req, user, result.document, mutationId);
+  }
+  res.json(result);
 });
 
 router.delete('/:id', async (req, res) => {

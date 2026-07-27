@@ -52,7 +52,7 @@ export default function NlpAnalysisPanel({
       {error ? <p className="analysis-error" role="alert">{error}</p> : null}
       {anchor?.topicTerms?.length ? (
         <section className="nlp-analysis-card nlp-analysis-card--anchor">
-          <h3>Main ideas in this block</h3>
+          <h3>Keywords</h3>
           <p>{anchor.topicTerms.join(' · ')}</p>
           <small>
             Sentence connection level: {CONNECTION_LABELS[anchor.confidence] ?? 'Connection identified'}
@@ -93,13 +93,11 @@ export default function NlpAnalysisPanel({
           <h3>Document language review</h3>
           <p>
             {documentSummary.passCount ?? 0} ready · {documentSummary.warningCount ?? 0} with suggestions ·{' '}
-            {documentSummary.blockedCount ?? 0} needing changes · {documentSummary.skippedCount ?? 0} not needing review
+            {documentSummary.blockedCount ?? 0} needing changes · {documentSummary.skippedCount ?? 0} not needing review ·{' '}
+            {documentSummary.unknownCount ?? 0} awaiting review
           </p>
         </section>
       ) : null}
-      <p className="nlp-analysis-note">
-        Wavy underlines are temporary writing suggestions and never change your document by themselves.
-      </p>
     </div>
   );
 }

@@ -1,10 +1,148 @@
 import { splitBlockKeepMarks } from '@tiptap/pm/commands';
 import { Fragment } from '@tiptap/pm/model';
-import { TextSelection } from '@tiptap/pm/state';
+import { AllSelection, TextSelection } from '@tiptap/pm/state';
+import { findWrapping, liftTarget } from '@tiptap/pm/transform';
 
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 const UNFINISHED_BLOCK_STATUSES = new Set(['unprocessed', 'processing']);
+const TRACKED_HEADING_STYLES = {
+  1: { fontSize: '18pt', lineHeight: '1.15', textIndent: '0in' },
+  2: { fontSize: '16pt', lineHeight: '1.15', textIndent: '0in' },
+  3: { fontSize: '14pt', lineHeight: '1.15', textIndent: '0in' },
+};
+const TRACKED_HEADING_FORMAT_OVERRIDES = ['textIndent', 'lineHeight', 'fontSize'];
+
+export function selectEntireEditorDocument(state, dispatch) {
+  if (!state?.doc) return false;
+  dispatch?.(state.tr.setSelection(new AllSelection(state.doc)));
+  return true;
+}
+
+export function trackedHeadingAttributes(level, currentAttrs = {}) {
+  const normalizedLevel = Math.min(3, Math.max(1, Number(level) || 1));
+  const overrideValue = currentAttrs.formatOverrides;
+  const formatOverrides = new Set(Array.isArray(overrideValue)
+    ? overrideValue
+    : Object.keys(overrideValue ?? {}));
+  TRACKED_HEADING_FORMAT_OVERRIDES.forEach((property) => formatOverrides.add(property));
+
+  return {
+    sourceType: 'heading',
+    level: normalizedLevel,
+    ...TRACKED_HEADING_STYLES[normalizedLevel],
+    formatOverrides: [...formatOverrides],
+    headingRestoreAttrs: currentAttrs.headingRestoreAttrs ?? {
+      sourceType: currentAttrs.sourceType ?? 'paragraph',
+      level: currentAttrs.level ?? null,
+      fontSize: currentAttrs.fontSize ?? '12pt',
+      lineHeight: currentAttrs.lineHeight ?? '2.0',
+      textIndent: currentAttrs.textIndent ?? '0.5in',
+      formatOverrides: Array.isArray(overrideValue)
+        ? [...overrideValue]
+        : Object.keys(overrideValue ?? {}),
+    },
+  };
+}
+
+export function trackedParagraphAttributes(currentAttrs = {}, fallbackAttrs = {}) {
+  const restoreAttrs = currentAttrs.headingRestoreAttrs ?? {};
+  const overrideValue = restoreAttrs.formatOverrides ?? currentAttrs.formatOverrides;
+  const formatOverrides = new Set(Array.isArray(overrideValue)
+    ? overrideValue
+    : Object.keys(overrideValue ?? {}));
+  TRACKED_HEADING_FORMAT_OVERRIDES.forEach((property) => formatOverrides.delete(property));
+
+  return {
+    sourceType: restoreAttrs.sourceType ?? 'paragraph',
+    level: restoreAttrs.level ?? null,
+    fontSize: restoreAttrs.fontSize ?? fallbackAttrs.fontSize ?? '12pt',
+    lineHeight: restoreAttrs.lineHeight ?? fallbackAttrs.lineHeight ?? '2.0',
+    textIndent: restoreAttrs.textIndent ?? fallbackAttrs.textIndent ?? '0.5in',
+    formatOverrides: [...formatOverrides],
+    headingRestoreAttrs: null,
+  };
+}
+
+function selectedStructuralPositions(doc, selection) {
+  const structuralPositions = new Set();
+  const collectStructuralAncestor = ($position) => {
+    for (let depth = $position.depth; depth > 0; depth -= 1) {
+      const node = $position.node(depth);
+      if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type.name)) continue;
+      structuralPositions.add($position.before(depth));
+      break;
+    }
+  };
+
+  collectStructuralAncestor(selection.$from);
+  collectStructuralAncestor(selection.$to);
+  doc.nodesBetween(
+    selection.from,
+    selection.to,
+    (node, pos) => {
+      if (STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type.name)) {
+        structuralPositions.add(pos);
+      }
+    },
+  );
+
+  return [...structuralPositions].sort((left, right) => left - right);
+}
+
+export function updateTrackedBlocksInSelectedTextBlocks(transaction, updateAttrs) {
+  if (!transaction || typeof updateAttrs !== 'function') return false;
+
+  let changed = false;
+  selectedStructuralPositions(transaction.doc, transaction.selection).forEach((structuralPos) => {
+    const structuralNode = transaction.doc.nodeAt(structuralPos);
+    if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(structuralNode?.type?.name)) return;
+
+    structuralNode.descendants((node, offset) => {
+      if (node.type.name !== 'blockSegment') return;
+      const pos = structuralPos + offset + 1;
+      const nextAttrs = updateAttrs(node.attrs, { node, pos, structuralNode });
+      if (!nextAttrs) return;
+      transaction.setNodeMarkup(pos, undefined, {
+        ...node.attrs,
+        ...nextAttrs,
+      });
+      changed = true;
+    });
+  });
+
+  return changed;
+}
+
+export function toggleBlockquoteInSelectedTextBlocks(transaction) {
+  if (!transaction) return false;
+  const blockquote = transaction.doc.type.schema.nodes.blockquote;
+  if (!blockquote) return false;
+
+  const positions = selectedStructuralPositions(transaction.doc, transaction.selection);
+  if (!positions.length) return false;
+  const firstPos = positions[0];
+  const lastPos = positions.at(-1);
+  const lastNode = transaction.doc.nodeAt(lastPos);
+  if (!lastNode) return false;
+
+  const range = transaction.doc.resolve(firstPos).blockRange(
+    transaction.doc.resolve(lastPos + lastNode.nodeSize),
+  );
+  if (!range) return false;
+
+  if (range.parent.type === blockquote) {
+    const target = liftTarget(range);
+    if (target == null) return false;
+    transaction.lift(range, target);
+    return true;
+  }
+
+  const wrapping = findWrapping(range, blockquote);
+  if (!wrapping) return false;
+  transaction.wrap(range, wrapping);
+  return true;
+}
 
 function textFromJsonNode(node) {
   if (!node) return '';
@@ -74,18 +212,29 @@ export function convertLegacyTrackedBlocks(
       structuralIndex += 1;
       const content = Array.isArray(node.content) ? node.content : [];
       const hasBlockSegments = content.some((child) => child?.type === 'blockSegment');
+      const normalizeStructuralSegment = (child) => {
+        const normalizedSegment = normalizeBlockSegment(child, paragraphIndex);
+        if (node.type !== 'heading') return normalizedSegment;
+        return {
+          ...normalizedSegment,
+          attrs: {
+            ...normalizedSegment.attrs,
+            ...trackedHeadingAttributes(node.attrs?.level, normalizedSegment.attrs),
+          },
+        };
+      };
       const normalizedContent = hasBlockSegments
         ? content.map((child) => (
           child?.type === 'blockSegment'
-            ? normalizeBlockSegment(child, paragraphIndex)
+            ? normalizeStructuralSegment(child)
             : child
         ))
         : (textFromJsonNode(node).trim()
-          ? [normalizeBlockSegment({
+          ? [normalizeStructuralSegment({
             type: 'blockSegment',
             attrs: legacyBlockSegmentAttrs(node.attrs),
             content,
-          }, paragraphIndex)]
+          })]
           : content);
 
       return {
