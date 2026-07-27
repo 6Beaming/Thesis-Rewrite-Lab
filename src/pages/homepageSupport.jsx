@@ -9,7 +9,7 @@ const QUICK_START_STEPS = [
   {
     number: '02',
     title: 'Work through a block',
-    copy: 'Select a highlighted text block, then analyze, practice, rewrite, complete, or skip it.',
+    copy: 'Select a text block, then analyze, practice, rewrite, complete, or skip it.',
   },
   {
     number: '03',
@@ -19,6 +19,21 @@ const QUICK_START_STEPS = [
 ];
 
 const GUIDE_TOPICS = [
+  {
+    id: 'account',
+    icon: 'person',
+    eyebrow: 'Account',
+    title: 'Personalize writing support',
+    summary: 'Account preferences can shape every document.',
+    steps: [
+      'Select your account badge in the homepage header to open the account panel.',
+      'Upload an avatar or open Writing preferences.',
+      'Choose your audience, subject context, vocabulary, structure, claim style, and feedback detail, or add custom instructions.',
+      'Changes are saved automatically when you toggle Autosave, choose an option, or finish editing custom instructions.',
+    ],
+    note: 'Writing preferences are used to refine the selected rewrite tone.',
+    keywords: 'account avatar profile writing preferences audience vocabulary autosave custom instructions',
+  },
   {
     id: 'documents',
     icon: 'document',
@@ -56,8 +71,8 @@ const GUIDE_TOPICS = [
     title: 'Analyze, practice, and rewrite',
     summary: 'Use the owl panel to learn from one focused block at a time.',
     steps: [
-      'Select a block and open Analyzing. Writing checks flag spelling, punctuation, fragments, and sentence connections without editing your text.',
-      'Flip to the AI review for clarity, conciseness, academic style, flow, and targeted practice goals.',
+      'Select a block and open Analyzing. Standard check flags spelling, punctuation, fragments, and sentence connections without editing your text.',
+      'Switch to Writing coach for clarity, conciseness, academic style, flow, and targeted practice goals.',
       'Open Practicing, write your own revision, and choose Get AI feedback. Compare scores, follow the hints, then apply your version when ready.',
       'Open Rewriting to compare Formal & Academic, Persuasive & Argumentative, and Accessible & Concise options. Review Why this works before choosing Use this rewrite.',
     ],
@@ -72,12 +87,12 @@ const GUIDE_TOPICS = [
     summary: 'Check whether in-text citations match the sources listed in your paper.',
     steps: [
       'Choose APA, MLA, or Chicago before starting citation review. Customized formatting does not define a citation standard.',
-      'Select Check citations in the Analyzing panel to review formatting, missing sources, and listed sources that are not used in the text.',
+      'Select Check citations under Standard check in the Analyzing panel to review formatting, missing sources, and listed sources that are not used in the text.',
       'Choose Find the source when a citation has no match. If several publications are possible, select the title you actually used.',
-      'Review every proposed change, then Accept change or Reject. Accepted citation changes are saved as a new document version.',
+      'Review every proposed change, then Accept change or Cancel. Accepted citation changes are saved as a new document version.',
     ],
     note: 'Switching academic templates can convert the reference list and in-text citations after you confirm the change.',
-    keywords: 'pro citation bibliography references apa mla chicago source doi missing unused format accept reject',
+    keywords: 'pro citation bibliography references apa mla chicago source doi missing unused format accept cancel',
   },
   {
     id: 'history',
@@ -87,7 +102,7 @@ const GUIDE_TOPICS = [
     summary: 'Saved work can be compared, restored, and recovered.',
     steps: [
       'Open Version history from the homepage sidebar and choose a document.',
-      'Select two saved versions to compare their text, then restore the version you want to continue from.',
+      'Select a saved version to compare it with the current document, then restore that version if you want to continue from it.',
       'Open Trash to restore a document that was removed from Docs or delete it permanently.',
       'Use the recent-document list in the workspace to switch papers after saving your current edits.',
     ],
@@ -109,21 +124,6 @@ const GUIDE_TOPICS = [
     note: 'The current export format is .docx. The filename comes from the document title.',
     keywords: 'pro export download word docx save current format filename',
   },
-  {
-    id: 'account',
-    icon: 'person',
-    eyebrow: 'Account',
-    title: 'Personalize writing support',
-    summary: 'Account preferences can shape every document.',
-    steps: [
-      'Select your account badge in the homepage header to open the account panel.',
-      'Upload an avatar or open Writing preferences.',
-      'Choose your audience, subject context, vocabulary, structure, claim style, and feedback detail, or add custom instructions.',
-      'Changes are saved automatically when you toggle Autosave, choose an option, or finish editing custom instructions.',
-    ],
-    note: 'Writing preferences refine the selected rewrite tone; they do not replace it.',
-    keywords: 'account avatar profile writing preferences audience vocabulary autosave custom instructions',
-  },
 ];
 
 const FAQS = [
@@ -131,6 +131,21 @@ const FAQS = [
     question: 'What does Pro include?',
     answer: 'The workspace requires an active Pro plan. Pro includes document editing, academic templates, personalized writing preferences, language and AI review, guided practice, three rewrite tones, citation tools, version history, and DOCX export.',
     keywords: 'pro subscription plan included pricing billing',
+  },
+  {
+    question: 'How do I manage or cancel Pro?',
+    answer: 'Choose the gold Pro button in the homepage header. The subscription page shows your current access and lets you cancel at the end of the billing period, resume auto-renew, or update payment details when needed.',
+    keywords: 'pro cancel resume payment billing subscription',
+  },
+  {
+    question: 'How is my document divided into blocks?',
+    answer: 'The editor starts with each paragraph or other structural element, then groups neighboring sentences that discuss related ideas. It considers sentence boundaries, topic similarity, and block length, and it does not combine text from different original paragraphs. Headings, references, and other non-body text stay separate. Use Sentence grouping in the workspace options to choose Broad, Balanced, or Focused grouping; selecting a different style regroups the document automatically.',
+    keywords: 'block partition split segmentation paragraph sentence semantic topic similarity length broad balanced focused grouping structure heading reference',
+  },
+  {
+    question: 'What do the colored blocks in the editor mean?',
+    answer: 'Red blocks have not been reviewed, yellow marks the block you are currently working on, green blocks are completed, and gray outlines mark skipped blocks. Use the Blocks On/Off button in the editor toolbar to hide or show the block highlights and borders.',
+    keywords: 'blocks colors red yellow green gray status unprocessed active completed skipped toolbar hide show toggle borders highlights',
   },
   {
     question: 'Does an AI suggestion change my paper immediately?',
@@ -154,13 +169,8 @@ const FAQS = [
   },
   {
     question: 'Can I use the workspace on a phone or tablet?',
-    answer: 'Yes. Use the workspace menu for uploads, styles, and recent documents. Tap the movable owl to open the analyzing, practicing, and rewriting panels.',
+    answer: 'Yes. Use the workspace menu for uploads, styles, and recent documents. Tap the movable owl to open the analyzing, practicing, and rewriting panels, then tap outside the assistant panel to close it.',
     keywords: 'mobile phone tablet owl menu responsive',
-  },
-  {
-    question: 'How do I manage or cancel Pro?',
-    answer: 'Choose the gold Pro button in the homepage header. The subscription page shows your current access and lets you cancel at the end of the billing period, resume auto-renew, or update payment details when needed.',
-    keywords: 'pro cancel resume payment billing subscription',
   },
 ];
 

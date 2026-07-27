@@ -2822,6 +2822,11 @@
   background: rgba(255, 255, 255, 0.3);
 }
 
+body:not(.home-feedback-widget-active) #givefeedback-dev-root,
+body:not(.home-feedback-widget-visible) #givefeedback-dev-root {
+  display: none !important;
+}
+
 .home-sidebar-nav {
   display: grid;
   gap: 10px;

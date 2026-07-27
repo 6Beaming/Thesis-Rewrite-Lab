@@ -47,6 +47,14 @@ app.use(
   helmet({
     contentSecurityPolicy: {
       directives: {
+        'script-src': [
+          "'self'",
+          'https://app.givefeedback.dev',
+        ],
+        'connect-src': [
+          "'self'",
+          'https://app.givefeedback.dev',
+        ],
         'img-src': [
           "'self'",
           'data:',
