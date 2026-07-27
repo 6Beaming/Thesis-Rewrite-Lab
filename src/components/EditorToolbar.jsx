@@ -97,12 +97,19 @@ const headingOptions = [
   { value: '2', label: 'Heading 2' },
   { value: '3', label: 'Heading 3' },
 ];
+const alignmentOptions = [
+  { value: 'left', label: 'Align left' },
+  { value: 'center', label: 'Align center' },
+  { value: 'right', label: 'Align right' },
+  { value: 'justify', label: 'Justify text' },
+];
 
 function ToolbarMenu({
   label,
   icon,
   active = false,
   disabled = false,
+  triggerClassName = '',
   menuClassName = '',
   children,
 }) {
@@ -140,7 +147,7 @@ function ToolbarMenu({
     <div className={`editor-toolbar-menu-control${open ? ' is-open' : ''}`} ref={menuRef}>
       <button
         type="button"
-        className={`editor-toolbar-button editor-toolbar-menu-trigger${active ? ' is-active' : ''}`}
+        className={`editor-toolbar-button editor-toolbar-menu-trigger${triggerClassName ? ` ${triggerClassName}` : ''}${active ? ' is-active' : ''}`}
         title={label}
         aria-label={label}
         aria-haspopup="menu"
@@ -156,6 +163,45 @@ function ToolbarMenu({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function AlignmentMenu({ value, onChange }) {
+  const currentAlignment = alignmentOptions.some((option) => option.value === value)
+    ? value
+    : 'left';
+  const currentLabel = alignmentOptions.find((option) => option.value === currentAlignment)?.label;
+
+  return (
+    <ToolbarMenu
+      label={`Text alignment: ${currentLabel}`}
+      icon={(
+        <span className="editor-alignment-trigger-content">
+          <ToolIcon type={currentAlignment} />
+          <span className="editor-toolbar-menu-caret" aria-hidden="true" />
+        </span>
+      )}
+      triggerClassName="editor-alignment-trigger"
+      menuClassName="editor-toolbar-menu--alignment"
+    >
+      {(closeMenu) => alignmentOptions.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={`editor-toolbar-button editor-alignment-option${currentAlignment === option.value ? ' is-selected' : ''}`}
+          title={option.label}
+          aria-label={option.label}
+          role="menuitemradio"
+          aria-checked={currentAlignment === option.value}
+          onClick={() => {
+            onChange(option.value);
+            closeMenu();
+          }}
+        >
+          <ToolIcon type={option.value} />
+        </button>
+      ))}
+    </ToolbarMenu>
   );
 }
 
@@ -493,12 +539,10 @@ export default function EditorToolbar({
       </div>
 
       <div className="editor-toolbar-group editor-toolbar-group--paragraph" role="group" aria-label="Paragraph and lists">
-        <div className="editor-toolbar-subgroup" role="group" aria-label="Text alignment">
-          <ToolbarButton label="Align left" icon={<ToolIcon type="left" />} active={currentTextAlign === 'left'} onClick={() => runToolbarCommand(editor, (chain) => chain.setTextAlign('left'))} />
-          <ToolbarButton label="Align center" icon={<ToolIcon type="center" />} active={currentTextAlign === 'center'} onClick={() => runToolbarCommand(editor, (chain) => chain.setTextAlign('center'))} />
-          <ToolbarButton label="Align right" icon={<ToolIcon type="right" />} active={currentTextAlign === 'right'} onClick={() => runToolbarCommand(editor, (chain) => chain.setTextAlign('right'))} />
-          <ToolbarButton label="Justify text" icon={<ToolIcon type="justify" />} active={currentTextAlign === 'justify'} onClick={() => runToolbarCommand(editor, (chain) => chain.setTextAlign('justify'))} />
-        </div>
+        <AlignmentMenu
+          value={currentTextAlign}
+          onChange={(value) => runToolbarCommand(editor, (chain) => chain.setTextAlign(value))}
+        />
         <LineSpacingMenu
           value={currentLineHeight}
           onChange={(value) => runToolbarCommand(editor, (chain) => chain.updateAttributes('paragraph', { lineHeight: value }))}

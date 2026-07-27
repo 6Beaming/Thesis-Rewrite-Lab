@@ -690,6 +690,42 @@
   backdrop-filter: blur(12px);
 }
 
+.editor-alignment-trigger {
+  width: 42px;
+  min-width: 42px;
+}
+
+.editor-alignment-trigger-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.editor-alignment-trigger-content svg {
+  flex: 0 0 auto;
+}
+
+.editor-toolbar-menu-caret {
+  width: 0;
+  height: 0;
+  border-top: 4px solid currentColor;
+  border-right: 3px solid transparent;
+  border-left: 3px solid transparent;
+}
+
+.editor-toolbar-menu--alignment {
+  min-width: auto;
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+}
+
+.editor-alignment-option.is-selected {
+  border-color: rgba(20, 103, 184, 0.24);
+  background: #e6f1ff;
+  color: #0b5cab;
+}
+
 .editor-spacing-option {
   min-height: 32px;
   border: 0;
