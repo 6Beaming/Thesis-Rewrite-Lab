@@ -12,6 +12,7 @@ import {
   isolateSelectionInTransaction,
   splitSegmentedTextBlock,
   trackedHeadingAttributes,
+  trackedParagraphAttributes,
   trackedTextContentChanged,
 } from './editorBlockCommands.js';
 
@@ -31,6 +32,7 @@ const BlockSegment = Node.create({
       lineHeight: { default: '2.0' },
       textIndent: { default: '0.5in' },
       formatOverrides: { default: [] },
+      headingRestoreAttrs: { default: null },
     };
   },
   renderHTML({ HTMLAttributes }) {
@@ -59,11 +61,19 @@ test('Heading 1 uses the same tracked style and metadata as imported headings', 
       lineHeight: '1.15',
       textIndent: '0in',
       formatOverrides: ['fontFamily', 'textIndent', 'lineHeight', 'fontSize'],
+      headingRestoreAttrs: {
+        sourceType: 'paragraph',
+        level: null,
+        fontSize: '12pt',
+        lineHeight: '2.0',
+        textIndent: '0.5in',
+        formatOverrides: ['fontFamily'],
+      },
     },
   );
 });
 
-test('Heading 1 command updates the structural node, tracked style, and bold mark together', () => {
+test('Heading 1 command updates the structural node and tracked style without adding a bold mark', () => {
   const text = 'Grammar and Sentence Editing Practice';
   const editor = createEditor({
     type: 'doc',
@@ -89,7 +99,6 @@ test('Heading 1 command updates the structural node, tracked style, and bold mar
       'blockSegment',
       trackedHeadingAttributes(1, editor.getAttributes('blockSegment')),
     )
-    .setBold()
     .run();
 
   assert.equal(applied, true);
@@ -103,9 +112,63 @@ test('Heading 1 command updates the structural node, tracked style, and bold mar
   assert.equal(segment.attrs.lineHeight, '1.15');
   assert.equal(segment.attrs.textIndent, '0in');
   assert.deepEqual(segment.attrs.formatOverrides, ['textIndent', 'lineHeight', 'fontSize']);
-  assert.deepEqual(segment.content[0].marks, [{ type: 'bold' }]);
+  assert.equal(segment.content[0].marks, undefined);
 
   editor.destroy();
+});
+
+test('paragraph attributes restore the tracked style from before a heading conversion', () => {
+  const headingAttrs = trackedHeadingAttributes(2, {
+    sourceType: 'paragraph',
+    level: null,
+    fontSize: '11pt',
+    lineHeight: '1.5',
+    textIndent: '0.25in',
+    formatOverrides: ['fontFamily'],
+  });
+
+  assert.deepEqual(
+    trackedParagraphAttributes(headingAttrs, {
+      fontSize: '12pt',
+      lineHeight: '2.0',
+      textIndent: '0.5in',
+    }),
+    {
+      sourceType: 'paragraph',
+      level: null,
+      fontSize: '11pt',
+      lineHeight: '1.5',
+      textIndent: '0.25in',
+      formatOverrides: ['fontFamily'],
+      headingRestoreAttrs: null,
+    },
+  );
+});
+
+test('legacy heading attributes fall back to the active normal text style', () => {
+  assert.deepEqual(
+    trackedParagraphAttributes({
+      sourceType: 'heading',
+      level: 1,
+      fontSize: '18pt',
+      lineHeight: '1.15',
+      textIndent: '0in',
+      formatOverrides: ['fontSize', 'lineHeight', 'textIndent'],
+    }, {
+      fontSize: '12pt',
+      lineHeight: '2.0',
+      textIndent: '0.5in',
+    }),
+    {
+      sourceType: 'paragraph',
+      level: null,
+      fontSize: '12pt',
+      lineHeight: '2.0',
+      textIndent: '0.5in',
+      formatOverrides: [],
+      headingRestoreAttrs: null,
+    },
+  );
 });
 
 test('Enter command splits an inline processing block into two paragraphs', () => {

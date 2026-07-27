@@ -9,6 +9,7 @@ import {
 import {
   isolateSelectionInTransaction,
   trackedHeadingAttributes,
+  trackedParagraphAttributes,
 } from '../lib/editorBlockCommands.js';
 import { EDITOR_PRESERVE_SCROLL_META } from '../lib/editorScrollGuard.js';
 
@@ -315,6 +316,7 @@ function ColorPickerMenu({
 
 export default function EditorToolbar({
   editor,
+  normalTextStyle,
   onSave,
   onExport,
   saveDisabled = false,
@@ -342,10 +344,11 @@ export default function EditorToolbar({
 
   const paragraphAttrs = editor.getAttributes('paragraph');
   const headingAttrs = editor.getAttributes('heading');
+  const blockSegmentAttrs = editor.getAttributes('blockSegment');
   const textStyleAttrs = editor.getAttributes('textStyle');
-  const currentFontFamily = textStyleAttrs.fontFamily || paragraphAttrs.fontFamily || headingAttrs.fontFamily || 'Times New Roman';
-  const currentFontSize = textStyleAttrs.fontSize || paragraphAttrs.fontSize || headingAttrs.fontSize || '12pt';
-  const currentLineHeight = paragraphAttrs.lineHeight || '2.0';
+  const currentFontFamily = textStyleAttrs.fontFamily || blockSegmentAttrs.fontFamily || paragraphAttrs.fontFamily || headingAttrs.fontFamily || 'Times New Roman';
+  const currentFontSize = textStyleAttrs.fontSize || blockSegmentAttrs.fontSize || paragraphAttrs.fontSize || headingAttrs.fontSize || '12pt';
+  const currentLineHeight = blockSegmentAttrs.lineHeight || paragraphAttrs.lineHeight || '2.0';
   const currentTextColor = String(textStyleAttrs.color || '#000000').toLowerCase();
   const highlightAttrs = editor.getAttributes('highlight');
   const currentHighlightColor = editor.isActive('highlight')
@@ -406,20 +409,35 @@ export default function EditorToolbar({
           options={headingOptions}
           onChange={(value) => {
             runToolbarCommand(editor, (chain) => {
-              if (value === 'none') {
-                return chain.setParagraph().updateAttributes('paragraph', { outlineLevel: 'none' });
-              }
-              if (value === 'paragraph') {
-                return chain.setParagraph().updateAttributes('paragraph', { outlineLevel: 'paragraph' });
+              if (value === 'none' || value === 'paragraph') {
+                const paragraphStyle = trackedParagraphAttributes(
+                  blockSegmentAttrs,
+                  normalTextStyle,
+                );
+                let paragraphChain = chain
+                  .setParagraph({
+                    outlineLevel: value,
+                    lineHeight: paragraphStyle.lineHeight,
+                    textIndent: paragraphStyle.textIndent,
+                    fontFamily: normalTextStyle?.fontFamily,
+                    fontSize: paragraphStyle.fontSize,
+                  })
+                  .updateAttributes('blockSegment', paragraphStyle);
+                if (
+                  blockSegmentAttrs.sourceType === 'heading'
+                  && !blockSegmentAttrs.headingRestoreAttrs
+                ) {
+                  paragraphChain = paragraphChain.unsetBold();
+                }
+                return paragraphChain;
               }
               const level = Number(value);
               return chain
                 .setHeading({ level, outlineLevel: value })
                 .updateAttributes(
                   'blockSegment',
-                  trackedHeadingAttributes(level, editor.getAttributes('blockSegment')),
-                )
-                .setBold();
+                  trackedHeadingAttributes(level, blockSegmentAttrs),
+                );
             }, { restoreSelection: false });
           }}
           ariaLabel="Paragraph or heading level"

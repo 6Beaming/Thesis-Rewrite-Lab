@@ -1,42 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
+import {
+  DEFAULT_CUSTOM_STYLE,
+  TEMPLATE_STYLE_SETTINGS,
+} from '../shared/academicStyleTemplates.js';
 import { DropdownSelect } from './SortDropdown.jsx';
 import TemplateCards from './TemplateCards.jsx';
 
-export const DEFAULT_CUSTOM_STYLE = {
-  marginPreset: 'Normal',
-  marginTop: '1in',
-  marginRight: '1in',
-  marginBottom: '1in',
-  marginLeft: '1in',
-  font: 'Times New Roman',
-  spacing: '2.0',
-  indentation: '0.5in',
-  pageNumber: 'Bottom center',
-};
-
-export const TEMPLATE_STYLE_SETTINGS = {
-  APA: {
-    ...DEFAULT_CUSTOM_STYLE,
-    font: 'Times New Roman',
-    spacing: '2.0',
-    indentation: '0.5in',
-    pageNumber: 'Bottom center',
-  },
-  MLA: {
-    ...DEFAULT_CUSTOM_STYLE,
-    font: 'Times New Roman',
-    spacing: '2.0',
-    indentation: '0.5in',
-    pageNumber: 'Top right',
-  },
-  Chicago: {
-    ...DEFAULT_CUSTOM_STYLE,
-    font: 'Times New Roman',
-    spacing: '1.5',
-    indentation: '0.5in',
-    pageNumber: 'Bottom center',
-  },
-};
+export { DEFAULT_CUSTOM_STYLE, TEMPLATE_STYLE_SETTINGS };
 
 const styleOptions = {
   indentation: ['0in', '0.25in', '0.5in'],

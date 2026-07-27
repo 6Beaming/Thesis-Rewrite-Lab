@@ -12,6 +12,10 @@ import {
   TextRun,
   UnderlineType,
 } from 'docx';
+import {
+  academicParagraphLayout,
+  academicStyleSettings,
+} from '../../src/shared/academicStyleTemplates.js';
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const A4_PAGE_WIDTH_TWIPS = 11906;
@@ -101,7 +105,7 @@ function paragraphSpacing(value) {
 function styleSettingsForDocument(document) {
   return {
     ...DEFAULT_STYLE,
-    ...(document?.style_settings ?? {}),
+    ...academicStyleSettings(document?.academic_style, document?.style_settings),
   };
 }
 
@@ -167,6 +171,16 @@ function headingLevel(node) {
     ?? HeadingLevel.HEADING_1;
 }
 
+function sourceTypeForNode(node) {
+  if (!node || typeof node !== 'object') return 'paragraph';
+  if (node.attrs?.sourceType) return node.attrs.sourceType;
+  for (const child of node.content ?? []) {
+    const sourceType = sourceTypeForNode(child);
+    if (sourceType !== 'paragraph') return sourceType;
+  }
+  return 'paragraph';
+}
+
 function paragraphOptions(node, context, marker = null) {
   const attrs = {
     ...context.style,
@@ -174,10 +188,21 @@ function paragraphOptions(node, context, marker = null) {
   };
   const level = Math.min(8, Math.max(0, finiteNumber(marker?.level, 0)));
   const heading = headingLevel(node);
+  const layout = academicParagraphLayout({
+    academicStyle: context.academicStyle,
+    styleSettings: context.style,
+    sourceType: sourceTypeForNode(node),
+    isHeading: Boolean(heading),
+    isListItem: Boolean(marker),
+    blockquoteDepth: context.blockquoteDepth,
+  });
   const options = {
     children: inlineRuns(node, runDefaultsFromAttrs(attrs)),
     alignment: paragraphAlignment(attrs.textAlign),
-    spacing: paragraphSpacing(attrs.lineHeight || attrs.spacing),
+    spacing: {
+      ...paragraphSpacing(layout.lineHeight || attrs.lineHeight || attrs.spacing),
+      after: lengthToTwips(layout.entrySpacingAfter),
+    },
   };
 
   if (!options.children.length) {
@@ -193,10 +218,14 @@ function paragraphOptions(node, context, marker = null) {
 
   const indent = {};
   if (!heading && !marker) {
-    indent.firstLine = lengthToTwips(attrs.textIndent || attrs.indentation);
+    indent.firstLine = lengthToTwips(layout.firstLineIndent);
   }
-  if (context.blockquoteDepth) {
-    indent.left = context.blockquoteDepth * 720;
+  if (lengthToTwips(layout.leftIndent) > 0) {
+    indent.left = lengthToTwips(layout.leftIndent);
+  }
+  if (lengthToTwips(layout.hangingIndent) > 0) {
+    delete indent.firstLine;
+    indent.hanging = lengthToTwips(layout.hangingIndent);
   }
   if (Object.keys(indent).length) options.indent = indent;
 
@@ -350,6 +379,7 @@ export async function createDocumentExport(document) {
   const state = { numbering: [] };
   const contentNodes = document?.content_json?.content ?? [];
   const children = contentNodes.flatMap((node) => renderNode(node, state, {
+    academicStyle: document?.academic_style,
     blockquoteDepth: 0,
     listDepth: 0,
     style,

@@ -25,6 +25,7 @@ import {
   useState,
 } from 'react';
 import { buildAnalysisPhraseDecorations } from '../lib/analysisPhraseDecorations.js';
+import { academicStyleSettings } from '../shared/academicStyleTemplates.js';
 import {
   countCharacters,
   DEFAULT_SEGMENTATION_POLICY,
@@ -126,6 +127,7 @@ function renderTrackedBlock(tag, HTMLAttributes) {
     nlpTextHash: _nlpTextHash,
     nlpPipelineVersion: _nlpPipelineVersion,
     nlpCheckedAt: _nlpCheckedAt,
+    headingRestoreAttrs: _headingRestoreAttrs,
     ...renderedAttributes
   } = HTMLAttributes;
   const style = trackedBlockStyle(renderedAttributes);
@@ -138,6 +140,7 @@ function renderTrackedBlock(tag, HTMLAttributes) {
       'data-block-id': renderedAttributes.blockId,
       'data-status': renderedAttributes.status,
       'data-nlp-status': renderedAttributes.nlpStatus,
+      'data-source-type': renderedAttributes.sourceType,
       style,
     },
     0,
@@ -223,6 +226,7 @@ const BlockSegment = Node.create({
       fontSize: { default: '12pt' },
       sourceType: { default: 'paragraph' },
       level: { default: null },
+      headingRestoreAttrs: { default: null },
       length: { default: 0 },
       nlpStatus: { default: 'unknown' },
       nlpReasonCodes: { default: [] },
@@ -468,6 +472,10 @@ function normalizeStyleSettings(styleSettings = {}) {
     textIndent: styleSettings.indentation || styleSettings.textIndent || '0.5in',
     fontSize: styleSettings.fontSize || '12pt',
     pageNumber: styleSettings.pageNumber || 'Bottom center',
+    referenceList: styleSettings.referenceList ?? null,
+    bibliography: styleSettings.bibliography ?? null,
+    blockQuote: styleSettings.blockQuote ?? null,
+    footnote: styleSettings.footnote ?? null,
   };
 }
 
@@ -1474,7 +1482,10 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   initialScrollPosition = null,
   onInitialScrollRestored,
 }, ref) {
-  const normalizedStyle = useMemo(() => normalizeStyleSettings(styleSettings), [styleSettings]);
+  const normalizedStyle = useMemo(
+    () => normalizeStyleSettings(academicStyleSettings(document?.academic_style, styleSettings)),
+    [document?.academic_style, styleSettings],
+  );
   const styleSignature = useMemo(() => JSON.stringify(normalizedStyle), [normalizedStyle]);
   const paperScrollRef = useRef(null);
   const pageRef = useRef(null);
@@ -1994,6 +2005,25 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     '--paper-line-height': normalizedStyle.lineHeight,
     '--paper-text-indent': normalizedStyle.textIndent,
     '--paper-font-size': normalizedStyle.fontSize,
+    '--reference-line-height': (
+      normalizedStyle.referenceList?.lineHeight
+      || normalizedStyle.bibliography?.lineHeight
+      || normalizedStyle.lineHeight
+    ),
+    '--reference-hanging-indent': (
+      normalizedStyle.referenceList?.hangingIndent
+      || normalizedStyle.bibliography?.hangingIndent
+      || '0.5in'
+    ),
+    '--reference-entry-spacing-after': (
+      normalizedStyle.referenceList?.entrySpacingAfter
+      || normalizedStyle.bibliography?.entrySpacingAfter
+      || '0in'
+    ),
+    '--blockquote-line-height': normalizedStyle.blockQuote?.lineHeight || normalizedStyle.lineHeight,
+    '--blockquote-left-indent': normalizedStyle.blockQuote?.leftIndent || '0.5in',
+    '--footnote-line-height': normalizedStyle.footnote?.lineHeight || '1.0',
+    '--footnote-first-line-indent': normalizedStyle.footnote?.firstLineIndent || '0.5in',
     ...pageNumberPosition(normalizedStyle.pageNumber),
   };
 
@@ -2294,9 +2324,13 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   }
 
   return (
-    <div className="document-editor">
+    <div
+      className="document-editor"
+      data-academic-style={document?.academic_style || 'APA'}
+    >
       <EditorToolbar
         editor={editor}
+        normalTextStyle={normalizedStyle}
         onSave={onSave}
         onExport={onExport}
         saveDisabled={saveDisabled}

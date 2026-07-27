@@ -1038,6 +1038,70 @@
   border-radius: 0 10px 10px 0;
 }
 
+.document-editor[data-academic-style="APA"] .document-editor-surface h1.document-paragraph,
+.document-editor[data-academic-style="APA"] .document-editor-surface h2.document-paragraph,
+.document-editor[data-academic-style="APA"] .document-editor-surface h3.document-paragraph,
+.document-editor[data-academic-style="MLA"] .document-editor-surface h1.document-paragraph,
+.document-editor[data-academic-style="MLA"] .document-editor-surface h2.document-paragraph,
+.document-editor[data-academic-style="MLA"] .document-editor-surface h3.document-paragraph,
+.document-editor[data-academic-style="Chicago"] .document-editor-surface h1.document-paragraph,
+.document-editor[data-academic-style="Chicago"] .document-editor-surface h2.document-paragraph,
+.document-editor[data-academic-style="Chicago"] .document-editor-surface h3.document-paragraph {
+  line-height: var(--paper-line-height, 2) !important;
+}
+
+.document-editor:is(
+  [data-academic-style="APA"],
+  [data-academic-style="MLA"],
+  [data-academic-style="Chicago"]
+) .document-editor-surface p:has(.doc-block[data-source-type="bibliographyHeading"]) {
+  text-indent: 0 !important;
+}
+
+.document-editor:is(
+  [data-academic-style="APA"],
+  [data-academic-style="MLA"],
+  [data-academic-style="Chicago"]
+) .document-editor-surface p:has(.doc-block[data-source-type="bibliographyEntry"]) {
+  box-sizing: border-box;
+  margin-bottom: var(--reference-entry-spacing-after, 0);
+  padding-left: var(--reference-hanging-indent, 0.5in);
+  line-height: var(--reference-line-height, 2) !important;
+  text-indent: calc(-1 * var(--reference-hanging-indent, 0.5in)) !important;
+}
+
+.document-editor[data-academic-style="MLA"] .document-editor-surface blockquote {
+  margin: 0 0 0 var(--blockquote-left-indent, 0.5in);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  line-height: var(--blockquote-line-height, 2);
+}
+
+.document-editor[data-academic-style="MLA"] .document-editor-surface p:has(
+  .doc-block[data-source-type="blockquote"]
+) {
+  margin-left: var(--blockquote-left-indent, 0.5in);
+  line-height: var(--blockquote-line-height, 2) !important;
+  text-indent: 0 !important;
+}
+
+.document-editor[data-academic-style="MLA"] .document-editor-surface blockquote p:has(
+  .doc-block[data-source-type="blockquote"]
+) {
+  margin-left: 0;
+}
+
+.document-editor[data-academic-style="Chicago"] .document-editor-surface p:has(
+  .doc-block:is([data-source-type="footnote"], [data-source-type="endnote"])
+) {
+  margin: 0;
+  line-height: var(--footnote-line-height, 1) !important;
+  text-indent: var(--footnote-first-line-indent, 0.5in) !important;
+}
+
 .doc-block {
   position: relative;
   z-index: 1;

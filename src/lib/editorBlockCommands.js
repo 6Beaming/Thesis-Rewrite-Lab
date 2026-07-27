@@ -25,6 +25,35 @@ export function trackedHeadingAttributes(level, currentAttrs = {}) {
     level: normalizedLevel,
     ...TRACKED_HEADING_STYLES[normalizedLevel],
     formatOverrides: [...formatOverrides],
+    headingRestoreAttrs: currentAttrs.headingRestoreAttrs ?? {
+      sourceType: currentAttrs.sourceType ?? 'paragraph',
+      level: currentAttrs.level ?? null,
+      fontSize: currentAttrs.fontSize ?? '12pt',
+      lineHeight: currentAttrs.lineHeight ?? '2.0',
+      textIndent: currentAttrs.textIndent ?? '0.5in',
+      formatOverrides: Array.isArray(overrideValue)
+        ? [...overrideValue]
+        : Object.keys(overrideValue ?? {}),
+    },
+  };
+}
+
+export function trackedParagraphAttributes(currentAttrs = {}, fallbackAttrs = {}) {
+  const restoreAttrs = currentAttrs.headingRestoreAttrs ?? {};
+  const overrideValue = restoreAttrs.formatOverrides ?? currentAttrs.formatOverrides;
+  const formatOverrides = new Set(Array.isArray(overrideValue)
+    ? overrideValue
+    : Object.keys(overrideValue ?? {}));
+  TRACKED_HEADING_FORMAT_OVERRIDES.forEach((property) => formatOverrides.delete(property));
+
+  return {
+    sourceType: restoreAttrs.sourceType ?? 'paragraph',
+    level: restoreAttrs.level ?? null,
+    fontSize: restoreAttrs.fontSize ?? fallbackAttrs.fontSize ?? '12pt',
+    lineHeight: restoreAttrs.lineHeight ?? fallbackAttrs.lineHeight ?? '2.0',
+    textIndent: restoreAttrs.textIndent ?? fallbackAttrs.textIndent ?? '0.5in',
+    formatOverrides: [...formatOverrides],
+    headingRestoreAttrs: null,
   };
 }
 

@@ -5,6 +5,7 @@ import AcademicStylePanel, {
   DEFAULT_CUSTOM_STYLE,
   TEMPLATE_STYLE_SETTINGS,
 } from '../components/AcademicStylePanel.jsx';
+import { academicStyleSettings } from '../shared/academicStyleTemplates.js';
 import DocumentEditor from '../components/DocumentEditor.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
@@ -1326,10 +1327,10 @@ export default function WorkspacePage() {
     }
 
     const nextStyleName = hydratedDocument?.academic_style || 'APA';
-    const nextStyleSettings = {
-      ...(TEMPLATE_STYLE_SETTINGS[nextStyleName] ?? DEFAULT_CUSTOM_STYLE),
-      ...(hydratedDocument?.style_settings ?? {}),
-    };
+    const nextStyleSettings = academicStyleSettings(
+      nextStyleName,
+      hydratedDocument?.style_settings,
+    );
     const nextDraft = draftFromDocument(hydratedDocument, nextStyleSettings);
 
     setWorkspaceDraft(nextDraft);
@@ -1557,10 +1558,10 @@ export default function WorkspacePage() {
         }
 
         const persistedStyleName = persistedDocument.academic_style || styleName;
-        const persistedStyleSettings = {
-          ...(TEMPLATE_STYLE_SETTINGS[persistedStyleName] ?? DEFAULT_CUSTOM_STYLE),
-          ...(persistedDocument.style_settings ?? styleSettings),
-        };
+        const persistedStyleSettings = academicStyleSettings(
+          persistedStyleName,
+          persistedDocument.style_settings ?? styleSettings,
+        );
         const persistedDraft = draftFromDocument(persistedDocument, persistedStyleSettings);
         setWorkspaceDraft(persistedDraft);
         setSelectedDocument(documentFromWorkspaceDraft(
