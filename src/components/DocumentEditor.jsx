@@ -51,7 +51,10 @@ import {
   insertTextIntoSelectedSegment,
   trackedTextContentChanged,
 } from '../lib/editorBlockCommands.js';
-import { separateAdjacentBlockRects } from '../lib/blockFrameGeometry.js';
+import {
+  frameAtPoint,
+  separateAdjacentBlockRects,
+} from '../lib/blockFrameGeometry.js';
 import { NlpIssueDecorationPlugin } from '../extensions/NlpIssueDecorationPlugin.js';
 import {
   applyBlockNlpAttrs,
@@ -68,6 +71,8 @@ const EMPTY_NLP_ISSUES = Object.freeze([]);
 const PAGINATION_META = 'editorPagination';
 const PAGINATION_PLUGIN_KEY = new PluginKey('paginationDecoration');
 const SKIP_BLOCK_PARTITION_META = 'skipEditorBlockPartition';
+const BLOCK_FRAME_HIT_TOLERANCE_PX = 1.5;
+const BLOCK_POINTER_GEOMETRY = new WeakMap();
 
 function generateBlockId(prefix) {
   const randomId = globalThis.crypto?.randomUUID?.();
@@ -677,7 +682,21 @@ function polygonPointsForRects(rects, left, top) {
   return points;
 }
 
-function syncBlockStatusFrames(editor, pageElement) {
+function blockElementAtPoint(editor, pageElement, target, clientX, clientY) {
+  const directBlock = target?.closest?.('.doc-block[data-block-id]');
+  if (directBlock && editor?.view?.dom?.contains(directBlock)) return directBlock;
+  if (!pageElement) return null;
+
+  const pageRect = pageElement.getBoundingClientRect();
+  return frameAtPoint(
+    BLOCK_POINTER_GEOMETRY.get(pageElement),
+    clientX - pageRect.left,
+    clientY - pageRect.top,
+    BLOCK_FRAME_HIT_TOLERANCE_PX,
+  )?.blockElement ?? null;
+}
+
+function syncBlockStatusFrames(editor, pageElement, hoveredBlockId = null) {
   if (!pageElement || !editor?.view?.dom) return;
   const existingFrames = new Map(Array.from(
     pageElement.querySelectorAll(':scope > .block-status-frame'),
@@ -688,13 +707,25 @@ function syncBlockStatusFrames(editor, pageElement) {
   const frameGeometry = Array.from(
     editor.view.dom.querySelectorAll('.doc-block[data-block-id]'),
   ).map((blockElement) => ({
+    blockElement,
     blockId: blockElement.dataset.blockId,
     status: normalizeBlockStatus(blockElement.dataset.status),
     selected: blockElement.classList.contains('doc-block--selected'),
     rects: expandedBlockRects(blockElement),
   })).filter(({ blockId, rects }) => blockId && rects.length);
 
-  separateAdjacentBlockRects(frameGeometry).forEach(({
+  const separatedFrameGeometry = separateAdjacentBlockRects(frameGeometry);
+  BLOCK_POINTER_GEOMETRY.set(pageElement, separatedFrameGeometry.map((frame) => ({
+    ...frame,
+    rects: frame.rects.map((rect) => ({
+      left: rect.left - pageRect.left,
+      top: rect.top - pageRect.top,
+      right: rect.right - pageRect.left,
+      bottom: rect.bottom - pageRect.top,
+    })),
+  })));
+
+  separatedFrameGeometry.forEach(({
     blockId,
     status,
     selected,
@@ -722,6 +753,7 @@ function syncBlockStatusFrames(editor, pageElement) {
     frame.dataset.blockId = blockId;
     frame.dataset.status = status;
     frame.dataset.selected = selected ? 'true' : 'false';
+    frame.classList.toggle('is-hovered', blockId === hoveredBlockId);
     frame.setAttribute('viewBox', `0 0 ${width} ${height}`);
     frame.querySelector('.block-status-frame__shape').setAttribute(
       'points',
@@ -773,9 +805,9 @@ function isOrderedListMarkerClick(event, listItem) {
   return event.clientX >= markerLeft - 4 && event.clientX <= contentRect.left - 2;
 }
 
-function syncSelectedBlockFrame(editor, blockId, pageElement) {
+function syncSelectedBlockFrame(editor, blockId, pageElement, hoveredBlockId = null) {
   if (!pageElement) return;
-  syncBlockStatusFrames(editor, pageElement);
+  syncBlockStatusFrames(editor, pageElement, hoveredBlockId);
 
   let frame = pageElement.querySelector(':scope > .selected-block-frame');
   let actions = pageElement.querySelector(':scope > .selected-block-actions');
@@ -906,7 +938,10 @@ function syncSelectedBlockFrame(editor, blockId, pageElement) {
 
   frame.removeAttribute('hidden');
   frame.dataset.blockId = blockId;
-  frame.dataset.status = 'processing';
+  frame.dataset.status = normalizeBlockStatus(selectedBlock.dataset.status);
+  frame.dataset.selected = selectedBlock.classList.contains('doc-block--selected')
+    ? 'true'
+    : 'false';
   frame.setAttribute('viewBox', `0 0 ${width} ${height}`);
   frame.querySelector('.selected-block-frame__outline').setAttribute(
     'points',
@@ -1245,6 +1280,36 @@ function activateSelectedEditorBlock(editor) {
   return changed;
 }
 
+function deactivateSelectedEditorBlock(editor) {
+  if (!editor || editor.isDestroyed) return false;
+  editor.storage.blockSelectionDecoration.active = false;
+
+  let changed = false;
+  editor.commands.command(({ state, tr, dispatch }) => {
+    for (const block of collectTrackedBlocks(state)) {
+      if (block.status !== 'processing') continue;
+      const baseline = String(block.attrs.processingBaselineText ?? block.text);
+      const unchanged = block.text === baseline;
+      tr.setNodeMarkup(block.pos, undefined, {
+        ...block.node.attrs,
+        status: unchanged
+          ? normalizeResumeStatus(block.attrs.resumeStatus)
+          : 'unprocessed',
+        resumeStatus: null,
+        processingBaselineText: null,
+        changeSource: unchanged ? 'none' : 'manual',
+      });
+      changed = true;
+    }
+    tr.setMeta('blockSelectionDeactivation', true);
+    tr.setMeta('blockStateTransition', 'deselect');
+    tr.setMeta('addToHistory', false);
+    dispatch?.(tr);
+    return true;
+  });
+  return changed;
+}
+
 function normalizeEditorBlockNodes(editor, documentId) {
   if (!editor || editor.isDestroyed) return false;
 
@@ -1518,6 +1583,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   const paperScrollRef = useRef(null);
   const pageRef = useRef(null);
   const frameSyncRafRef = useRef(null);
+  const hoveredBlockIdRef = useRef(null);
   const scrollGuardRafRef = useRef(null);
   const scrollGuardTimerRef = useRef(null);
   const scrollGuardRef = useRef(null);
@@ -1530,6 +1596,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   callbacksRef.current = { onChange, onBlockStatusChange, onActiveBlockChange };
   const [pageCount, setPageCount] = useState(1);
   const [orderedListMenu, setOrderedListMenu] = useState(null);
+  const [blockVisualsVisible, setBlockVisualsVisible] = useState(true);
 
   function captureEditorScrollPosition() {
     return {
@@ -1593,7 +1660,12 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     scheduleAnimationFrameOnce(frameSyncRafRef, requestAnimationFrame, () => {
       if (activeEditor.isDestroyed || !pageRef.current) return;
       const info = selectedParagraphInfo(activeEditor);
-      syncSelectedBlockFrame(activeEditor, info.blockId, pageRef.current);
+      syncSelectedBlockFrame(
+        activeEditor,
+        info.blockId,
+        pageRef.current,
+        hoveredBlockIdRef.current,
+      );
     });
   }
 
@@ -1673,7 +1745,10 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         return;
       }
       normalizeEditorBlockNodes(activeEditor, document?.id);
-      const suppressBlockUiActivation = suppressEditedStatusResetRef.current;
+      const suppressBlockUiActivation = Boolean(
+        suppressEditedStatusResetRef.current
+        || transaction.getMeta('blockSelectionDeactivation'),
+      );
       const skipEditedStatusReset = suppressBlockUiActivation;
       const normalizedJson = reconcileEditorBlocks(
         activeEditor,
@@ -1848,6 +1923,38 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   }, [editor, document?.id]);
 
   useEffect(() => {
+    if (!editor || editor.isDestroyed || !pageRef.current) return undefined;
+    const eventRoot = pageRef.current;
+
+    const setHoveredBlock = (blockId) => {
+      if (hoveredBlockIdRef.current === blockId) return;
+      hoveredBlockIdRef.current = blockId;
+      eventRoot.querySelectorAll(':scope > .block-status-frame').forEach((frame) => {
+        frame.classList.toggle('is-hovered', frame.dataset.blockId === blockId);
+      });
+    };
+    const handlePointerMove = (event) => {
+      const block = blockElementAtPoint(
+        editor,
+        eventRoot,
+        event.target,
+        event.clientX,
+        event.clientY,
+      );
+      setHoveredBlock(block?.dataset.blockId ?? null);
+    };
+    const clearHoveredBlock = () => setHoveredBlock(null);
+
+    eventRoot.addEventListener('pointermove', handlePointerMove);
+    eventRoot.addEventListener('pointerleave', clearHoveredBlock);
+    return () => {
+      eventRoot.removeEventListener('pointermove', handlePointerMove);
+      eventRoot.removeEventListener('pointerleave', clearHoveredBlock);
+      hoveredBlockIdRef.current = null;
+    };
+  }, [editor, document?.id]);
+
+  useEffect(() => {
     if (!editor || editor.isDestroyed) return undefined;
 
     const handleEditorBlockClick = (event) => {
@@ -1860,10 +1967,35 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         return;
       }
 
-      const clickedBlock = event.target.closest?.('.doc-block');
-      if (!clickedBlock) return;
+      const clickedBlock = blockElementAtPoint(
+        editor,
+        eventRoot,
+        event.target,
+        event.clientX,
+        event.clientY,
+      );
+      if (!clickedBlock) {
+        deactivateSelectedEditorBlock(editor);
+        const info = selectedParagraphInfo(editor);
+        scheduleBlockFrameSync(editor);
+        onActiveBlockChange?.(info);
+        return;
+      }
 
       editor.storage.blockSelectionDecoration.active = true;
+      const clickedBlockId = clickedBlock.dataset.blockId;
+      if (selectedParagraphFromState(editor.state)?.blockId !== clickedBlockId) {
+        const targetBlock = collectTrackedBlocks(editor.state).find(
+          (block) => block.blockId === clickedBlockId,
+        );
+        if (targetBlock) {
+          editor
+            .chain()
+            .setTextSelection(targetBlock.pos + 1)
+            .focus(undefined, { scrollIntoView: false })
+            .run();
+        }
+      }
       editor.view.dispatch(editor.state.tr
         .setMeta('blockSelectionActivation', true)
         .setMeta('addToHistory', false));
@@ -2434,10 +2566,13 @@ const DocumentEditor = forwardRef(function DocumentEditor({
     <div
       className="document-editor"
       data-academic-style={document?.academic_style || 'APA'}
+      data-block-visuals={blockVisualsVisible ? 'on' : 'off'}
     >
       <EditorToolbar
         editor={editor}
         normalTextStyle={normalizedStyle}
+        blockVisualsVisible={blockVisualsVisible}
+        onToggleBlockVisuals={() => setBlockVisualsVisible((visible) => !visible)}
         onSave={onSave}
         onExport={onExport}
         saveDisabled={saveDisabled}

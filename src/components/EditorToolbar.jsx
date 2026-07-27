@@ -38,6 +38,7 @@ function ToolIcon({ type, accentColor }) {
     redo: <path d="M15 7h5v5M20 12c-2-4-7-6-12-3-2 1-3 3-4 5" />,
     save: <path d="M5 4h12l2 2v14H5zM8 4v6h8V4M8 20v-6h8v6" />,
     export: <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" />,
+    eye: <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12zM12 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6z" />,
     lineSpacing: <path d="M6 5v14M3.5 7.5 6 5l2.5 2.5M3.5 16.5 6 19l2.5-2.5M11 7h9M11 12h9M11 17h9" />,
     textColor: (
       <>
@@ -365,6 +366,8 @@ function ColorPickerMenu({
 export default function EditorToolbar({
   editor,
   normalTextStyle,
+  blockVisualsVisible = true,
+  onToggleBlockVisuals,
   onSave,
   onExport,
   saveDisabled = false,
@@ -449,6 +452,23 @@ export default function EditorToolbar({
         />
         <ToolbarButton label="Undo" icon={<ToolIcon type="undo" />} disabled={!editor.can().undo()} onClick={() => applyHistoryAction('undo')} />
         <ToolbarButton label="Redo" icon={<ToolIcon type="redo" />} disabled={!editor.can().redo()} onClick={() => applyHistoryAction('redo')} />
+      </div>
+
+      <div className="editor-toolbar-group editor-toolbar-group--block-visibility" role="group" aria-label="Block display">
+        <button
+          type="button"
+          className={`editor-toolbar-button editor-block-visibility-toggle${blockVisualsVisible ? ' is-active' : ''}`}
+          onClick={onToggleBlockVisuals}
+          title={blockVisualsVisible ? 'Hide block highlights and borders' : 'Show block highlights and borders'}
+          aria-label={blockVisualsVisible ? 'Hide block highlights and borders' : 'Show block highlights and borders'}
+          aria-pressed={blockVisualsVisible}
+        >
+          <ToolIcon type={blockVisualsVisible ? 'eye' : 'eyeOff'} />
+          <span className="editor-block-visibility-toggle__label">Blocks</span>
+          <span className="editor-block-visibility-toggle__state" aria-hidden="true">
+            {blockVisualsVisible ? 'On' : 'Off'}
+          </span>
+        </button>
       </div>
 
       <div className="editor-toolbar-group editor-toolbar-group--typography" role="group" aria-label="Typography">
