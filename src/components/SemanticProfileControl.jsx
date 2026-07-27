@@ -15,11 +15,10 @@ export default function SemanticProfileControl({
   return (
     <section className="semantic-profile-control" aria-labelledby="semantic-profile-heading">
       <div className="semantic-profile-control__heading">
-        <h3 id="semantic-profile-heading">Sentence grouping</h3>
+        <h2 id="semantic-profile-heading"> <strong>Sentence grouping style</strong></h2>
         <p>Choose how closely related sentences should stay together during writing review.</p>
       </div>
       <label className="semantic-profile-control__field">
-        <span>Grouping style</span>
         <DropdownSelect
           value={value}
           options={OPTIONS}

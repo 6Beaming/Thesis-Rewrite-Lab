@@ -3427,7 +3427,7 @@ export default function WorkspacePage() {
                 <UploadDocIcon />
                 Upload
               </button>
-              <span>Upload a new document to work on</span>
+              <span style={{ fontSize: '14.4px'}}> Upload a new document to work on</span>
             </section>
             <HistorySelector
               documents={recentDocuments}
