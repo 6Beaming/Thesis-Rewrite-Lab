@@ -1,6 +1,7 @@
 import { query, withTransaction } from './db.js';
 import {
   normalizeWritingPreferences,
+  resolveAutosaveDocs,
   WRITING_PREFERENCE_SCHEMA_VERSION,
 } from '../../src/shared/writingPreferences.js';
 
@@ -93,7 +94,7 @@ function profileFromUser(user, stats) {
     display_name: user.display_name,
     profile_picture_mime: user.profile_picture_mime,
     hasProfilePicture: Boolean(user.profile_picture_mime),
-    autosaveDocs: Boolean(user.autosave_docs),
+    autosaveDocs: resolveAutosaveDocs(user.autosave_docs),
     useWritingPreferences: user.use_writing_preferences !== false,
     writingPreferences: normalizeWritingPreferences(
       user.writing_preferences,

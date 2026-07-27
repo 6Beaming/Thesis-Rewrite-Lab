@@ -10,6 +10,7 @@ import {
   isolateSelectionInTransaction,
   trackedHeadingAttributes,
   trackedParagraphAttributes,
+  toggleBlockquoteInSelectedTextBlocks,
   updateTrackedBlocksInSelectedTextBlocks,
 } from '../lib/editorBlockCommands.js';
 import { EDITOR_PRESERVE_SCROLL_META } from '../lib/editorScrollGuard.js';
@@ -26,6 +27,7 @@ function ToolIcon({ type, accentColor }) {
     ),
     bullet: <path d="M8 7h11M8 12h11M8 17h11M4.5 7h.1M4.5 12h.1M4.5 17h.1" />,
     ordered: <path d="M9 7h10M9 12h10M9 17h10M4 8h2M4 12h2M4 16h2" />,
+    blockquote: <text x="4.2" y="19" fontSize="22" fontWeight="700" fill="currentColor" stroke="none">“</text>,
     left: <path d="M5 7h14M5 11h10M5 15h14M5 19h10" />,
     center: <path d="M5 7h14M7 11h10M5 15h14M7 19h10" />,
     right: <path d="M5 7h14M9 11h10M5 15h14M9 19h10" />,
@@ -501,9 +503,21 @@ export default function EditorToolbar({
           value={currentLineHeight}
           onChange={(value) => runToolbarCommand(editor, (chain) => chain.updateAttributes('paragraph', { lineHeight: value }))}
         />
-        <div className="editor-toolbar-subgroup" role="group" aria-label="Lists">
+        <div className="editor-toolbar-subgroup" role="group" aria-label="Lists and block quote">
           <ToolbarButton label="Bullet list" icon={<ToolIcon type="bullet" />} active={editor.isActive('bulletList')} onClick={() => applyStructuralCommand('toggleBulletList')} />
           <ToolbarButton label="Ordered list" icon={<ToolIcon type="ordered" />} active={editor.isActive('orderedList')} onClick={() => applyStructuralCommand('toggleOrderedList')} />
+          <ToolbarButton
+            label="Block quote"
+            icon={<ToolIcon type="blockquote" />}
+            active={editor.isActive('blockquote')}
+            onClick={() => runToolbarCommand(
+              editor,
+              (chain) => chain.command(
+                ({ tr }) => toggleBlockquoteInSelectedTextBlocks(tr),
+              ),
+              { restoreSelection: false },
+            )}
+          />
         </div>
         <div className="editor-toolbar-subgroup" role="group" aria-label="Indentation">
           <ToolbarButton label="Decrease indent" icon={<ToolIcon type="outdent" />} onClick={() => runToolbarCommand(editor, (chain) => chain.updateAttributes('paragraph', { textIndent: '0in' }))} />

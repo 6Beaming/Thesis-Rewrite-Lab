@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Editor, Node } from '@tiptap/core';
+import Blockquote from '@tiptap/extension-blockquote';
 import Paragraph from '@tiptap/extension-paragraph';
 import StarterKit from '@tiptap/starter-kit';
 import {
@@ -14,6 +15,7 @@ import {
   trackedHeadingAttributes,
   trackedParagraphAttributes,
   trackedTextContentChanged,
+  toggleBlockquoteInSelectedTextBlocks,
   updateTrackedBlocksInSelectedTextBlocks,
 } from './editorBlockCommands.js';
 
@@ -44,9 +46,10 @@ const BlockSegment = Node.create({
 function createEditor(content) {
   return new Editor({
     extensions: [
-      StarterKit.configure({ paragraph: false }),
+      StarterKit.configure({ paragraph: false, blockquote: false }),
       Paragraph,
       BlockSegment,
+      Blockquote,
     ],
     content,
   });
@@ -466,6 +469,53 @@ test('a partial selection is isolated before applying a list transform', () => {
     'llo ',
   );
   assert.equal(content[2].content[0].content[0].text, 'world');
+  editor.destroy();
+});
+
+test('a block quote wraps the whole paragraph and preserves all tracked blocks', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      content: [
+        {
+          type: 'blockSegment',
+          attrs: { blockId: 'block-1', status: 'processing' },
+          content: [{ type: 'text', text: 'First sentence.' }],
+        },
+        { type: 'text', text: ' ' },
+        {
+          type: 'blockSegment',
+          attrs: { blockId: 'block-2', status: 'unprocessed' },
+          content: [{ type: 'text', text: 'Second sentence.' }],
+        },
+      ],
+    }],
+  });
+
+  editor.commands.setTextSelection({ from: 2, to: 17 });
+  assert.equal(editor.chain()
+    .command(({ tr }) => toggleBlockquoteInSelectedTextBlocks(tr))
+    .run(), true);
+
+  const blockquote = editor.getJSON().content[0];
+  const paragraph = blockquote.content[0];
+  const segments = paragraph.content.filter((node) => node.type === 'blockSegment');
+  assert.equal(blockquote.type, 'blockquote');
+  assert.equal(paragraph.type, 'paragraph');
+  assert.deepEqual(
+    segments.map((segment) => segment.attrs.blockId),
+    ['block-1', 'block-2'],
+  );
+  assert.deepEqual(
+    segments.map((segment) => segment.attrs.status),
+    ['processing', 'unprocessed'],
+  );
+
+  assert.equal(editor.chain()
+    .command(({ tr }) => toggleBlockquoteInSelectedTextBlocks(tr))
+    .run(), true);
+  assert.equal(editor.getJSON().content[0].type, 'paragraph');
   editor.destroy();
 });
 

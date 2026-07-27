@@ -6,6 +6,7 @@ import AcademicStylePanel, {
   TEMPLATE_STYLE_SETTINGS,
 } from '../components/AcademicStylePanel.jsx';
 import { academicStyleSettings } from '../shared/academicStyleTemplates.js';
+import { resolveAutosaveDocs } from '../shared/writingPreferences.js';
 import DocumentEditor from '../components/DocumentEditor.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
 import HistorySelector from '../components/HistorySelector.jsx';
@@ -766,7 +767,9 @@ export default function WorkspacePage() {
     : '';
   const currentPracticeRequestKey = `${currentPracticeKey}|${practiceInput}`;
   practiceContextKeyRef.current = currentPracticeRequestKey;
-  const autosaveDocs = Boolean(realtimeState.profile?.autosaveDocs);
+  const autosaveDocs = realtimeState.profile
+    ? resolveAutosaveDocs(realtimeState.profile.autosaveDocs)
+    : false;
   const activeBlockNlpSnapshot = useMemo(
     () => normalizeBlockNlpSnapshot(
       visibleBlockNlp?.nlp ?? currentRewriteBlock ?? activeSourceBlock ?? {},

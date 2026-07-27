@@ -1,6 +1,7 @@
 import { splitBlockKeepMarks } from '@tiptap/pm/commands';
 import { Fragment } from '@tiptap/pm/model';
 import { TextSelection } from '@tiptap/pm/state';
+import { findWrapping, liftTarget } from '@tiptap/pm/transform';
 
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
@@ -57,9 +58,7 @@ export function trackedParagraphAttributes(currentAttrs = {}, fallbackAttrs = {}
   };
 }
 
-export function updateTrackedBlocksInSelectedTextBlocks(transaction, updateAttrs) {
-  if (!transaction || typeof updateAttrs !== 'function') return false;
-
+function selectedStructuralPositions(doc, selection) {
   const structuralPositions = new Set();
   const collectStructuralAncestor = ($position) => {
     for (let depth = $position.depth; depth > 0; depth -= 1) {
@@ -70,11 +69,11 @@ export function updateTrackedBlocksInSelectedTextBlocks(transaction, updateAttrs
     }
   };
 
-  collectStructuralAncestor(transaction.selection.$from);
-  collectStructuralAncestor(transaction.selection.$to);
-  transaction.doc.nodesBetween(
-    transaction.selection.from,
-    transaction.selection.to,
+  collectStructuralAncestor(selection.$from);
+  collectStructuralAncestor(selection.$to);
+  doc.nodesBetween(
+    selection.from,
+    selection.to,
     (node, pos) => {
       if (STRUCTURAL_TEXT_BLOCK_TYPES.has(node.type.name)) {
         structuralPositions.add(pos);
@@ -82,8 +81,14 @@ export function updateTrackedBlocksInSelectedTextBlocks(transaction, updateAttrs
     },
   );
 
+  return [...structuralPositions].sort((left, right) => left - right);
+}
+
+export function updateTrackedBlocksInSelectedTextBlocks(transaction, updateAttrs) {
+  if (!transaction || typeof updateAttrs !== 'function') return false;
+
   let changed = false;
-  [...structuralPositions].sort((left, right) => left - right).forEach((structuralPos) => {
+  selectedStructuralPositions(transaction.doc, transaction.selection).forEach((structuralPos) => {
     const structuralNode = transaction.doc.nodeAt(structuralPos);
     if (!STRUCTURAL_TEXT_BLOCK_TYPES.has(structuralNode?.type?.name)) return;
 
@@ -101,6 +106,36 @@ export function updateTrackedBlocksInSelectedTextBlocks(transaction, updateAttrs
   });
 
   return changed;
+}
+
+export function toggleBlockquoteInSelectedTextBlocks(transaction) {
+  if (!transaction) return false;
+  const blockquote = transaction.doc.type.schema.nodes.blockquote;
+  if (!blockquote) return false;
+
+  const positions = selectedStructuralPositions(transaction.doc, transaction.selection);
+  if (!positions.length) return false;
+  const firstPos = positions[0];
+  const lastPos = positions.at(-1);
+  const lastNode = transaction.doc.nodeAt(lastPos);
+  if (!lastNode) return false;
+
+  const range = transaction.doc.resolve(firstPos).blockRange(
+    transaction.doc.resolve(lastPos + lastNode.nodeSize),
+  );
+  if (!range) return false;
+
+  if (range.parent.type === blockquote) {
+    const target = liftTarget(range);
+    if (target == null) return false;
+    transaction.lift(range, target);
+    return true;
+  }
+
+  const wrapping = findWrapping(range, blockquote);
+  if (!wrapping) return false;
+  transaction.wrap(range, wrapping);
+  return true;
 }
 
 function textFromJsonNode(node) {

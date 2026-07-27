@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  DEFAULT_AUTOSAVE_DOCS,
   MAX_CUSTOM_WRITING_INSTRUCTIONS,
   normalizeWritingPreferences,
+  resolveAutosaveDocs,
   WRITING_PREFERENCE_LABELS,
   WRITING_PREFERENCE_OPTIONS,
   writingPreferenceSummary,
@@ -20,7 +22,7 @@ const FIELD_ORDER = [
 
 function settingsFromUser(user) {
   return {
-    autosaveDocs: Boolean(user?.autosaveDocs),
+    autosaveDocs: resolveAutosaveDocs(user?.autosaveDocs),
     writingPreferences: normalizeWritingPreferences(
       user?.writingPreferences,
       { strict: false },
@@ -94,7 +96,7 @@ export default function HomepageWritingPreferences({
 
   function reset() {
     setSettings({
-      autosaveDocs: false,
+      autosaveDocs: DEFAULT_AUTOSAVE_DOCS,
       writingPreferences: {},
     });
     setMessage('Defaults restored. Save to apply them.');

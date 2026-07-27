@@ -18,11 +18,12 @@ import HomepageCredits from './homepageCredits.jsx';
 import HomepageSupport from './homepageSupport.jsx';
 import HomepageTrash from './homepageTrash.jsx';
 import HomepageVersionControl from './homepageVersionControl.jsx';
+import { DEFAULT_AUTOSAVE_DOCS } from '../shared/writingPreferences.js';
 
 const EMPTY_USER = {
   display_name: 'Signed-in user',
   email: '',
-  autosaveDocs: false,
+  autosaveDocs: DEFAULT_AUTOSAVE_DOCS,
   useWritingPreferences: true,
   writingPreferences: {},
   stats: {
