@@ -22,9 +22,10 @@ import {
 } from '../lib/editorBlockCommands.js';
 import { countCharacters } from '../lib/blockSegmentation/index.js';
 import { createDocumentMutationCoordinator } from '../lib/documentMutationCoordinator.js';
-import { matchingAcademicTemplate } from '../lib/formatAudit.js';
+import { templateCardSelectionForStyle } from '../lib/formatAudit.js';
 import {
   aiSavePolicy,
+  prepareWorkspaceCitationCheck,
   shouldScheduleWorkspaceAutosave,
   workspaceLeavePolicy,
   WORKSPACE_AUTOSAVE_DELAY_MS,
@@ -1370,7 +1371,7 @@ export default function WorkspacePage() {
     setStyleName(nextStyleName);
     setSelectedTemplate(
       selectedTemplateOverride === undefined
-        ? matchingAcademicTemplate(nextDraft.contentJson, nextStyleName, nextStyleSettings)
+        ? templateCardSelectionForStyle(nextStyleName)
         : selectedTemplateOverride,
     );
     setStyleSettings(nextStyleSettings);
@@ -1635,11 +1636,6 @@ export default function WorkspacePage() {
     if (!document?.id) return false;
     document.academic_style = styleName;
     document.style_settings = styleSettings;
-    const savedTemplateSelection = matchingAcademicTemplate(
-      document.content_json,
-      styleName,
-      academicStyleSettings(styleName, styleSettings),
-    );
 
     setWorkspaceSaving(true);
     try {
@@ -1648,7 +1644,6 @@ export default function WorkspacePage() {
         automatic ? 'Autosave' : 'Manual save',
         { createVersion: !automatic },
       );
-      setSelectedTemplate(savedTemplateSelection);
       setWorkspaceNotice(automatic ? 'Autosaved' : 'Saved');
       setShowUnsavedBackPrompt(false);
       if (exportAfterSave && !await exportWorkspaceDocument(persistedDocument)) {
@@ -1665,6 +1660,13 @@ export default function WorkspacePage() {
     } finally {
       setWorkspaceSaving(false);
     }
+  }
+
+  function prepareCitationReviewCheck() {
+    return prepareWorkspaceCitationCheck({
+      workspaceDirty,
+      saveWorkspaceDocument,
+    });
   }
 
   async function exportWorkspaceDocument(document = selectedDocument) {
@@ -2948,6 +2950,7 @@ export default function WorkspacePage() {
                     key={`${selectedDocument?.id}-${styleName}`}
                     document={selectedDocument}
                     disabled={styleName === 'Customized'}
+                    onBeforeCheck={prepareCitationReviewCheck}
                     onDocumentApplied={handleCitationDocumentApplied}
                     onNavigateToCitation={navigateToCitation}
                   />

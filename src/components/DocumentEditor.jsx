@@ -48,6 +48,7 @@ import {
   hasUnfinishedBlocks,
   insertSegmentedLineBreak,
   insertTextIntoSelectedSegment,
+  selectEntireEditorDocument,
   trackedTextContentChanged,
 } from '../lib/editorBlockCommands.js';
 import {
@@ -272,6 +273,19 @@ const BlockSegmentEnter = Extension.create({
         },
       }),
     ];
+  },
+});
+
+const DocumentSelectAll = Extension.create({
+  name: 'documentSelectAll',
+  priority: 1200,
+  addKeyboardShortcuts() {
+    return {
+      'Mod-a': () => selectEntireEditorDocument(
+        this.editor.state,
+        this.editor.view.dispatch,
+      ),
+    };
   },
 });
 
@@ -1682,6 +1696,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
       AcademicParagraph,
       AcademicHeading,
       BlockSegment,
+      DocumentSelectAll,
       BlockSegmentEnter,
       BlockSelectionDecoration,
       AnalysisPhraseDecoration,

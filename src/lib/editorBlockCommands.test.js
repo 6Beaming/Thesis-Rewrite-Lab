@@ -3,6 +3,7 @@ import test from 'node:test';
 import { Editor, Node } from '@tiptap/core';
 import Blockquote from '@tiptap/extension-blockquote';
 import Paragraph from '@tiptap/extension-paragraph';
+import { AllSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import {
   chooseNextUnfinishedBlock,
@@ -11,6 +12,7 @@ import {
   insertSegmentedLineBreak,
   insertTextIntoSelectedSegment,
   isolateSelectionInTransaction,
+  selectEntireEditorDocument,
   splitSegmentedTextBlock,
   trackedHeadingAttributes,
   trackedParagraphAttributes,
@@ -54,6 +56,40 @@ function createEditor(content) {
     content,
   });
 }
+
+test('Ctrl+A selects the entire editor document', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [
+      {
+        type: 'paragraph',
+        content: [{
+          type: 'blockSegment',
+          attrs: { blockId: 'block-1' },
+          content: [{ type: 'text', text: 'First paragraph.' }],
+        }],
+      },
+      {
+        type: 'paragraph',
+        content: [{
+          type: 'blockSegment',
+          attrs: { blockId: 'block-2' },
+          content: [{ type: 'text', text: 'Second paragraph.' }],
+        }],
+      },
+    ],
+  });
+  editor.commands.setTextSelection(4);
+
+  const applied = editor.commands.command(({ state, dispatch }) => (
+    selectEntireEditorDocument(state, dispatch)
+  ));
+
+  assert.equal(applied, true);
+  assert.ok(editor.state.selection instanceof AllSelection);
+  assert.equal(editor.state.selection.from, 0);
+  assert.equal(editor.state.selection.to, editor.state.doc.content.size);
+});
 
 test('Heading 1 uses the same tracked style and metadata as imported headings', () => {
   assert.deepEqual(

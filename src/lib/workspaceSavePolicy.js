@@ -27,3 +27,12 @@ export function workspaceLeavePolicy({ workspaceDirty, autosaveDocs }) {
   if (!workspaceDirty) return 'leave';
   return autosaveDocs ? 'autosave-and-leave' : 'prompt';
 }
+
+export async function prepareWorkspaceCitationCheck({
+  workspaceDirty,
+  saveWorkspaceDocument,
+}) {
+  if (!workspaceDirty) return true;
+  if (typeof saveWorkspaceDocument !== 'function') return false;
+  return Boolean(await saveWorkspaceDocument({ automatic: true }));
+}

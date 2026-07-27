@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   auditDocumentFormatting,
-  matchingAcademicTemplate,
+  templateCardSelectionForStyle,
 } from './formatAudit.js';
 
 const apaStyle = {
@@ -32,17 +32,14 @@ function contentWithAttrs(attrs = {}) {
   };
 }
 
-test('matchingAcademicTemplate keeps a compliant template selected', () => {
-  assert.equal(matchingAcademicTemplate(contentWithAttrs(), 'APA', apaStyle), 'APA');
-});
-
-test('matchingAcademicTemplate deselects a template when local formatting differs', () => {
+test('template selection persists when local formatting differs', () => {
   const content = contentWithAttrs({ fontSize: '18pt' });
 
   assert.equal(auditDocumentFormatting(content, apaStyle).hasDifferences, true);
-  assert.equal(matchingAcademicTemplate(content, 'APA', apaStyle), null);
+  assert.equal(templateCardSelectionForStyle('APA'), 'APA');
 });
 
-test('matchingAcademicTemplate does not select a card for customized formatting', () => {
-  assert.equal(matchingAcademicTemplate(contentWithAttrs(), 'Customized', apaStyle), null);
+test('templateCardSelectionForStyle restores the saved APA selection on reopen', () => {
+  assert.equal(templateCardSelectionForStyle('APA'), 'APA');
+  assert.equal(templateCardSelectionForStyle('Customized'), null);
 });

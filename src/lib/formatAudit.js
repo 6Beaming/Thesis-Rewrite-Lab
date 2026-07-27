@@ -55,9 +55,8 @@ export function auditDocumentFormatting(contentJson, style = {}) {
   };
 }
 
-export function matchingAcademicTemplate(contentJson, styleName, style = {}) {
-  if (!ACADEMIC_TEMPLATE_NAMES.has(styleName)) return null;
-  return auditDocumentFormatting(contentJson, style).hasDifferences ? null : styleName;
+export function templateCardSelectionForStyle(styleName) {
+  return ACADEMIC_TEMPLATE_NAMES.has(styleName) ? styleName : null;
 }
 
 export { STRUCTURAL_PROPERTIES };

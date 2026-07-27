@@ -46,7 +46,7 @@ const GUIDE_TOPICS = [
       'Select a text block to make it active. Choose Complete when the block is ready, or Skip to move on without rewriting it.',
       'Use Save in the toolbar whenever you want a versioned snapshot. If autosave is enabled, changes are also saved after a short pause.',
     ],
-    note: 'When local formatting differs from the selected template, its card is deselected and saving preserves those differences.',
+    note: 'The selected template stays active while saving preserves any local formatting differences.',
     keywords: 'workspace title toolbar styles apa mla chicago customized complete skip format autosave',
   },
   {
@@ -103,7 +103,7 @@ const GUIDE_TOPICS = [
     steps: [
       'From Docs, open a document card’s three-dot menu and choose Export to download its saved version.',
       'From the workspace, choose Export in the toolbar. Unsaved edits are saved first so the download stays current.',
-      'Unsaved edits are saved as written. If local formatting differs from the selected template, its card remains deselected.',
+      'Unsaved edits are saved as written, including local formatting that differs from the selected template.',
       'Open the downloaded .docx file to review page margins, spacing, indentation, lists, headings, and inline formatting.',
     ],
     note: 'The current export format is .docx. The filename comes from the document title.',

@@ -1,6 +1,6 @@
 import { splitBlockKeepMarks } from '@tiptap/pm/commands';
 import { Fragment } from '@tiptap/pm/model';
-import { TextSelection } from '@tiptap/pm/state';
+import { AllSelection, TextSelection } from '@tiptap/pm/state';
 import { findWrapping, liftTarget } from '@tiptap/pm/transform';
 
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
@@ -12,6 +12,12 @@ const TRACKED_HEADING_STYLES = {
   3: { fontSize: '14pt', lineHeight: '1.15', textIndent: '0in' },
 };
 const TRACKED_HEADING_FORMAT_OVERRIDES = ['textIndent', 'lineHeight', 'fontSize'];
+
+export function selectEntireEditorDocument(state, dispatch) {
+  if (!state?.doc) return false;
+  dispatch?.(state.tr.setSelection(new AllSelection(state.doc)));
+  return true;
+}
 
 export function trackedHeadingAttributes(level, currentAttrs = {}) {
   const normalizedLevel = Math.min(3, Math.max(1, Number(level) || 1));

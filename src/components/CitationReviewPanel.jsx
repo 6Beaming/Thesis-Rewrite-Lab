@@ -47,6 +47,7 @@ function CloseIcon() {
 export default function CitationReviewPanel({
   document,
   disabled = false,
+  onBeforeCheck,
   onDocumentApplied,
   onNavigateToCitation,
 }) {
@@ -73,6 +74,8 @@ export default function CitationReviewPanel({
     setProposal(null);
     setCandidateSelection(null);
     try {
+      const ready = await onBeforeCheck?.();
+      if (ready === false) return;
       const response = await checkDocumentCitations(document.id);
       setResult(response.result);
       setDismissedItemKeys(new Set());
