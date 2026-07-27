@@ -113,13 +113,14 @@ function runDefaultsFromAttrs(attrs = {}, inherited = {}) {
   return {
     font: attrs.fontFamily || attrs.font || inherited.font || DEFAULT_STYLE.font,
     size: attrs.fontSize || inherited.size || DEFAULT_STYLE.fontSize,
+    color: normalizeHexColor(attrs.color) || normalizeHexColor(inherited.color),
   };
 }
 
 function textRunFromNode(node, defaults) {
   const marks = new Map((node.marks ?? []).map((mark) => [mark.type, mark.attrs ?? {}]));
   const textStyle = marks.get('textStyle') ?? {};
-  const color = normalizeHexColor(textStyle.color);
+  const color = normalizeHexColor(textStyle.color) || defaults.color;
   const highlight = normalizeHexColor(marks.get('highlight')?.color);
   const options = {
     text: String(node.text ?? ''),
@@ -196,8 +197,12 @@ function paragraphOptions(node, context, marker = null) {
     isListItem: Boolean(marker),
     blockquoteDepth: context.blockquoteDepth,
   });
+  const runDefaults = runDefaultsFromAttrs(attrs);
+  if (heading && !runDefaults.color) {
+    runDefaults.color = '000000';
+  }
   const options = {
-    children: inlineRuns(node, runDefaultsFromAttrs(attrs)),
+    children: inlineRuns(node, runDefaults),
     alignment: paragraphAlignment(attrs.textAlign),
     spacing: {
       ...paragraphSpacing(layout.lineHeight || attrs.lineHeight || attrs.spacing),
