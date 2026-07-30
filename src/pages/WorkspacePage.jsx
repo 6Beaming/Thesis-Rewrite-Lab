@@ -3641,7 +3641,7 @@ export default function WorkspacePage() {
               setShowPureModePrompt(false);
             }}
           >
-            Turning Pure mode off can hide the desktop owl and give the blackboard content the full available height.
+            The owl animation can be hidden by turning on Pure mode, which gives the blackboard content the full available height.
           </ConfirmModal>
         ) : null}
         {workspaceSaveOverlay || workspaceUploading || templateSwitchBusy

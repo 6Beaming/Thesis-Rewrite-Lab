@@ -460,12 +460,12 @@ export default function EditorToolbar({
             type="button"
             className={`editor-toolbar-button editor-block-visibility-toggle editor-pure-mode-toggle${pureMode ? ' is-active' : ''}`}
             onClick={onTogglePureMode}
-            title={pureMode ? 'Turn Pure mode off' : 'Turn Pure mode on'}
-            aria-label={pureMode ? 'Turn Pure mode off' : 'Turn Pure mode on'}
+            title={pureMode ? 'Turn Pure mode on' : 'Turn Pure mode off'}
+            aria-label={pureMode ? 'Turn Pure mode on' : 'Turn Pure mode off'}
             aria-pressed={pureMode}
           >
             <ToolIcon type="sparkles" />
-            <span className="editor-block-visibility-toggle__label">Pure mode</span>
+            <span className="editor-block-visibility-toggle__label">Owl</span>
             <span className="editor-block-visibility-toggle__state" aria-hidden="true">
               {pureMode ? 'On' : 'Off'}
             </span>
