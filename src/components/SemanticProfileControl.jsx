@@ -34,12 +34,12 @@ export default function SemanticProfileControl({
       {status ? <small className="semantic-profile-control__status" role="status">{status}</small> : null}
       {documentSummary ? (
         <div className="semantic-profile-control__statistics-group">
-          <strong>Global writing statistics</strong>
+          <strong>Document Block Overview</strong>
           <section className="semantic-profile-control__statistics" aria-label="Global writing statistics">
             <p>
               <strong>{documentSummary.passCount ?? 0} </strong>ready · <strong>{documentSummary.warningCount ?? 0} </strong>with suggestions ·{' '}
-              <strong>{documentSummary.blockedCount ?? 0} </strong>needing changes · <strong>{documentSummary.skippedCount ?? 0} </strong>not needing review ·{' '}
-              <strong>{documentSummary.unknownCount ?? 0} </strong>awaiting review
+              <strong>{documentSummary.blockedCount ?? 0} </strong>requires changes · <strong>{documentSummary.skippedCount ?? 0} </strong>excluded ·{' '}
+              <strong>{documentSummary.unknownCount ?? 0} </strong>pending
             </p>
           </section>
         </div>

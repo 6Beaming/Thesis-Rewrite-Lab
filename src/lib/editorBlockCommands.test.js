@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Editor, Node } from '@tiptap/core';
 import Blockquote from '@tiptap/extension-blockquote';
+import Heading from '@tiptap/extension-heading';
 import Paragraph from '@tiptap/extension-paragraph';
 import { AllSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
@@ -12,6 +13,7 @@ import {
   insertSegmentedLineBreak,
   insertTextIntoSelectedSegment,
   isolateSelectionInTransaction,
+  reapplyTrackedHeadingLevel,
   selectEntireEditorDocument,
   splitSegmentedTextBlock,
   trackedHeadingAttributes,
@@ -33,11 +35,13 @@ const BlockSegment = Node.create({
       length: { default: 0 },
       sourceType: { default: 'paragraph' },
       level: { default: null },
+      fontFamily: { default: 'Times New Roman' },
       fontSize: { default: '12pt' },
       lineHeight: { default: '2.0' },
       textIndent: { default: '0.5in' },
       formatOverrides: { default: [] },
       headingRestoreAttrs: { default: null },
+      preserveHeadingStyle: { default: false },
     };
   },
   renderHTML({ HTMLAttributes }) {
@@ -45,11 +49,28 @@ const BlockSegment = Node.create({
   },
 });
 
+const AcademicHeading = Heading.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      lineHeight: { default: '2.0' },
+      textIndent: { default: '0.5in' },
+      textAlign: { default: 'left' },
+      fontFamily: { default: 'Times New Roman' },
+      fontSize: { default: '12pt' },
+      formatOverrides: { default: [] },
+      outlineLevel: { default: '1' },
+      preserveHeadingStyle: { default: false },
+    };
+  },
+});
+
 function createEditor(content) {
   return new Editor({
     extensions: [
-      StarterKit.configure({ paragraph: false, blockquote: false }),
+      StarterKit.configure({ paragraph: false, heading: false, blockquote: false }),
       Paragraph,
+      AcademicHeading,
       BlockSegment,
       Blockquote,
     ],
@@ -97,9 +118,10 @@ test('Heading 1 uses the same tracked style and metadata as imported headings', 
     {
       sourceType: 'heading',
       level: 1,
-      fontSize: '18pt',
-      lineHeight: '1.15',
+      fontSize: '24pt',
+      lineHeight: '1.25',
       textIndent: '0in',
+      preserveHeadingStyle: false,
       formatOverrides: ['fontFamily', 'textIndent', 'lineHeight', 'fontSize'],
       headingRestoreAttrs: {
         sourceType: 'paragraph',
@@ -111,6 +133,89 @@ test('Heading 1 uses the same tracked style and metadata as imported headings', 
       },
     },
   );
+});
+
+test('loading an imported heading preserves its original tracked style', () => {
+  const attrs = trackedHeadingAttributes(1, {
+    sourceType: 'heading',
+    level: 1,
+    fontSize: '12pt',
+    lineHeight: '2',
+    textIndent: '0in',
+    preserveHeadingStyle: true,
+    formatOverrides: ['fontFamily', 'fontSize', 'lineHeight', 'textIndent'],
+  });
+
+  assert.equal(attrs.fontSize, '12pt');
+  assert.equal(attrs.lineHeight, '2');
+  assert.equal(attrs.textIndent, '0in');
+  assert.equal(attrs.preserveHeadingStyle, true);
+});
+
+test('reselecting the active heading level reapplies the current template style', () => {
+  const editor = createEditor({
+    type: 'doc',
+    content: [{
+      type: 'heading',
+      attrs: {
+        level: 1,
+        lineHeight: '2',
+        textIndent: '0in',
+        textAlign: 'left',
+        fontFamily: 'Times New Roman',
+        fontSize: '12pt',
+        formatOverrides: ['fontFamily', 'fontSize', 'lineHeight', 'textIndent'],
+        outlineLevel: '1',
+        preserveHeadingStyle: true,
+      },
+      content: [{
+        type: 'blockSegment',
+        attrs: {
+          blockId: 'imported-heading',
+          status: 'processing',
+          sourceType: 'heading',
+          level: 1,
+          fontFamily: 'Times New Roman',
+          fontSize: '12pt',
+          lineHeight: '2',
+          textIndent: '0in',
+          formatOverrides: ['fontFamily', 'fontSize', 'lineHeight', 'textIndent'],
+          preserveHeadingStyle: true,
+        },
+        content: [{ type: 'text', text: 'Introduction' }],
+      }],
+    }],
+  });
+  editor.commands.setTextSelection(2);
+
+  const applied = editor.chain()
+    .setHeading({ level: 1, outlineLevel: '1' })
+    .command(({ tr }) => reapplyTrackedHeadingLevel(tr, 1, {
+      fontFamily: 'Arial',
+      headingStyles: {
+        1: { textAlign: 'center' },
+      },
+    }))
+    .run();
+
+  assert.equal(applied, true);
+  const heading = editor.getJSON().content[0];
+  const segment = heading.content[0];
+  for (const attrs of [heading.attrs, segment.attrs]) {
+    assert.equal(attrs.fontFamily, 'Arial');
+    assert.equal(attrs.fontSize, '24pt');
+    assert.equal(attrs.lineHeight, '1.25');
+    assert.equal(attrs.textIndent, '0in');
+    assert.equal(attrs.preserveHeadingStyle, false);
+  }
+  assert.equal(heading.attrs.textAlign, 'center');
+  assert.deepEqual(
+    heading.attrs.formatOverrides,
+    ['fontSize', 'lineHeight', 'textIndent', 'textAlign'],
+  );
+  assert.deepEqual(segment.attrs.formatOverrides, ['fontSize', 'lineHeight', 'textIndent']);
+
+  editor.destroy();
 });
 
 test('Heading 1 command updates the structural node and tracked style without adding a bold mark', () => {
@@ -150,8 +255,8 @@ test('Heading 1 command updates the structural node and tracked style without ad
   assert.equal(heading.attrs.level, 1);
   assert.equal(segment.attrs.sourceType, 'heading');
   assert.equal(segment.attrs.level, 1);
-  assert.equal(segment.attrs.fontSize, '18pt');
-  assert.equal(segment.attrs.lineHeight, '1.15');
+  assert.equal(segment.attrs.fontSize, '24pt');
+  assert.equal(segment.attrs.lineHeight, '1.25');
   assert.equal(segment.attrs.textIndent, '0in');
   assert.deepEqual(segment.attrs.formatOverrides, ['textIndent', 'lineHeight', 'fontSize']);
   assert.equal(segment.content[0].marks, undefined);
@@ -219,15 +324,15 @@ test('heading and paragraph commands update every tracked block in the affected 
       {
         sourceType: 'heading',
         level: 1,
-        fontSize: '18pt',
-        lineHeight: '1.15',
+        fontSize: '24pt',
+        lineHeight: '1.25',
         textIndent: '0in',
       },
       {
         sourceType: 'heading',
         level: 1,
-        fontSize: '18pt',
-        lineHeight: '1.15',
+        fontSize: '24pt',
+        lineHeight: '1.25',
         textIndent: '0in',
       },
     ],
@@ -309,8 +414,8 @@ test('legacy heading attributes fall back to the active normal text style', () =
     trackedParagraphAttributes({
       sourceType: 'heading',
       level: 1,
-      fontSize: '18pt',
-      lineHeight: '1.15',
+      fontSize: '24pt',
+      lineHeight: '1.25',
       textIndent: '0in',
       formatOverrides: ['fontSize', 'lineHeight', 'textIndent'],
     }, {
@@ -603,6 +708,29 @@ test('converts legacy paragraph and heading blocks into block segments', () => {
   assert.equal(currentParagraph.content[0].attrs.status, 'processed');
 });
 
+test('restores an imported indent override onto the structural paragraph', () => {
+  const normalized = convertLegacyTrackedBlocks({
+    type: 'doc',
+    content: [{
+      type: 'paragraph',
+      attrs: { textIndent: '0.5in' },
+      content: [{
+        type: 'blockSegment',
+        attrs: {
+          blockId: 'imported-block',
+          status: 'unprocessed',
+          textIndent: '0.25in',
+          formatOverrides: ['textIndent'],
+        },
+        content: [{ type: 'text', text: 'Imported paragraph.' }],
+      }],
+    }],
+  });
+
+  assert.equal(normalized.content[0].attrs.textIndent, '0.25in');
+  assert.deepEqual(normalized.content[0].attrs.formatOverrides, ['textIndent']);
+});
+
 test('loading a heading normalizes every existing tracked block to its heading level', () => {
   const normalized = convertLegacyTrackedBlocks({
     type: 'doc',
@@ -617,8 +745,8 @@ test('loading a heading normalizes every existing tracked block to its heading l
             status: 'processing',
             sourceType: 'heading',
             level: 2,
-            fontSize: '16pt',
-            lineHeight: '1.15',
+            fontSize: '18pt',
+            lineHeight: '1.25',
             textIndent: '0in',
           },
           content: [{ type: 'text', text: 'First heading block.' }],
@@ -655,15 +783,15 @@ test('loading a heading normalizes every existing tracked block to its heading l
       {
         sourceType: 'heading',
         level: 2,
-        fontSize: '16pt',
-        lineHeight: '1.15',
+        fontSize: '18pt',
+        lineHeight: '1.25',
         textIndent: '0in',
       },
       {
         sourceType: 'heading',
         level: 2,
-        fontSize: '16pt',
-        lineHeight: '1.15',
+        fontSize: '18pt',
+        lineHeight: '1.25',
         textIndent: '0in',
       },
     ],

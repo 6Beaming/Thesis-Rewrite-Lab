@@ -6,7 +6,7 @@ import { resolveDocumentUpload } from '../../src/services/documentResolver.js';
 import { segmentText } from '../../src/lib/blockSegmentation/index.js';
 import { rejectLanguageIssue } from '../../src/lib/nlp/issueRejections.js';
 import {
-  DEFAULT_CUSTOM_STYLE,
+  customStyleSettingsFromImportedBlocks,
   DEFAULT_UPLOAD_ACADEMIC_STYLE,
 } from '../../src/shared/academicStyleTemplates.js';
 import { getOrCreateUserFromSession, getUserStats } from '../models/users.js';
@@ -495,7 +495,9 @@ router.post('/upload', documentUpload.single('file'), async (req, res) => {
     userId: user.id,
     title: titleFromFilename(req.file.originalname),
     academicStyle,
-    styleSettings: academicStyle === 'Customized' ? DEFAULT_CUSTOM_STYLE : {},
+    styleSettings: academicStyle === 'Customized'
+      ? customStyleSettingsFromImportedBlocks(extracted.blocks)
+      : {},
     textBlocks: extracted.blocks,
     originalFile: req.file.buffer,
     originalFilename: req.file.originalname,

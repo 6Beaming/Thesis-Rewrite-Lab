@@ -25,7 +25,10 @@ import {
   useState,
 } from 'react';
 import { buildAnalysisPhraseDecorations } from '../lib/analysisPhraseDecorations.js';
-import { academicStyleSettings } from '../shared/academicStyleTemplates.js';
+import {
+  academicStyleSettings,
+  DEFAULT_UPLOAD_ACADEMIC_STYLE,
+} from '../shared/academicStyleTemplates.js';
 import {
   countCharacters,
   DEFAULT_SEGMENTATION_POLICY,
@@ -109,12 +112,15 @@ function buildTrackedBlockStyleAttrs(attrs = {}) {
 
 function trackedBlockStyle(HTMLAttributes, { headingLevel = null } = {}) {
   const headingSizes = { 1: '24pt', 2: '18pt', 3: '14pt' };
+  const headingFontSize = headingLevel
+    ? (HTMLAttributes.fontSize || headingSizes[headingLevel])
+    : HTMLAttributes.fontSize;
   return [
     `line-height: ${HTMLAttributes.lineHeight}`,
     `text-indent: ${HTMLAttributes.textIndent}`,
     `text-align: ${HTMLAttributes.textAlign}`,
     `font-family: ${HTMLAttributes.fontFamily}`,
-    `font-size: ${headingLevel ? headingSizes[headingLevel] : HTMLAttributes.fontSize}`,
+    `font-size: ${headingFontSize}`,
   ].join('; ');
 }
 
@@ -133,6 +139,7 @@ function renderTrackedBlock(tag, HTMLAttributes) {
     nlpPipelineVersion: _nlpPipelineVersion,
     nlpCheckedAt: _nlpCheckedAt,
     headingRestoreAttrs: _headingRestoreAttrs,
+    preserveHeadingStyle: _preserveHeadingStyle,
     ...renderedAttributes
   } = HTMLAttributes;
   const style = trackedBlockStyle(renderedAttributes);
@@ -158,6 +165,8 @@ function renderAcademicContainer(tag, HTMLAttributes, options) {
     status: _status,
     length: _length,
     paragraphIndex: _paragraphIndex,
+    formatOverrides: _formatOverrides,
+    preserveHeadingStyle,
     ...containerAttributes
   } = HTMLAttributes;
 
@@ -166,6 +175,7 @@ function renderAcademicContainer(tag, HTMLAttributes, options) {
     {
       ...containerAttributes,
       class: 'document-paragraph',
+      'data-preserve-heading-style': preserveHeadingStyle ? 'true' : 'false',
       style: trackedBlockStyle(HTMLAttributes, options),
     },
     0,
@@ -181,6 +191,7 @@ const AcademicParagraph = Paragraph.extend({
       textAlign: { default: 'left' },
       fontFamily: { default: 'Times New Roman' },
       fontSize: { default: '12pt' },
+      formatOverrides: { default: [] },
       outlineLevel: { default: 'none' },
     };
   },
@@ -198,7 +209,9 @@ const AcademicHeading = Heading.extend({
       textAlign: { default: 'left' },
       fontFamily: { default: 'Times New Roman' },
       fontSize: { default: '12pt' },
+      formatOverrides: { default: [] },
       outlineLevel: { default: '1' },
+      preserveHeadingStyle: { default: false },
     };
   },
   renderHTML({ node, HTMLAttributes }) {
@@ -233,6 +246,7 @@ const BlockSegment = Node.create({
       sourceType: { default: 'paragraph' },
       level: { default: null },
       headingRestoreAttrs: { default: null },
+      preserveHeadingStyle: { default: false },
       length: { default: 0 },
       nlpStatus: { default: 'unknown' },
       nlpReasonCodes: { default: [] },
@@ -490,6 +504,7 @@ function normalizeStyleSettings(styleSettings = {}) {
     lineHeight: styleSettings.spacing || styleSettings.lineHeight || '2.0',
     textIndent: styleSettings.indentation || styleSettings.textIndent || '0.5in',
     fontSize: styleSettings.fontSize || '12pt',
+    headingStyles: styleSettings.headingStyles ?? null,
     pageNumber: styleSettings.pageNumber || 'Bottom center',
     referenceList: styleSettings.referenceList ?? null,
     bibliography: styleSettings.bibliography ?? null,
@@ -2533,7 +2548,7 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   return (
     <div
       className="document-editor"
-      data-academic-style={document?.academic_style || 'APA'}
+      data-academic-style={document?.academic_style || DEFAULT_UPLOAD_ACADEMIC_STYLE}
       data-block-visuals={blockVisualsVisible ? 'on' : 'off'}
     >
       <EditorToolbar

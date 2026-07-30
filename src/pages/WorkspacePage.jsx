@@ -7,6 +7,7 @@ import AcademicStylePanel, {
 } from '../components/AcademicStylePanel.jsx';
 import {
   academicStyleSettings,
+  customStyleSettingsFromImportedBlocks,
   DEFAULT_UPLOAD_ACADEMIC_STYLE,
 } from '../shared/academicStyleTemplates.js';
 import { resolveAutosaveDocs } from '../shared/writingPreferences.js';
@@ -1424,9 +1425,15 @@ export default function WorkspacePage() {
     }
 
     const nextStyleName = hydratedDocument?.academic_style || 'APA';
+    const storedStyleSettings = nextStyleName === 'Customized'
+      ? customStyleSettingsFromImportedBlocks(
+        hydratedDocument?.blocks,
+        hydratedDocument?.style_settings,
+      )
+      : hydratedDocument?.style_settings;
     const nextStyleSettings = academicStyleSettings(
       nextStyleName,
-      hydratedDocument?.style_settings,
+      storedStyleSettings,
     );
     const nextDraft = draftFromDocument(hydratedDocument, nextStyleSettings);
 
@@ -3642,7 +3649,7 @@ export default function WorkspacePage() {
               setShowPureModePrompt(false);
             }}
           >
-            Our owl friend is going to step aside so you have extra room to write. Don't worry, he'll be waiting right here whenever you want him back!
+            Our owl friend is going to step aside so you have extra room to read. Don't worry, he'll be waiting right here whenever you want him back!
           </ConfirmModal>
         ) : null}
         {workspaceSaveOverlay || workspaceUploading || templateSwitchBusy

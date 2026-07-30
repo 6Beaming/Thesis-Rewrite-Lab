@@ -13,6 +13,7 @@ import {
   UnderlineType,
 } from 'docx';
 import {
+  academicHeadingStyle,
   academicParagraphLayout,
   academicStyleSettings,
 } from '../../src/shared/academicStyleTemplates.js';
@@ -20,6 +21,7 @@ import {
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const A4_PAGE_WIDTH_TWIPS = 11906;
 const A4_PAGE_HEIGHT_TWIPS = 16838;
+const ACADEMIC_TEMPLATE_NAMES = new Set(['APA', 'MLA', 'Chicago']);
 const DEFAULT_STYLE = Object.freeze({
   font: 'Times New Roman',
   fontSize: '12pt',
@@ -111,9 +113,17 @@ function styleSettingsForDocument(document) {
 
 function runDefaultsFromAttrs(attrs = {}, inherited = {}) {
   return {
-    font: attrs.fontFamily || attrs.font || inherited.font || DEFAULT_STYLE.font,
-    size: attrs.fontSize || inherited.size || DEFAULT_STYLE.fontSize,
+    font: inherited.lockFont
+      ? inherited.font
+      : (attrs.fontFamily || attrs.font || inherited.font || DEFAULT_STYLE.font),
+    size: inherited.lockSize
+      ? inherited.size
+      : (attrs.fontSize || inherited.size || DEFAULT_STYLE.fontSize),
     color: normalizeHexColor(attrs.color) || normalizeHexColor(inherited.color),
+    bold: inherited.bold,
+    italics: inherited.italics,
+    lockFont: inherited.lockFont,
+    lockSize: inherited.lockSize,
   };
 }
 
@@ -124,13 +134,13 @@ function textRunFromNode(node, defaults) {
   const highlight = normalizeHexColor(marks.get('highlight')?.color);
   const options = {
     text: String(node.text ?? ''),
-    bold: marks.has('bold'),
-    italics: marks.has('italic'),
+    bold: defaults.bold ?? marks.has('bold'),
+    italics: defaults.italics ?? marks.has('italic'),
     strike: marks.has('strike'),
-    font: marks.has('code')
-      ? 'Courier New'
-      : (textStyle.fontFamily || defaults.font),
-    size: halfPoints(textStyle.fontSize || defaults.size),
+    font: defaults.lockFont
+      ? defaults.font
+      : (marks.has('code') ? 'Courier New' : (textStyle.fontFamily || defaults.font)),
+    size: halfPoints(defaults.lockSize ? defaults.size : (textStyle.fontSize || defaults.size)),
   };
 
   if (marks.has('underline')) {
@@ -189,6 +199,13 @@ function paragraphOptions(node, context, marker = null) {
   };
   const level = Math.min(8, Math.max(0, finiteNumber(marker?.level, 0)));
   const heading = headingLevel(node);
+  const headingStyle = heading
+    ? academicHeadingStyle({
+      academicStyle: context.academicStyle,
+      level: node.attrs?.level,
+      styleSettings: context.style,
+    })
+    : null;
   const layout = academicParagraphLayout({
     academicStyle: context.academicStyle,
     styleSettings: context.style,
@@ -197,13 +214,25 @@ function paragraphOptions(node, context, marker = null) {
     isListItem: Boolean(marker),
     blockquoteDepth: context.blockquoteDepth,
   });
-  const runDefaults = runDefaultsFromAttrs(attrs);
+  const runDefaults = runDefaultsFromAttrs(headingStyle
+    ? {
+      ...attrs,
+      fontFamily: headingStyle.fontFamily,
+      fontSize: headingStyle.fontSize,
+    }
+    : attrs);
+  if (headingStyle) {
+    runDefaults.bold = headingStyle.fontWeight === 'bold';
+    runDefaults.italics = headingStyle.fontStyle === 'italic';
+    runDefaults.lockFont = true;
+    runDefaults.lockSize = true;
+  }
   if (heading && !runDefaults.color) {
     runDefaults.color = '000000';
   }
   const options = {
     children: inlineRuns(node, runDefaults),
-    alignment: paragraphAlignment(attrs.textAlign),
+    alignment: paragraphAlignment(headingStyle?.textAlign || attrs.textAlign),
     spacing: {
       ...paragraphSpacing(layout.lineHeight || attrs.lineHeight || attrs.spacing),
       after: lengthToTwips(layout.entrySpacingAfter),
@@ -223,7 +252,10 @@ function paragraphOptions(node, context, marker = null) {
 
   const indent = {};
   if (!heading && !marker) {
-    indent.firstLine = lengthToTwips(layout.firstLineIndent);
+    const firstLineIndent = ACADEMIC_TEMPLATE_NAMES.has(context.academicStyle)
+      ? layout.firstLineIndent
+      : (attrs.textIndent || layout.firstLineIndent);
+    indent.firstLine = lengthToTwips(firstLineIndent);
   }
   if (lengthToTwips(layout.leftIndent) > 0) {
     indent.left = lengthToTwips(layout.leftIndent);

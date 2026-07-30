@@ -113,6 +113,24 @@ test('preserves resolved headings and source-format overrides in editor JSON', (
   assert.equal(content.content[1].attrs.outlineLevel, 'none');
 });
 
+test('copies imported indentation overrides onto the structural paragraph', () => {
+  const records = createBlockRecords([{
+    text: 'Imported paragraph.',
+    attrs: {
+      paragraphIndex: 0,
+      sourceType: 'paragraph',
+      textIndent: '0.25in',
+      formatOverrides: ['textIndent'],
+    },
+  }]);
+  const content = createContentJson(records);
+  const paragraph = content.content[0];
+
+  assert.equal(paragraph.attrs.textIndent, '0.25in');
+  assert.deepEqual(paragraph.attrs.formatOverrides, ['textIndent']);
+  assert.equal(paragraph.content[0].attrs.textIndent, '0.25in');
+});
+
 test('full snapshot replacement clears AI state for every Skipped block', async () => {
   const documentId = randomUUID();
   const skippedBlockId = randomUUID();

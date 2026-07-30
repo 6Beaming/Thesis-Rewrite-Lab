@@ -1250,16 +1250,90 @@
   border-radius: 0 10px 10px 0;
 }
 
-.document-editor[data-academic-style="APA"] .document-editor-surface h1.document-paragraph,
-.document-editor[data-academic-style="APA"] .document-editor-surface h2.document-paragraph,
-.document-editor[data-academic-style="APA"] .document-editor-surface h3.document-paragraph,
-.document-editor[data-academic-style="MLA"] .document-editor-surface h1.document-paragraph,
-.document-editor[data-academic-style="MLA"] .document-editor-surface h2.document-paragraph,
-.document-editor[data-academic-style="MLA"] .document-editor-surface h3.document-paragraph,
-.document-editor[data-academic-style="Chicago"] .document-editor-surface h1.document-paragraph,
-.document-editor[data-academic-style="Chicago"] .document-editor-surface h2.document-paragraph,
+.document-editor[data-academic-style="APA"] .document-editor-surface h1.document-paragraph {
+  --academic-heading-align: center;
+  --academic-heading-weight: 700;
+  --academic-heading-style: normal;
+}
+
+.document-editor[data-academic-style="APA"] .document-editor-surface h2.document-paragraph {
+  --academic-heading-align: left;
+  --academic-heading-weight: 700;
+  --academic-heading-style: normal;
+}
+
+.document-editor[data-academic-style="APA"] .document-editor-surface h3.document-paragraph {
+  --academic-heading-align: left;
+  --academic-heading-weight: 700;
+  --academic-heading-style: italic;
+}
+
+.document-editor[data-academic-style="MLA"] .document-editor-surface h1.document-paragraph {
+  --academic-heading-align: left;
+  --academic-heading-weight: 700;
+  --academic-heading-style: normal;
+}
+
+.document-editor[data-academic-style="MLA"] .document-editor-surface h2.document-paragraph {
+  --academic-heading-align: left;
+  --academic-heading-weight: 400;
+  --academic-heading-style: italic;
+}
+
+.document-editor[data-academic-style="MLA"] .document-editor-surface h3.document-paragraph {
+  --academic-heading-align: center;
+  --academic-heading-weight: 700;
+  --academic-heading-style: normal;
+}
+
+.document-editor[data-academic-style="Chicago"] .document-editor-surface h1.document-paragraph {
+  --academic-heading-align: center;
+  --academic-heading-weight: 700;
+  --academic-heading-style: normal;
+}
+
+.document-editor[data-academic-style="Chicago"] .document-editor-surface h2.document-paragraph {
+  --academic-heading-align: center;
+  --academic-heading-weight: 400;
+  --academic-heading-style: normal;
+}
+
 .document-editor[data-academic-style="Chicago"] .document-editor-surface h3.document-paragraph {
+  --academic-heading-align: left;
+  --academic-heading-weight: 700;
+  --academic-heading-style: normal;
+}
+
+.document-editor:is(
+  [data-academic-style="APA"],
+  [data-academic-style="MLA"],
+  [data-academic-style="Chicago"]
+) .document-editor-surface :is(
+  h1.document-paragraph,
+  h2.document-paragraph,
+  h3.document-paragraph
+) {
+  text-align: var(--academic-heading-align) !important;
+  font-family: var(--paper-font-family, 'Times New Roman') !important;
+  font-size: var(--paper-font-size, 12pt) !important;
+  font-weight: var(--academic-heading-weight) !important;
+  font-style: var(--academic-heading-style) !important;
   line-height: var(--paper-line-height, 2) !important;
+}
+
+.document-editor:is(
+  [data-academic-style="APA"],
+  [data-academic-style="MLA"],
+  [data-academic-style="Chicago"]
+) .document-editor-surface :is(
+  h1.document-paragraph,
+  h2.document-paragraph,
+  h3.document-paragraph
+) * {
+  font-family: var(--paper-font-family, 'Times New Roman') !important;
+  font-size: var(--paper-font-size, 12pt) !important;
+  font-weight: var(--academic-heading-weight) !important;
+  font-style: var(--academic-heading-style) !important;
 }
 
 .document-editor:is(
@@ -1745,9 +1819,23 @@
 .document-editor-surface h1.document-paragraph,
 .document-editor-surface h2.document-paragraph,
 .document-editor-surface h3.document-paragraph {
-  font-weight: 750;
   text-indent: 0 !important;
-  line-height: 1.25 !important;
+}
+
+.document-editor-surface :is(
+  h1.document-paragraph,
+  h2.document-paragraph,
+  h3.document-paragraph
+)[data-preserve-heading-style="false"] {
+  font-weight: 750;
+}
+
+.document-editor-surface :is(
+  h1.document-paragraph,
+  h2.document-paragraph,
+  h3.document-paragraph
+)[data-preserve-heading-style="true"] {
+  font-weight: 400;
 }
 
 .document-editor-surface h1.document-paragraph {

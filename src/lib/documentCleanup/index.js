@@ -254,11 +254,13 @@ export function cleanExtractedBlocks(inputBlocks, { integrityMode = 'strict' } =
           : block.sourceType === 'heading'
             ? 'heading'
             : 'paragraph';
+    const headingLevel = Number(block.attrs?.level) || 1;
+    const headingFontSizes = { 1: '24pt', 2: '18pt', 3: '14pt' };
     const structuralStyle = sourceType === 'heading'
       ? {
-        textIndent: '0in',
-        lineHeight: '1.15',
-        fontSize: '18pt',
+        textIndent: block.attrs?.textIndent ?? '0in',
+        lineHeight: block.attrs?.lineHeight ?? '1.25',
+        fontSize: block.attrs?.fontSize ?? headingFontSizes[headingLevel] ?? '12pt',
         formatOverrides: ['textIndent', 'lineHeight', 'fontSize'],
       }
       : ['figureCaption', 'imageDescription'].includes(sourceType)
@@ -269,6 +271,10 @@ export function cleanExtractedBlocks(inputBlocks, { integrityMode = 'strict' } =
           formatOverrides: ['textIndent', 'lineHeight', 'fontSize'],
         }
         : {};
+    const formatOverrides = [
+      ...(block.attrs?.formatOverrides ?? []),
+      ...(structuralStyle.formatOverrides ?? []),
+    ];
     return {
       ...block,
       sourceType,
@@ -276,8 +282,11 @@ export function cleanExtractedBlocks(inputBlocks, { integrityMode = 'strict' } =
         ...(block.attrs ?? {}),
         sourceType,
         ...structuralStyle,
+        ...(formatOverrides.length
+          ? { formatOverrides: [...new Set(formatOverrides)] }
+          : {}),
         ...(sourceType === 'heading'
-          ? { level: Number(block.attrs?.level) || 1 }
+          ? { level: headingLevel }
           : {}),
       },
     };

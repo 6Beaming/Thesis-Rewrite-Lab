@@ -14,7 +14,7 @@ import {
 } from '../lib/editorFormattingCommands.js';
 import {
   isolateSelectionInTransaction,
-  trackedHeadingAttributes,
+  reapplyTrackedHeadingLevel,
   trackedParagraphAttributes,
   toggleBlockquoteInSelectedTextBlocks,
   updateTrackedBlocksInSelectedTextBlocks,
@@ -571,13 +571,11 @@ export default function EditorToolbar({
             const level = Number(value);
             return chain
               .setHeading({ level, outlineLevel: value })
-              .command(({ tr }) => {
-                updateTrackedBlocksInSelectedTextBlocks(
-                  tr,
-                  (attrs) => trackedHeadingAttributes(level, attrs),
-                );
-                return true;
-              });
+              .command(({ tr }) => reapplyTrackedHeadingLevel(
+                tr,
+                level,
+                normalTextStyle,
+              ));
           }, { restoreSelection: false });
         }}
         ariaLabel="Paragraph or heading level"

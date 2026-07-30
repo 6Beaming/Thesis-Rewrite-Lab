@@ -307,7 +307,7 @@ export default function CitationReviewPanel({
       <header className="citation-review-panel__heading">
         <div>
           <h3 id="citation-review-heading">Citation review</h3>
-          <p>Compare citations in your writing with the sources listed at the end. Nothing changes without your approval.</p>
+          <p>Compare citations in your writing with the listed sources. Nothing changes without your approval.</p>
         </div>
         <button className="citation-review-button citation-review-button--primary" type="button" onClick={runCheck} disabled={busy || citationReviewDisabled}>
           {citationReviewDisabled ? 'Choose a citation style' : busy ? 'Checking…' : result ? 'Check again' : 'Check citations'}

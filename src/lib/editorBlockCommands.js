@@ -6,10 +6,17 @@ import { findWrapping, liftTarget } from '@tiptap/pm/transform';
 const STRUCTURAL_TEXT_BLOCK_TYPES = new Set(['paragraph', 'heading']);
 const BLOCK_STATUSES = new Set(['unprocessed', 'processing', 'processed', 'skipped']);
 const UNFINISHED_BLOCK_STATUSES = new Set(['unprocessed', 'processing']);
+const STRUCTURAL_FORMAT_PROPERTIES = [
+  'lineHeight',
+  'textIndent',
+  'textAlign',
+  'fontFamily',
+  'fontSize',
+];
 const TRACKED_HEADING_STYLES = {
-  1: { fontSize: '18pt', lineHeight: '1.15', textIndent: '0in' },
-  2: { fontSize: '16pt', lineHeight: '1.15', textIndent: '0in' },
-  3: { fontSize: '14pt', lineHeight: '1.15', textIndent: '0in' },
+  1: { fontSize: '24pt', lineHeight: '1.25', textIndent: '0in' },
+  2: { fontSize: '18pt', lineHeight: '1.25', textIndent: '0in' },
+  3: { fontSize: '14pt', lineHeight: '1.25', textIndent: '0in' },
 };
 const TRACKED_HEADING_FORMAT_OVERRIDES = ['textIndent', 'lineHeight', 'fontSize'];
 
@@ -19,18 +26,39 @@ export function selectEntireEditorDocument(state, dispatch) {
   return true;
 }
 
-export function trackedHeadingAttributes(level, currentAttrs = {}) {
+export function trackedHeadingAttributes(
+  level,
+  currentAttrs = {},
+  { forceStyle = false, fontFamily = null } = {},
+) {
   const normalizedLevel = Math.min(3, Math.max(1, Number(level) || 1));
+  const preserveHeadingStyle = (
+    !forceStyle
+    && currentAttrs.preserveHeadingStyle === true
+    && currentAttrs.sourceType === 'heading'
+    && Number(currentAttrs.level) === normalizedLevel
+  );
   const overrideValue = currentAttrs.formatOverrides;
   const formatOverrides = new Set(Array.isArray(overrideValue)
     ? overrideValue
     : Object.keys(overrideValue ?? {}));
   TRACKED_HEADING_FORMAT_OVERRIDES.forEach((property) => formatOverrides.add(property));
+  if (forceStyle && fontFamily) formatOverrides.delete('fontFamily');
 
   return {
     sourceType: 'heading',
     level: normalizedLevel,
-    ...TRACKED_HEADING_STYLES[normalizedLevel],
+    ...(preserveHeadingStyle
+      ? {
+        fontSize: currentAttrs.fontSize,
+        lineHeight: currentAttrs.lineHeight,
+        textIndent: currentAttrs.textIndent,
+      }
+      : {
+        ...TRACKED_HEADING_STYLES[normalizedLevel],
+        ...(fontFamily ? { fontFamily } : {}),
+      }),
+    preserveHeadingStyle,
     formatOverrides: [...formatOverrides],
     headingRestoreAttrs: currentAttrs.headingRestoreAttrs ?? {
       sourceType: currentAttrs.sourceType ?? 'paragraph',
@@ -43,6 +71,66 @@ export function trackedHeadingAttributes(level, currentAttrs = {}) {
         : Object.keys(overrideValue ?? {}),
     },
   };
+}
+
+export function reapplyTrackedHeadingLevel(transaction, level, styleAttrs = {}) {
+  if (!transaction) return false;
+
+  const normalizedLevel = Math.min(3, Math.max(1, Number(level) || 1));
+  let changed = false;
+
+  selectedStructuralPositions(transaction.doc, transaction.selection).forEach((structuralPos) => {
+    const structuralNode = transaction.doc.nodeAt(structuralPos);
+    if (structuralNode?.type?.name !== 'heading') return;
+
+    let representativeAttrs = null;
+    structuralNode.descendants((node, offset) => {
+      if (node.type.name !== 'blockSegment') return;
+
+      const nextAttrs = trackedHeadingAttributes(normalizedLevel, node.attrs, {
+        forceStyle: true,
+        fontFamily: styleAttrs.fontFamily,
+      });
+      const pos = structuralPos + offset + 1;
+      transaction.setNodeMarkup(pos, undefined, {
+        ...node.attrs,
+        ...nextAttrs,
+      });
+      representativeAttrs ??= { ...node.attrs, ...nextAttrs };
+      changed = true;
+    });
+
+    if (!representativeAttrs) return;
+    const structuralOverrides = new Set(structuralNode.attrs.formatOverrides ?? []);
+    const segmentOverrides = new Set(representativeAttrs.formatOverrides ?? []);
+    const formatOverrides = new Set([...structuralOverrides, ...segmentOverrides]);
+    formatOverrides.delete('fontFamily');
+    const templateTextAlign = styleAttrs.headingStyles?.[normalizedLevel]?.textAlign;
+    const preservedTextAlign = (
+      (structuralOverrides.has('textAlign') && structuralNode.attrs.textAlign)
+      || (segmentOverrides.has('textAlign') && representativeAttrs.textAlign)
+      || templateTextAlign
+      || structuralNode.attrs.textAlign
+      || representativeAttrs.textAlign
+      || 'left'
+    );
+    if (templateTextAlign) formatOverrides.add('textAlign');
+    transaction.setNodeMarkup(structuralPos, undefined, {
+      ...structuralNode.attrs,
+      level: normalizedLevel,
+      outlineLevel: String(normalizedLevel),
+      lineHeight: representativeAttrs.lineHeight,
+      textIndent: representativeAttrs.textIndent,
+      textAlign: preservedTextAlign,
+      fontFamily: representativeAttrs.fontFamily,
+      fontSize: representativeAttrs.fontSize,
+      formatOverrides: [...formatOverrides],
+      preserveHeadingStyle: false,
+    });
+    changed = true;
+  });
+
+  return changed;
 }
 
 export function trackedParagraphAttributes(currentAttrs = {}, fallbackAttrs = {}) {
@@ -236,10 +324,36 @@ export function convertLegacyTrackedBlocks(
             content,
           })]
           : content);
+      const firstTrackedSegment = normalizedContent.find(
+        (child) => child?.type === 'blockSegment',
+      );
+      const segmentOverrideValue = firstTrackedSegment?.attrs?.formatOverrides;
+      const segmentOverrides = new Set(Array.isArray(segmentOverrideValue)
+        ? segmentOverrideValue
+        : Object.keys(segmentOverrideValue ?? {}));
+      const containerAttrs = structuralContainerAttrs(node.attrs);
+      const containerOverrideValue = containerAttrs.formatOverrides;
+      const formatOverrides = new Set(Array.isArray(containerOverrideValue)
+        ? containerOverrideValue
+        : Object.keys(containerOverrideValue ?? {}));
+
+      segmentOverrides.forEach((property) => formatOverrides.add(property));
+      STRUCTURAL_FORMAT_PROPERTIES.forEach((property) => {
+        if (
+          segmentOverrides.has(property)
+          && firstTrackedSegment?.attrs?.[property] != null
+        ) {
+          containerAttrs[property] = firstTrackedSegment.attrs[property];
+        }
+      });
+      containerAttrs.formatOverrides = [...formatOverrides];
+      if (firstTrackedSegment?.attrs?.preserveHeadingStyle === true) {
+        containerAttrs.preserveHeadingStyle = true;
+      }
 
       return {
         ...node,
-        attrs: structuralContainerAttrs(node.attrs),
+        attrs: containerAttrs,
         content: normalizedContent,
       };
     }

@@ -1,5 +1,7 @@
 import path from 'node:path';
 import mammoth from 'mammoth';
+import mammothOfficeXmlReader from 'mammoth/lib/docx/office-xml-reader.js';
+import mammothUnzip from 'mammoth/lib/unzip.js';
 import { parseFragment } from 'parse5';
 import { cleanExtractedBlocks } from '../lib/documentCleanup/index.js';
 
@@ -14,6 +16,30 @@ const MARK_TAGS = new Map([
   ['u', 'underline'],
   ['code', 'code'],
 ]);
+
+const DOCX_ALIGNMENT_MAP = new Map([
+  ['left', 'left'],
+  ['start', 'left'],
+  ['center', 'center'],
+  ['right', 'right'],
+  ['end', 'right'],
+  ['both', 'justify'],
+  ['justify', 'justify'],
+  ['distribute', 'justify'],
+  ['thaidistribute', 'justify'],
+]);
+
+const EMPTY_DOCX_STYLES = {
+  defaultParagraphStyleId: null,
+  defaultParagraphStyle: {
+    alignment: null,
+    indent: {},
+    lineHeight: null,
+  },
+  defaultRunStyle: {},
+  paragraphStyles: new Map(),
+  resolvedParagraphStyles: new Map(),
+};
 
 function resolverError(message, statusCode = 400) {
   const error = new Error(message);
@@ -189,6 +215,292 @@ function attrsForTag(tagName) {
   return {};
 }
 
+function attributeValue(node, name) {
+  return node.attrs?.find((attribute) => attribute.name === name)?.value ?? null;
+}
+
+function mergeFormatAttrs(baseAttrs, formatAttrs) {
+  if (!formatAttrs) return baseAttrs;
+  const formatOverrides = [
+    ...(baseAttrs.formatOverrides ?? []),
+    ...(formatAttrs.formatOverrides ?? []),
+  ];
+  return {
+    ...baseAttrs,
+    ...formatAttrs,
+    ...(formatOverrides.length
+      ? { formatOverrides: [...new Set(formatOverrides)] }
+      : {}),
+  };
+}
+
+function attrsForHtmlBlock(tagName, node, docxParagraphFormats) {
+  const baseAttrs = attrsForTag(tagName);
+  const formatIndex = Number.parseInt(attributeValue(node, 'data-docx-paragraph'), 10);
+  if (!Number.isInteger(formatIndex)) return baseAttrs;
+  return mergeFormatAttrs(baseAttrs, docxParagraphFormats[formatIndex]);
+}
+
+function docxAlignment(value) {
+  return DOCX_ALIGNMENT_MAP.get(String(value ?? '').toLowerCase()) ?? null;
+}
+
+function docxTwipsToInches(value) {
+  if (value == null || String(value).trim() === '') return null;
+  const twips = Number(value);
+  if (!Number.isFinite(twips)) return null;
+  const inches = twips / 1440;
+  const supportedIndents = [0, 0.25, 0.5];
+  const roundedIndent = supportedIndents.find(
+    (indent) => inches <= indent + Number.EPSILON,
+  ) ?? supportedIndents.at(-1);
+  return `${roundedIndent}in`;
+}
+
+function docxStyleIndent(element) {
+  const attributes = element.firstOrEmpty('w:ind').attributes;
+  return {
+    start: attributes['w:start'] ?? attributes['w:left'] ?? null,
+    end: attributes['w:end'] ?? attributes['w:right'] ?? null,
+    firstLine: attributes['w:firstLine'] ?? null,
+    hanging: attributes['w:hanging'] ?? null,
+  };
+}
+
+function docxStyleLineHeight(element) {
+  const attributes = element.firstOrEmpty('w:spacing').attributes;
+  const line = Number(attributes['w:line']);
+  if (!Number.isFinite(line) || line <= 0) return null;
+  if ((attributes['w:lineRule'] ?? 'auto') !== 'auto') return null;
+  return String(Math.round((line / 240) * 100) / 100);
+}
+
+function docxBooleanProperty(element, propertyName) {
+  const property = element.children?.find((child) => child.name === propertyName);
+  if (!property) return null;
+  return !['0', 'false', 'off', 'none'].includes(
+    String(property.attributes?.['w:val'] ?? '1').toLowerCase(),
+  );
+}
+
+function docxRunStyle(element) {
+  const fontAttributes = element.firstOrEmpty('w:rFonts').attributes;
+  const halfPointSize = Number(element.firstOrEmpty('w:sz').attributes['w:val']);
+  return {
+    fontFamily: (
+      fontAttributes['w:ascii']
+      ?? fontAttributes['w:hAnsi']
+      ?? fontAttributes['w:eastAsia']
+      ?? fontAttributes['w:cs']
+      ?? null
+    ),
+    fontSize: Number.isFinite(halfPointSize) && halfPointSize > 0
+      ? `${halfPointSize / 2}pt`
+      : null,
+    bold: docxBooleanProperty(element, 'w:b'),
+    italic: docxBooleanProperty(element, 'w:i'),
+    underline: docxBooleanProperty(element, 'w:u'),
+    strike: docxBooleanProperty(element, 'w:strike'),
+  };
+}
+
+function mergeDocxRunStyles(inherited = {}, current = {}) {
+  const merged = { ...inherited };
+  for (const [key, value] of Object.entries(current)) {
+    if (value != null) merged[key] = value;
+  }
+  return merged;
+}
+
+function docxParagraphStyle(element) {
+  return {
+    alignment: element.firstOrEmpty('w:jc').attributes['w:val'] ?? null,
+    indent: docxStyleIndent(element),
+    lineHeight: docxStyleLineHeight(element),
+  };
+}
+
+async function readDocxParagraphStyles(buffer) {
+  try {
+    const docxFile = await mammothUnzip.openZip({ buffer });
+    const root = await mammothOfficeXmlReader.readXmlFromZipFile(
+      docxFile,
+      'word/styles.xml',
+    );
+    if (!root?.getElementsByTagName) return EMPTY_DOCX_STYLES;
+
+    const paragraphStyles = new Map();
+    let defaultParagraphStyleId = null;
+    const documentDefaults = root.firstOrEmpty('w:docDefaults');
+    const defaultParagraphStyle = docxParagraphStyle(
+      documentDefaults.firstOrEmpty('w:pPrDefault').firstOrEmpty('w:pPr'),
+    );
+    const defaultRunStyle = docxRunStyle(
+      documentDefaults.firstOrEmpty('w:rPrDefault').firstOrEmpty('w:rPr'),
+    );
+    for (const element of root.getElementsByTagName('w:style')) {
+      if (element.attributes['w:type'] !== 'paragraph') continue;
+      const styleId = element.attributes['w:styleId'];
+      if (!styleId || paragraphStyles.has(styleId)) continue;
+      const paragraphProperties = element.firstOrEmpty('w:pPr');
+      paragraphStyles.set(styleId, {
+        basedOn: element.firstOrEmpty('w:basedOn').attributes['w:val'] ?? null,
+        ...docxParagraphStyle(paragraphProperties),
+        runStyle: docxRunStyle(element.firstOrEmpty('w:rPr')),
+      });
+      if (element.attributes['w:default'] === '1') {
+        defaultParagraphStyleId = styleId;
+      }
+    }
+    return {
+      defaultParagraphStyleId,
+      defaultParagraphStyle,
+      defaultRunStyle,
+      paragraphStyles,
+      resolvedParagraphStyles: new Map(),
+    };
+  } catch {
+    return EMPTY_DOCX_STYLES;
+  }
+}
+
+function resolveDocxParagraphStyle(styleId, docxStyles, activeStyleIds = new Set()) {
+  if (!styleId || activeStyleIds.has(styleId)) return null;
+  const cached = docxStyles.resolvedParagraphStyles.get(styleId);
+  if (cached) return cached;
+  const style = docxStyles.paragraphStyles.get(styleId);
+  if (!style) return null;
+
+  const nextActiveStyleIds = new Set(activeStyleIds).add(styleId);
+  const inherited = resolveDocxParagraphStyle(
+    style.basedOn,
+    docxStyles,
+    nextActiveStyleIds,
+  ) ?? {
+    ...docxStyles.defaultParagraphStyle,
+    runStyle: docxStyles.defaultRunStyle,
+  };
+  const indent = { ...(inherited.indent ?? {}) };
+  for (const [key, value] of Object.entries(style.indent)) {
+    if (value != null) indent[key] = value;
+  }
+  const resolved = {
+    alignment: style.alignment ?? inherited.alignment ?? null,
+    indent,
+    lineHeight: style.lineHeight ?? inherited.lineHeight ?? null,
+    runStyle: mergeDocxRunStyles(inherited.runStyle, style.runStyle),
+  };
+  docxStyles.resolvedParagraphStyles.set(styleId, resolved);
+  return resolved;
+}
+
+function docxParagraphFormat(paragraph, docxStyles) {
+  const attrs = {};
+  const formatOverrides = [];
+  const styleId = paragraph.styleId ?? docxStyles.defaultParagraphStyleId;
+  const inheritedStyle = resolveDocxParagraphStyle(styleId, docxStyles) ?? {
+    ...docxStyles.defaultParagraphStyle,
+    runStyle: docxStyles.defaultRunStyle,
+  };
+  const textAlign = docxAlignment(
+    paragraph.alignment ?? inheritedStyle.alignment,
+  );
+  const textIndent = docxTwipsToInches(
+    paragraph.indent?.firstLine ?? inheritedStyle.indent?.firstLine,
+  );
+
+  if (textAlign) {
+    attrs.textAlign = textAlign;
+    formatOverrides.push('textAlign');
+  }
+  if (textIndent) {
+    attrs.textIndent = textIndent;
+    formatOverrides.push('textIndent');
+  }
+  if (inheritedStyle.lineHeight) {
+    attrs.lineHeight = inheritedStyle.lineHeight;
+    formatOverrides.push('lineHeight');
+  }
+  if (inheritedStyle.runStyle?.fontFamily) {
+    attrs.fontFamily = inheritedStyle.runStyle.fontFamily;
+    formatOverrides.push('fontFamily');
+  }
+  if (inheritedStyle.runStyle?.fontSize) {
+    attrs.fontSize = inheritedStyle.runStyle.fontSize;
+    formatOverrides.push('fontSize');
+  }
+  if (docxHeadingLevel(paragraph)) {
+    attrs.preserveHeadingStyle = true;
+  }
+  if (formatOverrides.length) attrs.formatOverrides = formatOverrides;
+  return attrs;
+}
+
+function applyDocxParagraphRunStyle(paragraph, docxStyles) {
+  const styleId = paragraph.styleId ?? docxStyles.defaultParagraphStyleId;
+  const inheritedStyle = resolveDocxParagraphStyle(styleId, docxStyles) ?? {
+    runStyle: docxStyles.defaultRunStyle,
+  };
+  const runStyle = inheritedStyle.runStyle ?? {};
+
+  return {
+    ...paragraph,
+    children: (paragraph.children ?? []).map((child) => {
+      if (child.type !== 'run') return child;
+      return {
+        ...child,
+        isBold: child.isBold || Boolean(runStyle.bold),
+        isItalic: child.isItalic || Boolean(runStyle.italic),
+        isUnderline: child.isUnderline || Boolean(runStyle.underline),
+        isStrikethrough: child.isStrikethrough || Boolean(runStyle.strike),
+        font: child.font || runStyle.fontFamily || null,
+        fontSize: child.fontSize || (
+          Number.parseFloat(runStyle.fontSize) || null
+        ),
+      };
+    }),
+  };
+}
+
+function docxHeadingLevel(paragraph) {
+  for (const value of [paragraph.styleId, paragraph.styleName]) {
+    const match = /^heading\s*([1-6])$/i.exec(String(value ?? '').trim());
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function docxHtmlPath(paragraph, formatIndex) {
+  const marker = `[data-docx-paragraph='${formatIndex}']`;
+  if (paragraph.numbering) {
+    const level = Math.max(0, Math.min(8, Number(paragraph.numbering.level) || 0));
+    const ancestors = Array.from({ length: level }, () => 'ul|ol > li > ').join('');
+    const listTag = paragraph.numbering.isOrdered ? 'ol' : 'ul';
+    return `${ancestors}${listTag} > li${marker}:fresh`;
+  }
+  const headingLevel = docxHeadingLevel(paragraph);
+  return `${headingLevel ? `h${headingLevel}` : 'p'}${marker}:fresh`;
+}
+
+function docxConversionOptions(docxParagraphFormats, docxStyles) {
+  const styleMap = [];
+  let paragraphIndex = 0;
+  return {
+    styleMap,
+    transformDocument: mammoth.transforms.paragraph((paragraph) => {
+      const formatIndex = paragraphIndex;
+      paragraphIndex += 1;
+      docxParagraphFormats.push(docxParagraphFormat(paragraph, docxStyles));
+      const styleId = `CodexImportParagraph${formatIndex}`;
+      styleMap.push(`p.${styleId} => ${docxHtmlPath(paragraph, formatIndex)}`);
+      return {
+        ...applyDocxParagraphRunStyle(paragraph, docxStyles),
+        styleId,
+      };
+    }),
+  };
+}
+
 function sameMarks(left = [], right = []) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -340,7 +652,10 @@ function markBibliographyStructure(blocks) {
   });
 }
 
-export function blocksFromHtml(html, { integrityMode = 'strict' } = {}) {
+export function blocksFromHtml(
+  html,
+  { integrityMode = 'strict', docxParagraphFormats = [] } = {},
+) {
   const fragment = parseFragment(String(html ?? ''));
   const blocks = [];
 
@@ -367,13 +682,16 @@ export function blocksFromHtml(html, { integrityMode = 'strict' } = {}) {
           blocks.push(normalizeNumberedHeading(textBlock(
             emphasizedPrefix.title,
             'heading',
-            { level: 2 },
+            mergeFormatAttrs(
+              attrsForHtmlBlock(tagName, node, docxParagraphFormats),
+              { level: 2 },
+            ),
             emphasizedPrefix.titleContent,
           )));
           blocks.push(textBlock(
             emphasizedPrefix.body,
             'paragraph',
-            {},
+            attrsForHtmlBlock(tagName, node, docxParagraphFormats),
             emphasizedPrefix.bodyContent,
           ));
           continue;
@@ -382,7 +700,7 @@ export function blocksFromHtml(html, { integrityMode = 'strict' } = {}) {
         blocks.push(normalizeNumberedHeading(textBlock(
           text,
           sourceTypeForTag(tagName),
-          attrsForTag(tagName),
+          attrsForHtmlBlock(tagName, node, docxParagraphFormats),
           content,
         )));
       }
@@ -399,8 +717,15 @@ export function blocksFromHtml(html, { integrityMode = 'strict' } = {}) {
 
 export async function extractDocxBlocks(buffer) {
   try {
-    const htmlResult = await mammoth.convertToHtml({ buffer });
-    if (htmlResult.value.trim()) return blocksFromHtml(htmlResult.value);
+    const docxStyles = await readDocxParagraphStyles(buffer);
+    const docxParagraphFormats = [];
+    const htmlResult = await mammoth.convertToHtml(
+      { buffer },
+      docxConversionOptions(docxParagraphFormats, docxStyles),
+    );
+    if (htmlResult.value.trim()) {
+      return blocksFromHtml(htmlResult.value, { docxParagraphFormats });
+    }
     const textResult = await mammoth.extractRawText({ buffer });
     return extractTextBlocks(textResult.value);
   } catch (error) {

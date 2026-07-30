@@ -168,6 +168,8 @@ export function createContentJson(blocks) {
           textAlign: block.attrs.textAlign,
           fontFamily: block.attrs.fontFamily,
           fontSize: block.attrs.fontSize,
+          formatOverrides: block.attrs.formatOverrides,
+          preserveHeadingStyle: block.attrs.preserveHeadingStyle ?? false,
         },
         content: [],
         lastText: '',
