@@ -312,6 +312,39 @@ function mergeDocxRunStyles(inherited = {}, current = {}) {
   return merged;
 }
 
+function docxNodeText(node) {
+  if (node?.type === 'text') return node.value ?? '';
+  return (node?.children ?? []).map(docxNodeText).join('');
+}
+
+function docxParagraphFontSize(paragraph, fallbackFontSize = null) {
+  const fallback = Number.parseFloat(fallbackFontSize);
+  const characterCounts = new Map();
+
+  function visit(node) {
+    if (node?.type === 'run') {
+      const fontSize = Number.parseFloat(node.fontSize) || fallback;
+      const characterCount = Array.from(docxNodeText(node)).length;
+      if (Number.isFinite(fontSize) && fontSize > 0 && characterCount > 0) {
+        characterCounts.set(
+          fontSize,
+          (characterCounts.get(fontSize) ?? 0) + characterCount,
+        );
+      }
+      return;
+    }
+    for (const child of node?.children ?? []) visit(child);
+  }
+
+  visit(paragraph);
+  const dominant = [...characterCounts.entries()].sort(
+    ([leftSize, leftCount], [rightSize, rightCount]) => (
+      rightCount - leftCount || rightSize - leftSize
+    ),
+  )[0]?.[0];
+  return dominant ? `${dominant}pt` : null;
+}
+
 function docxParagraphStyle(element) {
   return {
     alignment: element.firstOrEmpty('w:jc').attributes['w:val'] ?? null,
@@ -408,6 +441,10 @@ function docxParagraphFormat(paragraph, docxStyles) {
   const textIndent = docxTwipsToInches(
     paragraph.indent?.firstLine ?? inheritedStyle.indent?.firstLine,
   );
+  const fontSize = docxParagraphFontSize(
+    paragraph,
+    inheritedStyle.runStyle?.fontSize,
+  );
 
   if (textAlign) {
     attrs.textAlign = textAlign;
@@ -425,8 +462,8 @@ function docxParagraphFormat(paragraph, docxStyles) {
     attrs.fontFamily = inheritedStyle.runStyle.fontFamily;
     formatOverrides.push('fontFamily');
   }
-  if (inheritedStyle.runStyle?.fontSize) {
-    attrs.fontSize = inheritedStyle.runStyle.fontSize;
+  if (fontSize) {
+    attrs.fontSize = fontSize;
     formatOverrides.push('fontSize');
   }
   if (docxHeadingLevel(paragraph)) {

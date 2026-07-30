@@ -256,6 +256,14 @@ export function cleanExtractedBlocks(inputBlocks, { integrityMode = 'strict' } =
             : 'paragraph';
     const headingLevel = Number(block.attrs?.level) || 1;
     const headingFontSizes = { 1: '24pt', 2: '18pt', 3: '14pt' };
+    const preserveHeadingStyle = sourceType === 'heading' && (
+      block.attrs?.preserveHeadingStyle === true
+      || (
+        Boolean(block.attrs?.fontSize)
+        && Array.isArray(block.attrs?.formatOverrides)
+        && block.attrs.formatOverrides.includes('fontSize')
+      )
+    );
     const structuralStyle = sourceType === 'heading'
       ? {
         textIndent: block.attrs?.textIndent ?? '0in',
@@ -286,7 +294,10 @@ export function cleanExtractedBlocks(inputBlocks, { integrityMode = 'strict' } =
           ? { formatOverrides: [...new Set(formatOverrides)] }
           : {}),
         ...(sourceType === 'heading'
-          ? { level: headingLevel }
+          ? {
+            level: headingLevel,
+            preserveHeadingStyle,
+          }
           : {}),
       },
     };
