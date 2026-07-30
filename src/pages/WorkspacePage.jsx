@@ -3632,8 +3632,9 @@ export default function WorkspacePage() {
         ) : null}
         {showPureModePrompt ? (
           <ConfirmModal
-            title="Hide the owl animation?"
-            confirmLabel="Hide owl"
+            title="Give the owl a quick break?"
+            cancelLabel="Stay with me"
+            confirmLabel="See you later, owl!"
             modalClassName="pure-mode-modal"
             onCancel={() => setShowPureModePrompt(false)}
             onConfirm={() => {
@@ -3641,7 +3642,7 @@ export default function WorkspacePage() {
               setShowPureModePrompt(false);
             }}
           >
-            The owl animation can be hidden by turning on Pure mode, which gives the blackboard content the full available height.
+            Our owl friend is going to step aside so you have extra room to write. Don't worry, he'll be waiting right here whenever you want him back!
           </ConfirmModal>
         ) : null}
         {workspaceSaveOverlay || workspaceUploading || templateSwitchBusy

@@ -1,6 +1,7 @@
 export default function ConfirmModal({
   title,
   children,
+  cancelLabel = 'Cancel',
   confirmLabel = 'Confirm',
   alternateLabel = null,
   modalClassName = '',
@@ -19,7 +20,7 @@ export default function ConfirmModal({
         <h2>{title}</h2>
         <p>{children}</p>
         <div className="confirm-actions">
-          <button type="button" onClick={onCancel}>Cancel</button>
+          <button type="button" onClick={onCancel}>{cancelLabel}</button>
           {alternateLabel && onAlternate ? (
             <button type="button" className="primary" onClick={onAlternate}>{alternateLabel}</button>
           ) : null}

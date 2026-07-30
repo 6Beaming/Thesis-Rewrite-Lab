@@ -418,24 +418,6 @@ body {
   z-index: 90;
 }
 
-.subscription-page .subscription-leave-modal {
-  width: min(420px, calc(100vw - 36px));
-  border: 0;
-  border-radius: 18px;
-  background: #fff;
-  padding: 24px;
-  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.22);
-}
-
-.subscription-page .subscription-leave-modal h2 {
-  margin: 0 0 8px;
-}
-
-.subscription-page .subscription-leave-modal p {
-  margin: 1em 0;
-  color: var(--home-muted);
-}
-
 .subscription-page .subscription-leave-modal .confirm-actions {
   flex-wrap: wrap;
 }

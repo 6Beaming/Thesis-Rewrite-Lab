@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
 
 const options = [
   { value: 'most_recent', label: 'Most recent' },
@@ -26,9 +33,12 @@ export function DropdownSelect({
   arrowClassName = 'sort-dropdown-arrow',
   menuRole = 'menu',
   disabled = false,
+  fixedMenu = false,
 }) {
   const [open, setOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState(undefined);
   const menuRef = useRef(null);
+  const floatingMenuRef = useRef(null);
   const selected = useMemo(
     () => dropdownOptions.find((option) => option.value === value) ?? dropdownOptions[0],
     [dropdownOptions, value],
@@ -36,7 +46,10 @@ export function DropdownSelect({
 
   useEffect(() => {
     function closeOnOutsideClick(event) {
-      if (!menuRef.current?.contains(event.target)) {
+      if (
+        !menuRef.current?.contains(event.target)
+        && !floatingMenuRef.current?.contains(event.target)
+      ) {
         setOpen(false);
       }
     }
@@ -50,6 +63,64 @@ export function DropdownSelect({
   useEffect(() => {
     if (disabled) setOpen(false);
   }, [disabled]);
+
+  useLayoutEffect(() => {
+    if (!open || !fixedMenu || !menuRef.current) return undefined;
+
+    function updateMenuPosition() {
+      const rect = menuRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const viewportPadding = 8;
+      const menuWidth = Math.min(190, window.innerWidth - (viewportPadding * 2));
+      const left = Math.max(
+        viewportPadding,
+        Math.min(rect.left, window.innerWidth - menuWidth - viewportPadding),
+      );
+
+      setMenuStyle({
+        position: 'fixed',
+        top: `${rect.bottom + 8}px`,
+        right: 'auto',
+        left: `${left}px`,
+        zIndex: 130,
+        minWidth: `${menuWidth}px`,
+      });
+    }
+
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
+    };
+  }, [fixedMenu, open]);
+
+  const dropdownMenu = open && !disabled ? (
+    <div
+      ref={fixedMenu ? floatingMenuRef : undefined}
+      className={menuClassName}
+      role={menuRole}
+      style={fixedMenu ? menuStyle : undefined}
+    >
+      {dropdownOptions.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          className={option.value === value ? 'is-selected' : ''}
+          onClick={() => {
+            onChange(option.value);
+            setOpen(false);
+          }}
+          role="menuitemradio"
+          aria-checked={option.value === value}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  ) : null;
 
   return (
     <div className={wrapperClassName} ref={menuRef}>
@@ -66,25 +137,11 @@ export function DropdownSelect({
         <span className="dropdown-select-label">{selected.label}</span>
         <DownArrowIcon className={arrowClassName} />
       </button>
-      {open && !disabled ? (
-        <div className={menuClassName} role={menuRole}>
-          {dropdownOptions.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={option.value === value ? 'is-selected' : ''}
-              onClick={() => {
-                onChange(option.value);
-                setOpen(false);
-              }}
-              role="menuitemradio"
-              aria-checked={option.value === value}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      {fixedMenu
+        ? dropdownMenu && menuStyle
+          ? createPortal(dropdownMenu, document.body)
+          : null
+        : dropdownMenu}
     </div>
   );
 }
