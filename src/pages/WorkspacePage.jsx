@@ -20,6 +20,7 @@ import AnalyzingFlipCard from '../components/AnalyzingFlipCard.jsx';
 import NlpAnalysisPanel from '../components/NlpAnalysisPanel.jsx';
 import SemanticProfileControl from '../components/SemanticProfileControl.jsx';
 import CitationReviewPanel from '../components/CitationReviewPanel.jsx';
+import ConfirmModal from '../components/ConfirmModal.jsx';
 import {
   chooseNextUnfinishedBlock,
   convertLegacyTrackedBlocks,
@@ -31,6 +32,7 @@ import {
   aiSavePolicy,
   prepareWorkspaceCitationCheck,
   shouldScheduleWorkspaceAutosave,
+  workspaceSaveVersionMetadata,
   workspaceLeavePolicy,
   WORKSPACE_AUTOSAVE_DELAY_MS,
 } from '../lib/workspaceSavePolicy.js';
@@ -589,6 +591,8 @@ export default function WorkspacePage() {
   const [workspaceDraft, setWorkspaceDraft] = useState(null);
   const [workspaceSidebarOpen, setWorkspaceSidebarOpen] = useState(true);
   const [workspaceMode, setWorkspaceMode] = useState('analyzing');
+  const [pureMode, setPureMode] = useState(true);
+  const [showPureModePrompt, setShowPureModePrompt] = useState(false);
   const [workspaceOwlRequestLoading, setWorkspaceOwlLoading] = useState(false);
   const [workspaceOwlError, setWorkspaceOwlError] = useState(false);
   const [workspaceOwlErrorKey, setWorkspaceOwlErrorKey] = useState(0);
@@ -1711,10 +1715,11 @@ export default function WorkspacePage() {
     setWorkspaceSaving(true);
     setWorkspaceSaveOverlay(!automatic);
     try {
+      const versionMetadata = workspaceSaveVersionMetadata({ automatic });
       const persistedDocument = await persistWorkspaceDocument(
         document,
-        automatic ? 'Autosave' : 'Manual save',
-        { createVersion: !automatic },
+        versionMetadata.versionLabel,
+        { createVersion: versionMetadata.createVersion },
       );
       setWorkspaceNotice(automatic ? 'Autosaved' : 'Saved');
       setShowUnsavedBackPrompt(false);
@@ -3022,7 +3027,6 @@ export default function WorkspacePage() {
                   snapshot={activeBlockNlpSnapshot}
                   checkState={nlpCheckState}
                   error={nlpCheckError}
-                  documentSummary={documentNlpSummary}
                   onRejectIssue={rejectActiveLanguageIssue}
                   rejectingIssueKey={rejectingLanguageIssueKey}
                 />
@@ -3315,6 +3319,7 @@ export default function WorkspacePage() {
                     onChange={handleSemanticProfileChange}
                     busy={nlpRepartitionBusy}
                     status={nlpRepartitionStatus}
+                    documentSummary={documentNlpSummary}
                   />
                 ) : null}
             </>
@@ -3412,6 +3417,7 @@ export default function WorkspacePage() {
                   onChange={handleSemanticProfileChange}
                   busy={nlpRepartitionBusy}
                   status={nlpRepartitionStatus}
+                  documentSummary={documentNlpSummary}
                 />
               ) : null}
             <AcademicStylePanel
@@ -3490,10 +3496,22 @@ export default function WorkspacePage() {
             onInitialScrollRestored={() => {
               pendingEditorScrollRestoreRef.current = null;
             }}
+            pureMode={pureMode}
+            onTogglePureMode={() => {
+              if (pureMode) {
+                setShowPureModePrompt(true);
+              } else {
+                setPureMode(true);
+              }
+            }}
           />
         </section>
 
-        <aside className="workspace-blackboard-panel" aria-label="Owl workspace panel" style={blackboardStyle}>
+        <aside
+          className={`workspace-blackboard-panel${pureMode ? '' : ' is-owl-hidden'}`}
+          aria-label="Owl workspace panel"
+          style={blackboardStyle}
+        >
           <img
             className="blackboard__image"
             src={blackboardUrl}
@@ -3611,6 +3629,20 @@ export default function WorkspacePage() {
               </div>
             </section>
           </div>
+        ) : null}
+        {showPureModePrompt ? (
+          <ConfirmModal
+            title="Hide the owl animation?"
+            confirmLabel="Hide owl"
+            modalClassName="pure-mode-modal"
+            onCancel={() => setShowPureModePrompt(false)}
+            onConfirm={() => {
+              setPureMode(false);
+              setShowPureModePrompt(false);
+            }}
+          >
+            Turning Pure mode off can hide the desktop owl and give the blackboard content the full available height.
+          </ConfirmModal>
         ) : null}
         {workspaceSaveOverlay || workspaceUploading || templateSwitchBusy
           ? <LoadingScreen overlay />

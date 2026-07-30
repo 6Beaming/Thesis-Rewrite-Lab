@@ -25,7 +25,12 @@ const bottomItems = [
   { id: 'credits', label: 'Credits for', icon: 'credits' },
 ];
 
-export default function HomeSidebar({ active, onSelect, open = false }) {
+export default function HomeSidebar({
+  active,
+  onSelect,
+  open = false,
+  supportAttention = false,
+}) {
   return (
     <aside className={`home-sidebar${open ? ' is-open' : ''}`} aria-label="Homepage navigation">
       <nav className="home-sidebar-nav">
@@ -33,7 +38,7 @@ export default function HomeSidebar({ active, onSelect, open = false }) {
           <button
             key={item.id}
             type="button"
-            className={`home-sidebar-item${active === item.id ? ' is-active' : ''}`}
+            className={`home-sidebar-item${active === item.id ? ' is-active' : ''}${item.id === 'support' && supportAttention ? ' needs-attention' : ''}`}
             style={{ textAlign: 'center' }}
             data-home-page={item.id}
             onClick={() => onSelect(item.id)}

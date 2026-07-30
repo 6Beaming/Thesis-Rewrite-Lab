@@ -118,14 +118,24 @@ export function RealtimeProvider({ children }) {
 
   const applyVersion = useCallback((documentId, version) => {
     if (!documentId || !version) return;
-    setState((current) => ({
-      ...current,
-      versionsByDocument: {
-        ...current.versionsByDocument,
-        [documentId]: upsertById(current.versionsByDocument[documentId] ?? [], version)
-          .sort((left, right) => Number(right.version_number) - Number(left.version_number)),
-      },
-    }));
+    setState((current) => {
+      const existingVersions = current.versionsByDocument[documentId] ?? [];
+      const supersededVersions = version.is_current === true
+        ? existingVersions.map((existing) => (
+          existing.is_current === true && existing.id !== version.id
+            ? { ...existing, is_current: false }
+            : existing
+        ))
+        : existingVersions;
+      return {
+        ...current,
+        versionsByDocument: {
+          ...current.versionsByDocument,
+          [documentId]: upsertById(supersededVersions, version)
+            .sort((left, right) => Number(right.version_number) - Number(left.version_number)),
+        },
+      };
+    });
   }, []);
 
   const applySubscription = useCallback((subscription) => {

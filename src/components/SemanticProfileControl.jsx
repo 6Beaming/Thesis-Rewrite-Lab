@@ -11,11 +11,12 @@ export default function SemanticProfileControl({
   onChange,
   busy,
   status,
+  documentSummary,
 }) {
   return (
     <section className="semantic-profile-control" aria-labelledby="semantic-profile-heading">
       <div className="semantic-profile-control__heading">
-        <h2 id="semantic-profile-heading"> <strong>Sentence grouping style</strong></h2>
+        <h2 id="semantic-profile-heading"><strong>Sentence grouping style</strong></h2>
         <p>Choose how closely related sentences should stay together during writing review.</p>
       </div>
       <label className="semantic-profile-control__field">
@@ -31,6 +32,18 @@ export default function SemanticProfileControl({
         />
       </label>
       {status ? <small className="semantic-profile-control__status" role="status">{status}</small> : null}
+      {documentSummary ? (
+        <div className="semantic-profile-control__statistics-group">
+          <strong>Global writing statistics</strong>
+          <section className="semantic-profile-control__statistics" aria-label="Global writing statistics">
+            <p>
+              <strong>{documentSummary.passCount ?? 0} </strong>ready · <strong>{documentSummary.warningCount ?? 0} </strong>with suggestions ·{' '}
+              <strong>{documentSummary.blockedCount ?? 0} </strong>needing changes · <strong>{documentSummary.skippedCount ?? 0} </strong>not needing review ·{' '}
+              <strong>{documentSummary.unknownCount ?? 0} </strong>awaiting review
+            </p>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

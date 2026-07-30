@@ -53,6 +53,7 @@ function ToolIcon({ type, accentColor }) {
       </>
     ),
     eyeOff: <path d="m4 4 16 16M10.6 10.8a2 2 0 0 0 2.6 2.6M9.9 5.2A10.8 10.8 0 0 1 12 5c5 0 8.5 4.4 9 7-.2 1.1-1 2.5-2.2 3.8M6.6 6.6C4.5 8 3.3 10.2 3 12c.5 2.6 4 7 9 7 1.4 0 2.7-.3 3.8-.9" />,
+    sparkles: <path d="m12 3 1.25 3.75L17 8l-3.75 1.25L12 13l-1.25-3.75L7 8l3.75-1.25zM18 14l.75 2.25L21 17l-2.25.75L18 20l-.75-2.25L15 17l2.25-.75zM5.5 12l.6 1.9 1.9.6-1.9.6L5.5 17l-.6-1.9-1.9-.6 1.9-.6z" />,
     plus: <path d="M12 5v14M5 12h14" />,
     eyedropper: <path d="m14.5 5.5 4-4 4 4-4 4M13 7l4 4-8.5 8.5-4.5.5.5-4.5zM4.5 19.5l-2 2" />,
   };
@@ -368,6 +369,8 @@ export default function EditorToolbar({
   normalTextStyle,
   blockVisualsVisible = true,
   onToggleBlockVisuals,
+  pureMode = true,
+  onTogglePureMode,
   onSave,
   onExport,
   saveDisabled = false,
@@ -437,7 +440,111 @@ export default function EditorToolbar({
 
   return (
     <section className="editor-toolbar" aria-label="Document editing toolbar">
-      <div className="editor-toolbar-group editor-toolbar-group--file-history" role="group" aria-label="File and history">
+      <div className="editor-toolbar-row editor-toolbar-row--wide">
+        <div className="editor-toolbar-group editor-toolbar-group--block-visibility" role="group" aria-label="Workspace display">
+          <button
+            type="button"
+            className={`editor-toolbar-button editor-block-visibility-toggle${blockVisualsVisible ? ' is-active' : ''}`}
+            onClick={onToggleBlockVisuals}
+            title={blockVisualsVisible ? 'Hide block highlights and borders' : 'Show block highlights and borders'}
+            aria-label={blockVisualsVisible ? 'Hide block highlights and borders' : 'Show block highlights and borders'}
+            aria-pressed={blockVisualsVisible}
+          >
+            <ToolIcon type={blockVisualsVisible ? 'eye' : 'eyeOff'} />
+            <span className="editor-block-visibility-toggle__label">Blocks</span>
+            <span className="editor-block-visibility-toggle__state" aria-hidden="true">
+              {blockVisualsVisible ? 'On' : 'Off'}
+            </span>
+          </button>
+          <button
+            type="button"
+            className={`editor-toolbar-button editor-block-visibility-toggle editor-pure-mode-toggle${pureMode ? ' is-active' : ''}`}
+            onClick={onTogglePureMode}
+            title={pureMode ? 'Turn Pure mode off' : 'Turn Pure mode on'}
+            aria-label={pureMode ? 'Turn Pure mode off' : 'Turn Pure mode on'}
+            aria-pressed={pureMode}
+          >
+            <ToolIcon type="sparkles" />
+            <span className="editor-block-visibility-toggle__label">Pure mode</span>
+            <span className="editor-block-visibility-toggle__state" aria-hidden="true">
+              {pureMode ? 'On' : 'Off'}
+            </span>
+          </button>
+        </div>
+
+        <div className="editor-toolbar-group editor-toolbar-group--typography" role="group" aria-label="Typography">
+          <DropdownSelect
+            value={currentHeading}
+            options={headingOptions}
+            onChange={(value) => {
+              runToolbarCommand(editor, (chain) => {
+                if (value === 'none') {
+                  return chain
+                    .setParagraph({
+                      outlineLevel: value,
+                      lineHeight: normalTextStyle?.lineHeight,
+                      textIndent: normalTextStyle?.textIndent,
+                      fontFamily: normalTextStyle?.fontFamily,
+                      fontSize: normalTextStyle?.fontSize,
+                    })
+                    .command(({ tr }) => {
+                      const boldMark = tr.doc.type.schema.marks.bold;
+                      updateTrackedBlocksInSelectedTextBlocks(
+                        tr,
+                        (attrs, { node, pos }) => {
+                          if (
+                            boldMark
+                            && attrs.sourceType === 'heading'
+                            && !attrs.headingRestoreAttrs
+                          ) {
+                            tr.removeMark(pos + 1, pos + node.nodeSize - 1, boldMark);
+                          }
+                          return trackedParagraphAttributes(attrs, normalTextStyle);
+                        },
+                      );
+                      return true;
+                    });
+                }
+                const level = Number(value);
+                return chain
+                  .setHeading({ level, outlineLevel: value })
+                  .command(({ tr }) => {
+                    updateTrackedBlocksInSelectedTextBlocks(
+                      tr,
+                      (attrs) => trackedHeadingAttributes(level, attrs),
+                    );
+                    return true;
+                  });
+              }, { restoreSelection: false });
+            }}
+            ariaLabel="Paragraph or heading level"
+            wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--style"
+            triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--wide"
+            menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--wide"
+          />
+          <DropdownSelect
+            value={currentFontFamily}
+            options={fontFamilyOptions}
+            onChange={(value) => runToolbarCommand(editor, (chain) => chain.setFontFamily(value))}
+            ariaLabel="Font family"
+            wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--font"
+            triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--wide"
+            menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--wide"
+          />
+          <DropdownSelect
+            value={currentFontSize}
+            options={fontSizeOptions}
+            onChange={setFontSize}
+            ariaLabel="Font size"
+            wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--size"
+            triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--compact"
+            menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--compact"
+          />
+        </div>
+      </div>
+
+      <div className="editor-toolbar-row editor-toolbar-row--compact">
+        <div className="editor-toolbar-group editor-toolbar-group--file-history" role="group" aria-label="File and history">
         <ToolbarButton
           label={saving ? 'Saving' : 'Save'}
           icon={<ToolIcon type="save" />}
@@ -452,96 +559,9 @@ export default function EditorToolbar({
         />
         <ToolbarButton label="Undo" icon={<ToolIcon type="undo" />} disabled={!editor.can().undo()} onClick={() => applyHistoryAction('undo')} />
         <ToolbarButton label="Redo" icon={<ToolIcon type="redo" />} disabled={!editor.can().redo()} onClick={() => applyHistoryAction('redo')} />
-      </div>
+        </div>
 
-      <div className="editor-toolbar-group editor-toolbar-group--block-visibility" role="group" aria-label="Block display">
-        <button
-          type="button"
-          className={`editor-toolbar-button editor-block-visibility-toggle${blockVisualsVisible ? ' is-active' : ''}`}
-          onClick={onToggleBlockVisuals}
-          title={blockVisualsVisible ? 'Hide block highlights and borders' : 'Show block highlights and borders'}
-          aria-label={blockVisualsVisible ? 'Hide block highlights and borders' : 'Show block highlights and borders'}
-          aria-pressed={blockVisualsVisible}
-        >
-          <ToolIcon type={blockVisualsVisible ? 'eye' : 'eyeOff'} />
-          <span className="editor-block-visibility-toggle__label">Blocks</span>
-          <span className="editor-block-visibility-toggle__state" aria-hidden="true">
-            {blockVisualsVisible ? 'On' : 'Off'}
-          </span>
-        </button>
-      </div>
-
-      <div className="editor-toolbar-group editor-toolbar-group--typography" role="group" aria-label="Typography">
-        <DropdownSelect
-          value={currentHeading}
-          options={headingOptions}
-          onChange={(value) => {
-            runToolbarCommand(editor, (chain) => {
-              if (value === 'none') {
-                return chain
-                  .setParagraph({
-                    outlineLevel: value,
-                    lineHeight: normalTextStyle?.lineHeight,
-                    textIndent: normalTextStyle?.textIndent,
-                    fontFamily: normalTextStyle?.fontFamily,
-                    fontSize: normalTextStyle?.fontSize,
-                  })
-                  .command(({ tr }) => {
-                    const boldMark = tr.doc.type.schema.marks.bold;
-                    updateTrackedBlocksInSelectedTextBlocks(
-                      tr,
-                      (attrs, { node, pos }) => {
-                        if (
-                          boldMark
-                          && attrs.sourceType === 'heading'
-                          && !attrs.headingRestoreAttrs
-                        ) {
-                          tr.removeMark(pos + 1, pos + node.nodeSize - 1, boldMark);
-                        }
-                        return trackedParagraphAttributes(attrs, normalTextStyle);
-                      },
-                    );
-                    return true;
-                  });
-              }
-              const level = Number(value);
-              return chain
-                .setHeading({ level, outlineLevel: value })
-                .command(({ tr }) => {
-                  updateTrackedBlocksInSelectedTextBlocks(
-                    tr,
-                    (attrs) => trackedHeadingAttributes(level, attrs),
-                  );
-                  return true;
-                });
-            }, { restoreSelection: false });
-          }}
-          ariaLabel="Paragraph or heading level"
-          wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--style"
-          triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--wide"
-          menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--wide"
-        />
-        <DropdownSelect
-          value={currentFontFamily}
-          options={fontFamilyOptions}
-          onChange={(value) => runToolbarCommand(editor, (chain) => chain.setFontFamily(value))}
-          ariaLabel="Font family"
-          wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--font"
-          triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--wide"
-          menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--wide"
-        />
-        <DropdownSelect
-          value={currentFontSize}
-          options={fontSizeOptions}
-          onChange={setFontSize}
-          ariaLabel="Font size"
-          wrapperClassName="dropdown-select toolbar-select-wrapper toolbar-select-wrapper--size"
-          triggerClassName="sort-dropdown-trigger toolbar-select-trigger toolbar-select-trigger--compact"
-          menuClassName="sort-dropdown-menu toolbar-select-menu toolbar-select-menu--compact"
-        />
-      </div>
-
-      <div className="editor-toolbar-group editor-toolbar-group--inline" role="group" aria-label="Inline formatting">
+        <div className="editor-toolbar-group editor-toolbar-group--inline" role="group" aria-label="Inline formatting">
         <ToolbarButton label="Bold" icon={<ToolIcon type="bold" />} active={editor.isActive('bold')} onClick={() => runToolbarCommand(editor, (chain) => chain.toggleBold())} />
         <ToolbarButton label="Italic" icon={<ToolIcon type="italic" />} active={editor.isActive('italic')} onClick={() => runToolbarCommand(editor, (chain) => chain.toggleItalic())} />
         <ToolbarButton label="Underline" icon={<ToolIcon type="underline" />} active={editor.isActive('underline')} onClick={() => runToolbarCommand(editor, (chain) => chain.toggleUnderline())} />
@@ -556,9 +576,9 @@ export default function EditorToolbar({
           onSelect={(color) => runToolbarCommand(editor, (chain) => chain.setHighlight({ color }))}
           onClear={() => runToolbarCommand(editor, (chain) => chain.unsetHighlight())}
         />
-      </div>
+        </div>
 
-      <div className="editor-toolbar-group editor-toolbar-group--paragraph" role="group" aria-label="Paragraph and lists">
+        <div className="editor-toolbar-group editor-toolbar-group--paragraph" role="group" aria-label="Paragraph and lists">
         <AlignmentMenu
           value={currentTextAlign}
           onChange={(value) => runToolbarCommand(editor, (chain) => chain.setTextAlign(value))}
@@ -586,6 +606,7 @@ export default function EditorToolbar({
         <div className="editor-toolbar-subgroup" role="group" aria-label="Indentation">
           <ToolbarButton label="Decrease indent" icon={<ToolIcon type="outdent" />} onClick={() => runToolbarCommand(editor, (chain) => chain.updateAttributes('paragraph', { textIndent: '0in' }))} />
           <ToolbarButton label="Increase indent" icon={<ToolIcon type="indent" />} onClick={() => runToolbarCommand(editor, (chain) => chain.updateAttributes('paragraph', { textIndent: '0.5in' }))} />
+        </div>
         </div>
       </div>
     </section>

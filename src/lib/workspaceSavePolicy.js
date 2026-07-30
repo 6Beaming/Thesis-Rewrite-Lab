@@ -28,6 +28,13 @@ export function workspaceLeavePolicy({ workspaceDirty, autosaveDocs }) {
   return autosaveDocs ? 'autosave-and-leave' : 'prompt';
 }
 
+export function workspaceSaveVersionMetadata({ automatic = false } = {}) {
+  return {
+    createVersion: true,
+    versionLabel: automatic ? 'Autosave' : 'Manual save',
+  };
+}
+
 export async function prepareWorkspaceCitationCheck({
   workspaceDirty,
   saveWorkspaceDocument,

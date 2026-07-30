@@ -6,12 +6,26 @@
 // Components access it with: const { user, signIn, signOut } = useAuth();
 import { createContext, useContext, useEffect, useState } from 'react';
 import {
+  GOOGLE_OAUTH_PENDING_KEY,
   getSession,
   signInWithGoogle,
   signOut as submitSignOut,
 } from '../services/auth.js';
 
 const AuthContext = createContext(null);
+
+function oauthIsPending() {
+  return window.sessionStorage.getItem(GOOGLE_OAUTH_PENDING_KEY) === '1';
+}
+
+function clearOAuthPending() {
+  window.sessionStorage.removeItem(GOOGLE_OAUTH_PENDING_KEY);
+}
+
+function resetOAuthEntrance() {
+  clearOAuthPending();
+  window.location.replace(`${window.location.origin}/`);
+}
 
 const authErrorMessages = {
   AccessDenied: 'Google could not verify this account.',
@@ -41,10 +55,36 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState(getInitialAuthError);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('error')) {
+      resetOAuthEntrance();
+      return undefined;
+    }
+
+    function handlePageShow(event) {
+      if (event.persisted && oauthIsPending()) {
+        clearOAuthPending();
+        window.location.reload();
+      }
+    }
+
+    window.addEventListener('pageshow', handlePageShow);
+    return () => window.removeEventListener('pageshow', handlePageShow);
+  }, []);
+
+  useEffect(() => {
     const controller = new AbortController();
 
     getSession({ signal: controller.signal })
-      .then(setSession)
+      .then((nextSession) => {
+        setSession(nextSession);
+        if (nextSession?.user) {
+          clearOAuthPending();
+        } else if (oauthIsPending()) {
+          clearOAuthPending();
+          window.location.reload();
+        }
+      })
       .catch((requestError) => {
         if (requestError.name !== 'AbortError') {
           setError('Could not check your session. Please try again.');
@@ -74,6 +114,7 @@ export function AuthProvider({ children }) {
     try {
       await action();
     } catch {
+      clearOAuthPending();
       setError('Authentication could not be started. Please try again.');
       setIsSubmitting(false);
     }

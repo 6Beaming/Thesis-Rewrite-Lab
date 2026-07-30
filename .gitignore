@@ -17,6 +17,7 @@ dist/
 !server/citations/citations.test.js
 !server/nlp/blockIdentityMapping.test.js
 !server/nlp/localPipeline.test.js
+!server/models/versions.test.js
 !src/pages/workspaceNlpContract.test.js
 .env.test
 *.test.db

@@ -13,7 +13,11 @@ import {
   moveToTrash,
   uploadDocument,
 } from '../services/documentsApi.js';
-import { updateWritingPreferences, uploadProfilePicture } from '../services/usersApi.js';
+import {
+  completeSupportOnboarding,
+  updateWritingPreferences,
+  uploadProfilePicture,
+} from '../services/usersApi.js';
 import HomepageAccount from './homepageAccount.jsx';
 import HomepageCredits from './homepageCredits.jsx';
 import HomepageSupport from './homepageSupport.jsx';
@@ -223,11 +227,32 @@ export default function HomePage({ onOpenWorkspace }) {
     setHistoryDocument(document);
   }
 
+  async function handleSelectPage(page) {
+    setActionError('');
+    setActivePage(page);
+    setSidebarOpen(false);
+    if (page !== 'support' || !user.supportOnboardingPending) return;
+
+    setUser((current) => ({ ...current, supportOnboardingPending: false }));
+    try {
+      const nextUser = await completeSupportOnboarding();
+      applyProfile(nextUser);
+      setUser((current) => ({ ...current, ...nextUser }));
+    } catch {
+      setUser((current) => ({ ...current, supportOnboardingPending: true }));
+    }
+  }
+
   function renderMainContent() {
     if (activePage === 'docs') {
       return (
         <>
           <ProgressBanner value={progressValue} />
+          {user.supportOnboardingPending ? (
+            <p className="home-support-onboarding">
+              Click Support to learn how to ace your writing!
+            </p>
+          ) : null}
           {documents.length ? (
             <DocumentsSection
               documents={documents}
@@ -288,15 +313,12 @@ export default function HomePage({ onOpenWorkspace }) {
         onQueryChange={setQuery}
         onNewDocument={handleNewDocument}
         onUpload={handleUpload}
-        onSelectPage={(page) => {
-          setActionError('');
-          setActivePage(page);
-          setSidebarOpen(false);
-        }}
+        onSelectPage={handleSelectPage}
         onToggleSidebar={() => setSidebarOpen((value) => !value)}
         onAccount={() => setAccountOpen(true)}
         onSubscription={() => navigate('/subscription')}
         actionsHidden={hideHeaderActions}
+        supportAttention={user.supportOnboardingPending}
       >
       <div className="home-main-inner">
         {homeError ? (

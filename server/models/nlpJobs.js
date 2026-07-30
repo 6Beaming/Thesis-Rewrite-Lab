@@ -322,7 +322,7 @@ export async function processDocumentNlpJob(job) {
       ...summarizeIdentityMapping(mapped),
       degraded: Boolean(partition.degraded),
       warnings: partition.warnings ?? [],
-      beforeVersionId: beforeVersion.id,
+      beforeVersionId: beforeVersion?.id ?? null,
     };
     const updated = await client.query(
       `update documents
@@ -351,7 +351,7 @@ export async function processDocumentNlpJob(job) {
       job.document_id,
       `After semantic repartition (${job.requested_profile})`,
     );
-    summary.afterVersionId = afterVersion.id;
+    summary.afterVersionId = afterVersion?.id ?? null;
     summary.revision = Number(updated.rows[0].revision);
     summary.partitionRevision = Number(updated.rows[0].partition_revision);
     await client.query(

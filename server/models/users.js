@@ -68,7 +68,8 @@ export async function getOrCreateUserFromSession(sessionUser, runQuery = query) 
         updated_at = now()
       returning id, auth_user_id, email, display_name, profile_picture_mime,
                 autosave_docs, use_writing_preferences, writing_preferences,
-                preference_schema_version, created_at, updated_at
+                preference_schema_version, support_onboarding_pending,
+                created_at, updated_at
     `,
     [authUserId, email, displayName]
   );
@@ -102,6 +103,7 @@ function profileFromUser(user, stats) {
     ),
     preferenceSchemaVersion: Number(user.preference_schema_version)
       || WRITING_PREFERENCE_SCHEMA_VERSION,
+    supportOnboardingPending: user.support_onboarding_pending === true,
     created_at: user.created_at,
     updated_at: user.updated_at,
     stats: stats ?? null,
@@ -149,6 +151,18 @@ export async function updateWritingPreferences({
       JSON.stringify(normalizedPreferences),
       WRITING_PREFERENCE_SCHEMA_VERSION,
     ],
+  );
+  return getCurrentUserProfile(sessionUser, runQuery);
+}
+
+export async function completeSupportOnboarding(sessionUser, runQuery = query) {
+  const user = await getOrCreateUserFromSession(sessionUser, runQuery);
+  await runQuery(
+    `update users
+     set support_onboarding_pending = false,
+         updated_at = now()
+     where id = $1`,
+    [user.id],
   );
   return getCurrentUserProfile(sessionUser, runQuery);
 }
@@ -204,7 +218,8 @@ export async function recordUserActivity(sessionUser, timeZone, now = new Date()
       `
         select id, auth_user_id, email, display_name, profile_picture_mime,
                autosave_docs, use_writing_preferences, writing_preferences,
-               preference_schema_version, created_at, updated_at
+               preference_schema_version, support_onboarding_pending,
+               created_at, updated_at
         from users
         where id = $1
       `,

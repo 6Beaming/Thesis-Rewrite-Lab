@@ -4,7 +4,7 @@ import DocumentCard from '../components/DocumentCard.jsx';
 import EmptyState from '../components/EmptyState.jsx';
 import { useRealtime } from '../components/RealtimeProvider.jsx';
 import { getVersion, revertVersion } from '../services/versionsApi.js';
-import { diffLogicalBlocks } from '../lib/versionDiff.js';
+import { diffLogicalBlocks, historicalDocumentVersions } from '../lib/versionDiff.js';
 import versionHistoryUrl from '../assets/version_history.png?url';
 
 function textFromTiptap(node) {
@@ -84,6 +84,7 @@ export default function HomepageVersionControl({
   const [documentDetail, setDocumentDetail] = useState(null);
   const selectedDocument = documents.find((document) => document.id === selectedDocumentId) ?? null;
   const versions = realtimeState.versionsByDocument[selectedDocumentId] ?? [];
+  const historicalVersions = useMemo(() => historicalDocumentVersions(versions), [versions]);
   const activeDocument = documentDetail ?? selectedDocument;
   const diffViews = useMemo(() => {
     if (!selectedVersion) return { oldView: [], newView: [] };
@@ -220,14 +221,22 @@ export default function HomepageVersionControl({
               </button>
               <h2>{activeDocument?.title ?? selectedDocument.title}</h2>
             </div>
-            <p>{versions.length} saved versions</p>
+            <p>
+              {historicalVersions.length}
+              {' '}
+              earlier
+              {' '}
+              {historicalVersions.length === 1 ? 'version' : 'versions'}
+            </p>
           </div>
 
-          {!versions.length ? (
-            <EmptyState title="No saved versions yet">Saving this document will append versions here.</EmptyState>
+          {!historicalVersions.length ? (
+            <EmptyState title="No earlier versions yet">
+              Make and save a content change to create a version you can compare with the current document.
+            </EmptyState>
           ) : (
             <div className="version-list">
-              {versions.map((version) => (
+              {historicalVersions.map((version) => (
                 <div className="version-entry" key={version.id}>
                   <article className={`version-item${selectedVersion?.id === version.id ? ' is-selected' : ''}`}>
                     <div>

@@ -1588,6 +1588,8 @@ const DocumentEditor = forwardRef(function DocumentEditor({
   exporting = false,
   initialScrollPosition = null,
   onInitialScrollRestored,
+  pureMode = true,
+  onTogglePureMode,
 }, ref) {
   const normalizedStyle = useMemo(
     () => normalizeStyleSettings(academicStyleSettings(document?.academic_style, styleSettings)),
@@ -2539,6 +2541,8 @@ const DocumentEditor = forwardRef(function DocumentEditor({
         normalTextStyle={normalizedStyle}
         blockVisualsVisible={blockVisualsVisible}
         onToggleBlockVisuals={() => setBlockVisualsVisible((visible) => !visible)}
+        pureMode={pureMode}
+        onTogglePureMode={onTogglePureMode}
         onSave={onSave}
         onExport={onExport}
         saveDisabled={saveDisabled}

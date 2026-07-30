@@ -773,6 +773,9 @@ components:
         academic_style_snapshot: { $ref: '#/components/schemas/AcademicStyle' }
         text_preview: { type: [string, 'null'] }
         created_at: { type: string, format: date-time }
+        is_current:
+          type: boolean
+          description: True when this is the newest snapshot and its text matches the live document.
     DocumentVersionSnapshot:
       allOf:
         - $ref: '#/components/schemas/DocumentVersion'

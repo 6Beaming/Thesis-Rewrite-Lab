@@ -8,6 +8,8 @@ async function readJson(response) {
   return data;
 }
 
+export const GOOGLE_OAUTH_PENDING_KEY = 'project-thesis-rewriter:google-oauth-pending:v1';
+
 export async function getSession({ signal } = {}) {
   const response = await fetch('/auth/session', {
     credentials: 'same-origin',
@@ -26,7 +28,7 @@ function getSafeCallbackUrl(returnTo) {
     : `${window.location.origin}/`;
 }
 
-async function submitAuthAction(action, returnTo) {
+async function submitAuthAction(action, returnTo, { trackGoogleOAuth = false } = {}) {
   const csrfResponse = await fetch('/auth/csrf', {
     credentials: 'same-origin',
     headers: { Accept: 'application/json' },
@@ -52,11 +54,14 @@ async function submitAuthAction(action, returnTo) {
   });
 
   document.body.append(form);
+  if (trackGoogleOAuth) {
+    window.sessionStorage.setItem(GOOGLE_OAUTH_PENDING_KEY, '1');
+  }
   form.submit();
 }
 
 export function signInWithGoogle(returnTo) {
-  return submitAuthAction('/auth/signin/google', returnTo);
+  return submitAuthAction('/auth/signin/google', returnTo, { trackGoogleOAuth: true });
 }
 
 export function signOut(returnTo) {

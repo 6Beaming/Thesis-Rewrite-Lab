@@ -24,3 +24,9 @@ export function updateWritingPreferences(settings) {
     body: JSON.stringify(settings),
   });
 }
+
+export function completeSupportOnboarding() {
+  return requestJson('/users/me/support-onboarding', {
+    method: 'PATCH',
+  });
+}

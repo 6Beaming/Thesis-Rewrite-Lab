@@ -34,7 +34,6 @@ export default function NlpAnalysisPanel({
   snapshot,
   checkState,
   error,
-  documentSummary,
   onRejectIssue,
   rejectingIssueKey,
 }) {
@@ -88,16 +87,6 @@ export default function NlpAnalysisPanel({
           <p>{checkState === 'checking' ? 'Reviewing the active block…' : 'No writing issues found.'}</p>
         )}
       </section>
-      {documentSummary ? (
-        <section className="nlp-analysis-card nlp-analysis-card--summary nlp-document-summary">
-          <h3>Document language review</h3>
-          <p>
-            {documentSummary.passCount ?? 0} ready · {documentSummary.warningCount ?? 0} with suggestions ·{' '}
-            {documentSummary.blockedCount ?? 0} needing changes · {documentSummary.skippedCount ?? 0} not needing review ·{' '}
-            {documentSummary.unknownCount ?? 0} awaiting review
-          </p>
-        </section>
-      ) : null}
     </div>
   );
 }

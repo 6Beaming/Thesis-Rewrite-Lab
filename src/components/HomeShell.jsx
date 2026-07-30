@@ -17,6 +17,7 @@ export default function HomeShell({
   onAccount,
   onSubscription,
   actionsHidden = false,
+  supportAttention = false,
   children,
 }) {
   useEffect(() => {
@@ -61,7 +62,12 @@ export default function HomeShell({
       />
       <div className="home-layout">
         <section className="home-main">{children}</section>
-        <HomeSidebar active={activePage} open={sidebarOpen} onSelect={onSelectPage} />
+        <HomeSidebar
+          active={activePage}
+          open={sidebarOpen}
+          onSelect={onSelectPage}
+          supportAttention={supportAttention}
+        />
       </div>
     </main>
   );

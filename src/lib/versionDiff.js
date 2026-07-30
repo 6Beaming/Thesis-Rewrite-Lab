@@ -69,3 +69,9 @@ export function diffLogicalBlocks(previousBlocks, nextBlocks) {
   });
   return { oldView, newView };
 }
+
+export function historicalDocumentVersions(versions = []) {
+  return [...versions]
+    .sort((left, right) => Number(right.version_number) - Number(left.version_number))
+    .filter((version, index) => !(index === 0 && version.is_current === true));
+}

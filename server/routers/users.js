@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { profilePictureUpload } from '../middlewares/upload.js';
 import {
+  completeSupportOnboarding,
   getCurrentUserProfile,
   getOrCreateUserFromSession,
   getProfilePicture,
@@ -36,6 +37,16 @@ router.patch('/me/writing-preferences', async (req, res) => {
     authUserId: res.locals.session.user.id,
     profile,
     mutationId,
+  });
+  res.json(profile);
+});
+
+router.patch('/me/support-onboarding', async (req, res) => {
+  const profile = await completeSupportOnboarding(res.locals.session.user);
+  req.app.get('eventPublisher')?.publishProfile({
+    authUserId: res.locals.session.user.id,
+    profile,
+    mutationId: null,
   });
   res.json(profile);
 });

@@ -1,8 +1,47 @@
+import { createHash } from 'node:crypto';
 import { query, withTransaction } from './db.js';
 import { replaceBlocksFromSnapshot, recalculateDocumentProgress } from './blocks.js';
 import { CURRENT_NLP_PIPELINE_VERSION } from '../nlp/config.js';
 
+export function canonicalVersionText(blocks = []) {
+  return blocks
+    .map((block) => String(block?.text_content ?? '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export async function appendDocumentVersion(client, documentId, label) {
+  const textBlocksResult = await client.query(
+    `
+      select text_content
+      from document_blocks
+      where document_id = $1
+      order by block_index asc
+    `,
+    [documentId]
+  );
+
+  const currentText = canonicalVersionText(textBlocksResult.rows);
+  if (!currentText) return null;
+
+  const latestVersion = await client.query(
+    `
+      select version_number, content_hash
+      from document_versions
+      where document_id = $1
+      order by version_number desc
+      limit 1
+    `,
+    [documentId]
+  );
+  const currentHash = createHash('md5').update(currentText).digest('hex');
+  if (latestVersion.rows[0]?.content_hash?.trim() === currentHash) return null;
+
+  const nextVersionNumber = Number(latestVersion.rows[0]?.version_number ?? 0) + 1;
+  const preview = currentText.slice(0, 180);
+
   const documentResult = await client.query(
     `
       select id, title, academic_style, style_settings, content_json, revision,
@@ -31,20 +70,6 @@ export async function appendDocumentVersion(client, documentId, label) {
     [documentId]
   );
 
-  const nextVersion = await client.query(
-    `
-      select coalesce(max(version_number), 0) + 1 as next_version
-      from document_versions
-      where document_id = $1
-    `,
-    [documentId]
-  );
-
-  const preview = blocksResult.rows
-    .map((block) => block.text_content)
-    .join(' ')
-    .slice(0, 180);
-
   const snapshot = {
     document,
     blocks: blocksResult.rows,
@@ -53,32 +78,81 @@ export async function appendDocumentVersion(client, documentId, label) {
   const inserted = await client.query(
     `
       insert into document_versions (
-        document_id, version_number, label, academic_style_snapshot, text_preview, snapshot_json
+        document_id, version_number, label, academic_style_snapshot, text_preview,
+        snapshot_json, content_hash
       )
-      values ($1, $2, $3, $4, $5, $6::jsonb)
+      values ($1, $2, $3, $4, $5, $6::jsonb, $7)
       returning id, document_id, version_number, label, academic_style_snapshot, text_preview, created_at
     `,
     [
       documentId,
-      Number(nextVersion.rows[0].next_version),
+      nextVersionNumber,
       label,
       document.academic_style,
-      preview || 'Text preview is not available',
+      preview,
       JSON.stringify(snapshot),
+      currentHash,
     ]
   );
 
-  return inserted.rows[0];
+  return {
+    ...inserted.rows[0],
+    is_current: true,
+  };
 }
 
 export async function listVersions(documentId, userId) {
   const result = await query(
     `
-      select dv.id, dv.document_id, dv.version_number, dv.label, dv.academic_style_snapshot, dv.text_preview, dv.created_at
-      from document_versions dv
-      join documents d on d.id = dv.document_id
-      where dv.document_id = $1
-        and d.user_id = $2
+      with current_document as (
+        select md5(coalesce(string_agg(normalized.text_content, ' ' order by normalized.block_index), '')) as content_hash
+        from (
+          select
+            db.block_index,
+            btrim(regexp_replace(coalesce(db.text_content, ''), '[[:space:]]+', ' ', 'g')) as text_content
+          from document_blocks db
+          join documents d on d.id = db.document_id
+          where db.document_id = $1
+            and d.user_id = $2
+        ) normalized
+        where normalized.text_content <> ''
+      ),
+      compared_versions as (
+        select
+          dv.id,
+          dv.document_id,
+          dv.version_number,
+          dv.label,
+          dv.academic_style_snapshot,
+          dv.text_preview,
+          dv.created_at,
+          dv.content_hash,
+          lag(dv.content_hash) over (order by dv.version_number) as previous_hash
+        from document_versions dv
+        join documents d on d.id = dv.document_id
+        where dv.document_id = $1
+          and d.user_id = $2
+      ),
+      distinct_versions as (
+        select *
+        from compared_versions
+        where content_hash <> md5('')
+          and (previous_hash is null or content_hash <> previous_hash)
+      )
+      select
+        distinct_versions.id,
+        distinct_versions.document_id,
+        distinct_versions.version_number,
+        distinct_versions.label,
+        distinct_versions.academic_style_snapshot,
+        distinct_versions.text_preview,
+        distinct_versions.created_at,
+        (
+          distinct_versions.version_number = max(distinct_versions.version_number) over ()
+          and distinct_versions.content_hash = current_document.content_hash
+        ) as is_current
+      from distinct_versions
+      cross join current_document
       order by version_number desc
     `,
     [documentId, userId]

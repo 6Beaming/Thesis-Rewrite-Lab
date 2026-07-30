@@ -39,6 +39,7 @@ const SAFE_PROFILE_FIELDS = new Set([
   'useWritingPreferences',
   'writingPreferences',
   'preferenceSchemaVersion',
+  'supportOnboardingPending',
   'created_at',
   'updated_at',
   'stats',
@@ -52,6 +53,7 @@ const SAFE_VERSION_FIELDS = new Set([
   'academic_style_snapshot',
   'text_preview',
   'created_at',
+  'is_current',
 ]);
 
 const SAFE_SUBSCRIPTION_FIELDS = new Set([
