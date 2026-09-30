@@ -15,8 +15,8 @@ permissions:
 env:
   NODE_IMAGE: thesis-rewriter-node:ci
   NLP_IMAGE: thesis-rewriter-nlp:ci
-  GHCR_NODE_IMAGE: ghcr.io/utsc-cscc09-programming-on-the-web/project-thesis-rewriter
-  GHCR_NLP_IMAGE: ghcr.io/utsc-cscc09-programming-on-the-web/project-thesis-rewriter-nlp
+  GHCR_NODE_IMAGE: ghcr.io/6beaming/thesis-rewrite-lab
+  GHCR_NLP_IMAGE: ghcr.io/6beaming/thesis-rewrite-lab-nlp
 
 jobs:
   validate:

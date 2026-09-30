@@ -14,6 +14,7 @@ dist/
 **/*.test.js
 **/*.test.cjs
 !server/ai/nlpPromptSupplement.test.js
+!server/export/documentExport.test.js
 !server/citations/citations.test.js
 !server/nlp/blockIdentityMapping.test.js
 !server/nlp/localPipeline.test.js
